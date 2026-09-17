@@ -8,4 +8,5 @@ Thumbs.db
 .env
 .env.local
 .playwright/
+playwright-report/
 test-results/
