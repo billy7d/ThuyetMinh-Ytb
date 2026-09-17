@@ -28,20 +28,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       currentMode = msg.mode || DEFAULT_MODE;
       if (msg.mixerConfig) currentMixerConfig = { ...currentMixerConfig, ...msg.mixerConfig };
 
-      // Dispatch start capture message directly to content script in target tab
-      chrome.tabs.sendMessage(msg.tabId, {
-        type: 'FIREFOX_START_CAPTURE',
-        sessionId: currentSessionId,
-        mode: currentMode,
-        mixerConfig: currentMixerConfig
-      }, (res) => {
-        if (chrome.runtime.lastError || !res?.success) {
-          sendResponse({ success: false, error: res?.error || chrome.runtime.lastError?.message });
-        } else {
-          isCapturing = true;
-          sendResponse({ success: true });
-        }
-      });
+      const sendStartToTab = (retryCount = 1) => {
+        chrome.tabs.sendMessage(msg.tabId, {
+          type: 'FIREFOX_START_CAPTURE',
+          sessionId: currentSessionId,
+          mode: currentMode,
+          mixerConfig: currentMixerConfig
+        }, (res) => {
+          if (chrome.runtime.lastError || !res?.success) {
+            if (retryCount === 1) {
+              const scripting = (chrome as any).scripting;
+              if (scripting?.executeScript) {
+                scripting.executeScript({
+                  target: { tabId: msg.tabId },
+                  files: ['content/content.js']
+                }).then(() => {
+                  setTimeout(() => sendStartToTab(0), 400);
+                }).catch((err: any) => {
+                  sendResponse({ success: false, error: err.message });
+                });
+                return;
+              }
+            }
+            sendResponse({
+              success: false,
+              error: res?.error || chrome.runtime.lastError?.message || 'Không thể kết nối với phần tử video. Vui lòng thử tải lại trang (F5).'
+            });
+          } else {
+            isCapturing = true;
+            sendResponse({ success: true });
+          }
+        });
+      };
+
+      sendStartToTab(1);
       return true;
 
     case 'STOP_SESSION':

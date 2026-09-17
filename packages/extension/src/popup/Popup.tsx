@@ -13,22 +13,53 @@ export const Popup: React.FC = () => {
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const checkVideoInTab = (tabId: number, isKnownVideo: boolean, attempt = 1) => {
+    chrome.tabs.sendMessage(tabId, { type: 'CHECK_VIDEO' }, (res) => {
+      if (chrome.runtime.lastError || !res) {
+        // Content script might not be injected yet (e.g. tab opened before extension loaded)
+        if (attempt === 1) {
+          const scripting = (chrome as any).scripting;
+          if (scripting?.executeScript) {
+            scripting.executeScript({
+              target: { tabId },
+              files: ['content/content.js']
+            }).then(() => {
+              setTimeout(() => checkVideoInTab(tabId, isKnownVideo, 2), 400);
+            }).catch(() => {
+              setHasVideo(isKnownVideo);
+            });
+            return;
+          } else if ((chrome.tabs as any).executeScript) {
+            (chrome.tabs as any).executeScript(tabId, { file: 'content/content.js' }, () => {
+              setTimeout(() => checkVideoInTab(tabId, isKnownVideo, 2), 400);
+            });
+            return;
+          }
+        }
+        setHasVideo(isKnownVideo);
+      } else {
+        setHasVideo(res.hasVideo || isKnownVideo);
+        if (res.videoTitle) setVideoTitle(res.videoTitle);
+      }
+    });
+  };
+
   useEffect(() => {
     // 1. Get active tab info
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs.length > 0 && tabs[0].id) {
         const tabId = tabs[0].id;
+        const tabUrl = tabs[0].url || '';
+        const tabTitle = tabs[0].title || '';
         setActiveTabId(tabId);
+        if (tabTitle) setVideoTitle(tabTitle);
 
-        // Check if tab has video
-        chrome.tabs.sendMessage(tabId, { type: 'CHECK_VIDEO' }, (res) => {
-          if (chrome.runtime.lastError || !res) {
-            setHasVideo(false);
-          } else {
-            setHasVideo(res.hasVideo);
-            if (res.videoTitle) setVideoTitle(res.videoTitle);
-          }
-        });
+        const isKnownVideo = tabUrl.includes('youtube.com') ||
+          tabUrl.includes('youtu.be') ||
+          tabUrl.includes('vimeo.com') ||
+          tabUrl.includes('bilibili.com');
+
+        checkVideoInTab(tabId, isKnownVideo, 1);
 
         // Query session status from background
         chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res) => {
@@ -54,24 +85,41 @@ export const Popup: React.FC = () => {
     setStatusText('Đang khởi tạo thuyết minh...');
     setErrorMessage(null);
 
-    chrome.runtime.sendMessage(
-      {
-        type: 'START_SESSION',
-        tabId: activeTabId,
-        mode,
-        mixerConfig: { originalVolume, originalMuted, ttsVolume }
-      },
-      (res) => {
-        if (res?.success) {
-          setIsCapturing(true);
-          setStatusText('Đang thuyết minh');
-        } else {
-          setIsCapturing(false);
-          setStatusText('Đã tắt');
-          setErrorMessage(res?.error || 'Không thể bắt đầu phiên thu âm');
+    // Make sure content script is injected
+    const startAction = () => {
+      chrome.runtime.sendMessage(
+        {
+          type: 'START_SESSION',
+          tabId: activeTabId,
+          mode,
+          mixerConfig: { originalVolume, originalMuted, ttsVolume }
+        },
+        (res) => {
+          if (res?.success) {
+            setIsCapturing(true);
+            setStatusText('Đang thuyết minh');
+          } else {
+            setIsCapturing(false);
+            setStatusText('Đã tắt');
+            setErrorMessage(res?.error || 'Không thể bắt đầu phiên thu âm');
+          }
         }
-      }
-    );
+      );
+    };
+
+    const scripting = (chrome as any).scripting;
+    if (scripting?.executeScript) {
+      scripting.executeScript({
+        target: { tabId: activeTabId },
+        files: ['content/content.js']
+      }).then(() => {
+        setTimeout(startAction, 200);
+      }).catch(() => {
+        startAction();
+      });
+    } else {
+      startAction();
+    }
   };
 
   const handleStop = () => {
@@ -130,7 +178,50 @@ export const Popup: React.FC = () => {
       {/* Video Detection Notice */}
       {!hasVideo && (
         <div style={styles.alertWarning}>
-          ⚠️ Không tìm thấy video trong tab hiện tại. Hãy mở một trang có video tiếng Anh.
+          <div>⚠️ Chưa phát hiện video trong tab này.</div>
+          <div style={{ marginTop: 6, fontSize: 11, color: '#fef08a', lineHeight: 1.4 }}>
+            💡 <b>Mẹo:</b> Nếu tab YouTube đã mở trước khi nạp Extension, hãy bấm <b>Tải lại trang (F5)</b> hoặc bấm Play video.
+          </div>
+          {activeTabId && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                style={{
+                  padding: '4px 10px',
+                  backgroundColor: '#854d0e',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  fontWeight: 600
+                }}
+                onClick={() => {
+                  chrome.tabs.reload(activeTabId);
+                  window.close();
+                }}
+              >
+                🔄 Tải lại trang (F5)
+              </button>
+              <button
+                type="button"
+                style={{
+                  padding: '4px 10px',
+                  backgroundColor: '#3f3f46',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 11
+                }}
+                onClick={() => {
+                  if (activeTabId) checkVideoInTab(activeTabId, true, 1);
+                }}
+              >
+                🔍 Quét lại
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -217,7 +308,7 @@ export const Popup: React.FC = () => {
           <button
             style={styles.btnPrimary}
             onClick={handleStart}
-            disabled={!hasVideo}
+            disabled={!hasVideo && !videoTitle.toLowerCase().includes('youtube')}
           >
             Bắt đầu thuyết minh
           </button>

@@ -17,12 +17,30 @@ let fxSessionId: string | null = null;
 let fxCurrentGeneration: number = 1;
 
 function findVideoElement(): HTMLVideoElement | null {
-  const videos = Array.from(document.querySelectorAll('video'));
+  // 1. YouTube-specific main video selectors
+  const ytVideo = document.querySelector<HTMLVideoElement>(
+    'video.html5-main-video, #movie_player video, .html5-video-player video'
+  );
+  if (ytVideo) return ytVideo;
+
+  // 2. Generic HTML5 videos
+  const videos = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
   if (videos.length === 0) return null;
-  // Return the largest or currently playing video
+
+  // 3. Prefer currently playing video
   const playing = videos.find(v => !v.paused && v.currentTime > 0);
   if (playing) return playing;
-  return videos.sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight))[0];
+
+  // 4. Prefer video with valid src or srcObject
+  const withSrc = videos.find(v => !!v.src || !!v.srcObject || v.readyState > 0);
+  if (withSrc) return withSrc;
+
+  // 5. Fallback to largest video element
+  return videos.sort((a, b) => {
+    const aArea = (a.clientWidth || a.videoWidth || 1) * (a.clientHeight || a.videoHeight || 1);
+    const bArea = (b.clientWidth || b.videoWidth || 1) * (b.clientHeight || b.videoHeight || 1);
+    return bArea - aArea;
+  })[0];
 }
 
 function initVideoIntegration(): boolean {
@@ -229,9 +247,16 @@ function handleFirefoxStopCapture(): void {
   fxSessionId = null;
 }
 
-// Automatically detect video on load or DOM mutations
+// Automatically detect video on load, SPA navigation or DOM mutations
 window.addEventListener('DOMContentLoaded', () => initVideoIntegration());
+window.addEventListener('load', () => initVideoIntegration());
+window.addEventListener('yt-navigate-finish', () => initVideoIntegration());
+
 const observer = new MutationObserver(() => {
-  if (!activeVideo) initVideoIntegration();
+  if (!activeVideo || !document.contains(activeVideo)) {
+    initVideoIntegration();
+  }
 });
-observer.observe(document.body, { childList: true, subtree: true });
+if (document.body) {
+  observer.observe(document.body, { childList: true, subtree: true });
+}
