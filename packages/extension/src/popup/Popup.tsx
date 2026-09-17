@@ -1,12 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { OperationMode, AudioMixerConfig, DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME } from '@vietdub/shared';
-
-type SessionState = 'IDLE' | 'INITIALIZING' | 'ACTIVE' | 'STOPPING' | 'ERROR';
+import React, { useEffect, useRef, useState } from 'react';
+import { DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, OperationMode, SessionState } from '@vietdub/shared';
 
 export const Popup: React.FC = () => {
+  const configuredBackendUrl = new URLSearchParams(window.location.search).get('wsUrl') || undefined;
   const [sessionState, setSessionState] = useState<SessionState>('IDLE');
-  const [hasVideo, setHasVideo] = useState<boolean>(true);
-  const [videoTitle, setVideoTitle] = useState<string>('');
+  const [hasVideo, setHasVideo] = useState<boolean>(false);
   const [statusText, setStatusText] = useState<string>('Sẵn sàng');
   const [mode, setMode] = useState<OperationMode>(DEFAULT_MODE);
   const [originalVolume, setOriginalVolume] = useState<number>(DEFAULT_ORIGINAL_VOLUME);
@@ -15,244 +13,228 @@ export const Popup: React.FC = () => {
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorHint, setErrorHint] = useState<string | null>(null);
+  const [canRetry, setCanRetry] = useState<boolean>(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
 
-  // Helper to categorize errors and provide actionable hints
-  const classifyError = (rawError: string): { message: string; hint: string } => {
-    const lower = (rawError || '').toLowerCase();
-    if (
-      lower.includes('localhost:8080') ||
-      lower.includes('websocket') ||
-      lower.includes('econnrefused') ||
-      lower.includes('máy chủ ai') ||
-      lower.includes('timeout') ||
-      lower.includes('closed before')
-    ) {
-      return {
-        message: 'Không thể kết nối máy chủ AI (ws://localhost:8080).',
-        hint: 'Vui lòng mở terminal trong thư mục dự án và chạy: npm run dev:server'
-      };
-    }
-    if (lower.includes('video') || lower.includes('không tìm thấy')) {
-      return {
-        message: 'Không tìm thấy thẻ video trên trang này.',
-        hint: 'Hãy mở video YouTube và bấm Play để bắt đầu.'
-      };
-    }
-    if (lower.includes('tabcapture') || lower.includes('permission') || lower.includes('notallowederror')) {
+  const classifyError = (rawError: string, code = ''): { message: string; hint: string } => {
+    const lower = `${code} ${rawError || ''}`.toLowerCase();
+    if (lower.includes('permission') || lower.includes('notallowed') || lower.includes('tab_capture')) {
       return {
         message: 'Không có quyền truy cập âm thanh tab.',
-        hint: 'Vui lòng cấp quyền thu âm tab trong trình duyệt và thử lại.'
+        hint: 'Hãy cấp quyền thu âm tab rồi thử lại.'
+      };
+    }
+    if (lower.includes('video_not_found') || lower.includes('video') || lower.includes('không tìm thấy')) {
+      return {
+        message: 'Không tìm thấy thẻ video trên trang này.',
+        hint: 'Hãy mở video và bấm Play trước khi bắt đầu.'
+      };
+    }
+    if (lower.includes('websocket') || lower.includes('ws_') || lower.includes('timeout') || lower.includes('econnrefused') || lower.includes('máy chủ')) {
+      return {
+        message: 'Không thể kết nối máy chủ AI.',
+        hint: 'Kiểm tra backend rồi thử lại.'
       };
     }
     return {
       message: rawError || 'Đã xảy ra lỗi không xác định.',
-      hint: 'Hãy thử tải lại trang (F5) hoặc khởi động lại extension.'
+      hint: 'Hãy thử tải lại trang hoặc khởi động lại extension.'
     };
   };
 
-  const checkVideoInTab = (tabId: number, isKnownVideo: boolean, attempt = 1) => {
+  const isRetryableError = (rawError: string, code: string, retryable: boolean): boolean => {
+    const lower = `${code} ${rawError || ''}`.toLowerCase();
+    // Permission và thiếu video cần người dùng sửa tab/quyền, không được retry ngầm từ popup.
+    if (lower.includes('permission') || lower.includes('notallowed') || lower.includes('video_not_found') || lower.includes('không tìm thấy')) {
+      return false;
+    }
+    return retryable;
+  };
+
+  const checkVideoInTab = (tabId: number) => {
     chrome.tabs.sendMessage(tabId, { type: 'CHECK_VIDEO' }, (res) => {
       if (chrome.runtime.lastError || !res) {
-        if (attempt === 1) {
-          const scripting = (chrome as any).scripting;
-          if (scripting?.executeScript) {
-            scripting.executeScript({
-              target: { tabId },
-              files: ['content/content.js']
-            }).then(() => {
-              setTimeout(() => checkVideoInTab(tabId, isKnownVideo, 2), 400);
-            }).catch(() => {
-              setHasVideo(isKnownVideo);
-            });
-            return;
-          } else if ((chrome.tabs as any).executeScript) {
-            (chrome.tabs as any).executeScript(tabId, { file: 'content/content.js' }, () => {
-              setTimeout(() => checkVideoInTab(tabId, isKnownVideo, 2), 400);
-            });
-            return;
-          }
-        }
-        setHasVideo(isKnownVideo);
+        // Popup chỉ đọc trạng thái; việc inject thuộc trách nhiệm của background.
+        setHasVideo(false);
       } else {
-        setHasVideo(res.hasVideo || isKnownVideo);
-        if (res.videoTitle) setVideoTitle(res.videoTitle);
+        setHasVideo(res.hasVideo === true);
       }
     });
   };
 
+  const stateText = (state: SessionState): string => {
+    switch (state) {
+      case 'INITIALIZING': return 'Đang chuẩn bị...';
+      case 'READY': return 'Đã sẵn sàng';
+      case 'CONNECTING': return 'Đang kết nối...';
+      case 'ACTIVE': return 'Đang thuyết minh';
+      case 'STOPPING': return 'Đang dừng...';
+      case 'ERROR': return 'Lỗi kết nối';
+      default: return 'Sẵn sàng';
+    }
+  };
+
+  const applySnapshot = (snapshot: any) => {
+    const state = (snapshot?.state || (snapshot?.isCapturing ? 'ACTIVE' : 'IDLE')) as SessionState;
+    setSessionState(state);
+    setStatusText(stateText(state));
+    activeSessionIdRef.current = snapshot?.sessionId || null;
+    if (snapshot?.mode) setMode(snapshot.mode);
+    if (snapshot?.mixerConfig) {
+      setOriginalVolume(snapshot.mixerConfig.originalVolume);
+      setOriginalMuted(snapshot.mixerConfig.originalMuted);
+      setTtsVolume(snapshot.mixerConfig.ttsVolume);
+    }
+    if (state !== 'ACTIVE') setLatencyMs(null);
+    if (snapshot?.error) {
+      const classified = classifyError(snapshot.error.message, snapshot.error.code);
+      setErrorMessage(classified.message);
+      setErrorHint(classified.hint);
+      setCanRetry(isRetryableError(snapshot.error.message, snapshot.error.code || '', snapshot.error.retryable === true));
+    } else if (state !== 'ERROR') {
+      setErrorMessage(null);
+      setErrorHint(null);
+      setCanRetry(false);
+    }
+  };
+
   useEffect(() => {
-    // 1. Get active tab info
+    let disposed = false;
+    // Popup chỉ đọc tab hiện tại; background mới có quyền điều phối injection.
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs.length > 0 && tabs[0].id) {
-        const tabId = tabs[0].id;
-        const tabUrl = tabs[0].url || '';
-        const tabTitle = tabs[0].title || '';
-        setActiveTabId(tabId);
-        if (tabTitle) setVideoTitle(tabTitle);
-
-        const isKnownVideo = tabUrl.includes('youtube.com') ||
-          tabUrl.includes('youtu.be') ||
-          tabUrl.includes('vimeo.com') ||
-          tabUrl.includes('bilibili.com');
-
-        checkVideoInTab(tabId, isKnownVideo, 1);
-
-        // Query session status from background
-        chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res) => {
-          if (res) {
-            if (res.isCapturing) {
-              setSessionState('ACTIVE');
-              setStatusText('Đang thuyết minh');
-            } else {
-              setSessionState('IDLE');
-              setStatusText('Sẵn sàng');
-            }
-            if (res.mode) setMode(res.mode);
-            if (res.mixerConfig) {
-              setOriginalVolume(res.mixerConfig.originalVolume);
-              setOriginalMuted(res.mixerConfig.originalMuted);
-              setTtsVolume(res.mixerConfig.ttsVolume);
-            }
-          }
-        });
-      }
+      if (disposed || tabs.length === 0 || !tabs[0].id) return;
+      const tabId = tabs[0].id;
+      setActiveTabId(tabId);
+      checkVideoInTab(tabId);
+      chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (snapshot) => {
+        if (!disposed && snapshot) applySnapshot(snapshot);
+      });
     });
 
-    // 2. Listen for latency metrics & session state updates
     const messageListener = (msg: any) => {
-      if (msg.type === 'LATENCY_METRIC' && msg.totalPipelineMs) {
+      if (msg.type === 'SESSION_STATE') applySnapshot(msg);
+      if (msg.type === 'LATENCY_METRIC' && msg.totalPipelineMs && (!msg.sessionId || msg.sessionId === activeSessionIdRef.current)) {
         setLatencyMs(Math.round(msg.totalPipelineMs));
       }
-      if (msg.type === 'ERROR' && msg.fatal) {
+      if (msg.type === 'ERROR' && msg.fatal && (!msg.sessionId || msg.sessionId === activeSessionIdRef.current)) {
+        const classified = classifyError(msg.message, msg.code);
         setSessionState('ERROR');
-        const classified = classifyError(msg.message);
+        setStatusText('Lỗi kết nối');
         setErrorMessage(classified.message);
         setErrorHint(classified.hint);
-        setStatusText('Lỗi kết nối');
+        setCanRetry(isRetryableError(msg.message || '', msg.code || '', msg.retryable === true));
+        setLatencyMs(null);
       }
     };
     chrome.runtime.onMessage.addListener(messageListener);
 
     return () => {
+      disposed = true;
       chrome.runtime.onMessage.removeListener(messageListener);
     };
   }, []);
 
-  const executeStart = (tabId: number, retryAttempt = 0): Promise<void> => {
+  const sendExtensionMessage = <T,>(message: unknown): Promise<T> => {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        {
-          type: 'START_SESSION',
-          tabId,
-          mode,
-          mixerConfig: { originalVolume, originalMuted, ttsVolume }
-        },
-        (res) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (res?.success) {
-            resolve();
-          } else {
-            reject(new Error(res?.error || 'Không thể bắt đầu phiên'));
-          }
-        }
-      );
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(response as T);
+      });
     });
   };
 
-  const handleStartWithRetry = async () => {
-    if (!activeTabId) return;
+  const handleStart = async () => {
+    if (activeTabId === null) return;
+    if (['INITIALIZING', 'READY', 'CONNECTING', 'ACTIVE', 'STOPPING'].includes(sessionState)) return;
     setSessionState('INITIALIZING');
-    setStatusText('Đang kết nối...');
+    setStatusText('Đang chuẩn bị...');
     setErrorMessage(null);
     setErrorHint(null);
-
-    // Step 1: Ensure content script injection if possible
-    const scripting = (chrome as any).scripting;
-    if (scripting?.executeScript) {
-      try {
-        await scripting.executeScript({
-          target: { tabId: activeTabId },
-          files: ['content/content.js']
-        });
-      } catch {
-        // Content script might already exist or restricted page
+    setCanRetry(false);
+    try {
+      const response: any = await sendExtensionMessage({
+        type: 'START_SESSION',
+        tabId: activeTabId,
+        mode,
+        mixerConfig: { originalVolume, originalMuted, ttsVolume },
+        // Cho phép smoke test dùng cổng động; người dùng bình thường dùng backend mặc định.
+        wsUrl: configuredBackendUrl
+      });
+      if (!response?.success) {
+        const error = new Error(response?.error || 'Không thể bắt đầu phiên') as Error & { code?: string; retryable?: boolean };
+        error.code = response?.code;
+        error.retryable = response?.retryable === true;
+        throw error;
       }
+    } catch (error: any) {
+      const classified = classifyError(error?.message || '', error?.code || '');
+      setSessionState('ERROR');
+      setStatusText('Lỗi kết nối');
+      setErrorMessage(classified.message);
+      setErrorHint(classified.hint);
+      setCanRetry(isRetryableError(error?.message || '', error?.code || '', error?.retryable === true));
+      setLatencyMs(null);
     }
-
-    // Step 2: Retry loop (up to 3 attempts with backoff)
-    const MAX_ATTEMPTS = 3;
-    let lastErr: any = null;
-
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        if (attempt > 1) {
-          setStatusText(`Đang thử lại lần ${attempt}/${MAX_ATTEMPTS}...`);
-          await new Promise((r) => setTimeout(r, 400 * Math.pow(2, attempt - 2)));
-        }
-        await executeStart(activeTabId, attempt);
-        setSessionState('ACTIVE');
-        setStatusText('Đang thuyết minh');
-        return;
-      } catch (err: any) {
-        lastErr = err;
-        console.warn(`[POPUP] Start attempt ${attempt} failed:`, err);
-      }
-    }
-
-    // All attempts failed
-    setSessionState('ERROR');
-    setStatusText('Lỗi kết nối');
-    const classified = classifyError(lastErr?.message || '');
-    setErrorMessage(classified.message);
-    setErrorHint(classified.hint);
   };
 
-  const handleStop = () => {
+  const handleStop = async () => {
     setSessionState('STOPPING');
     setStatusText('Đang dừng...');
-    chrome.runtime.sendMessage({ type: 'STOP_SESSION' }, () => {
+    try {
+      const response: any = await sendExtensionMessage({ type: 'STOP_SESSION' });
+      if (!response?.success) throw new Error(response?.error || 'Không thể dừng phiên');
+      activeSessionIdRef.current = null;
       setSessionState('IDLE');
       setStatusText('Sẵn sàng');
+      setCanRetry(false);
       setLatencyMs(null);
-    });
+    } catch (error: any) {
+      const classified = classifyError(error?.message || '', 'STOP_FAILED');
+      setSessionState('ERROR');
+      setStatusText('Lỗi kết nối');
+      setErrorMessage(classified.message);
+      setErrorHint(classified.hint);
+      setCanRetry(false);
+    }
   };
 
   const handleModeSelect = (newMode: OperationMode) => {
     setMode(newMode);
     if (sessionState === 'ACTIVE') {
-      chrome.runtime.sendMessage({ type: 'CHANGE_MODE', mode: newMode });
+      void sendExtensionMessage({ type: 'CHANGE_MODE', mode: newMode }).catch((error) => {
+        console.warn('[POPUP] mode change failed', String(error));
+      });
     }
   };
 
   const handleOriginalVolumeChange = (val: number) => {
     setOriginalVolume(val);
     if (sessionState === 'ACTIVE') {
-      chrome.runtime.sendMessage({
+      void sendExtensionMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { originalVolume: val }
-      });
+      }).catch((error) => console.warn('[POPUP] mixer update failed', String(error)));
     }
   };
 
   const handleOriginalMuteToggle = (muted: boolean) => {
     setOriginalMuted(muted);
     if (sessionState === 'ACTIVE') {
-      chrome.runtime.sendMessage({
+      void sendExtensionMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { originalMuted: muted }
-      });
+      }).catch((error) => console.warn('[POPUP] mixer update failed', String(error)));
     }
   };
 
   const handleTtsVolumeChange = (val: number) => {
     setTtsVolume(val);
     if (sessionState === 'ACTIVE') {
-      chrome.runtime.sendMessage({
+      void sendExtensionMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { ttsVolume: val }
-      });
+      }).catch((error) => console.warn('[POPUP] mixer update failed', String(error)));
     }
   };
 
@@ -310,7 +292,7 @@ export const Popup: React.FC = () => {
                   fontSize: 11
                 }}
                 onClick={() => {
-                  if (activeTabId) checkVideoInTab(activeTabId, true, 1);
+                  if (activeTabId !== null) checkVideoInTab(activeTabId);
                 }}
               >
                 🔍 Quét lại
@@ -324,15 +306,15 @@ export const Popup: React.FC = () => {
         <div style={styles.alertError}>
           <div style={{ fontWeight: 600 }}>❌ {errorMessage}</div>
           {errorHint && <div style={styles.errorHint}>💡 {errorHint}</div>}
-          <div style={{ marginTop: 8 }}>
+          {canRetry && <div style={{ marginTop: 8 }}>
             <button
               type="button"
               style={styles.btnRetry}
-              onClick={handleStartWithRetry}
+              onClick={handleStart}
             >
               🔄 Thử lại
             </button>
-          </div>
+          </div>}
         </div>
       )}
 
@@ -413,15 +395,19 @@ export const Popup: React.FC = () => {
           <button style={styles.btnDanger} onClick={handleStop}>
             Dừng thuyết minh
           </button>
-        ) : sessionState === 'INITIALIZING' || sessionState === 'STOPPING' ? (
+        ) : sessionState === 'STOPPING' ? (
           <button style={styles.btnDisabled} disabled>
             {statusText}
+          </button>
+        ) : sessionState === 'INITIALIZING' || sessionState === 'READY' || sessionState === 'CONNECTING' ? (
+          <button style={styles.btnDanger} onClick={handleStop}>
+            Hủy khởi tạo
           </button>
         ) : (
           <button
             style={styles.btnPrimary}
-            onClick={handleStartWithRetry}
-            disabled={!hasVideo && !videoTitle.toLowerCase().includes('youtube')}
+            onClick={handleStart}
+            disabled={activeTabId === null}
           >
             Bắt đầu thuyết minh
           </button>
@@ -471,6 +457,8 @@ const styles: Record<string, any> = {
           fontWeight: 600
         };
       case 'INITIALIZING':
+      case 'READY':
+      case 'CONNECTING':
       case 'STOPPING':
         return {
           fontSize: 11,

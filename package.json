@@ -7,10 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present && node scripts/validate-extension-build.mjs",
-    "validate:build": "node scripts/validate-extension-build.mjs",
-    "build:chrome": "npm run build:chrome -w @vietdub/extension && node scripts/validate-extension-build.mjs",
-    "build:firefox": "npm run build:firefox -w @vietdub/extension && node scripts/validate-extension-build.mjs",
+    "build": "npm run build --workspaces --if-present && node scripts/validate-extension-build.mjs --target all",
+    "validate:build": "node scripts/validate-extension-build.mjs --target all",
+    "build:chrome": "npm run build:chrome -w @vietdub/extension && node scripts/validate-extension-build.mjs --target chrome",
+    "build:firefox": "npm run build:firefox -w @vietdub/extension && node scripts/validate-extension-build.mjs --target firefox",
     "build:backend": "npm run build -w @vietdub/backend",
     "test": "npm run test -w @vietdub/tests",
     "test:unit": "npm run test:unit -w @vietdub/tests",

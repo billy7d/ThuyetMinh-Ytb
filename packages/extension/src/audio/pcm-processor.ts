@@ -6,6 +6,7 @@ export class PCMProcessor {
   private audioCtx: AudioContext;
   private inputNode: AudioNode;
   private processorNode: ScriptProcessorNode | null = null;
+  private silentGainNode: GainNode | null = null;
   private onChunk: PCMChunkHandler;
   private targetSampleRate: number;
   private bufferSize: number;
@@ -33,7 +34,7 @@ export class PCMProcessor {
   }
 
   private initProcessor(): void {
-    // Standard ScriptProcessorNode for maximum browser compatibility across Chrome/Firefox
+    // Dùng ScriptProcessorNode để giữ tương thích với cả Chrome và Firefox hiện tại.
     this.processorNode = this.audioCtx.createScriptProcessor(this.bufferSize, 1, 1);
 
     this.processorNode.onaudioprocess = (e) => {
@@ -43,7 +44,7 @@ export class PCMProcessor {
       this.accumulatedSamples.push(resampled);
       this.accumulatedLength += resampled.length;
 
-      // When accumulated length reaches 250ms, combine and emit
+      // Khi đủ 250 ms thì ghép mẫu và phát đúng một chunk.
       while (this.accumulatedLength >= this.targetChunkSamples) {
         const chunk = new Float32Array(this.targetChunkSamples);
         let offset = 0;
@@ -68,16 +69,20 @@ export class PCMProcessor {
         const pcm16 = this.floatTo16BitPCM(chunk);
         const base64 = this.arrayBufferToBase64(pcm16.buffer);
         const timestampMs = Math.round(this.audioCtx.currentTime * 1000);
-        this.onChunk(base64, timestampMs);
+        try {
+          this.onChunk(base64, timestampMs);
+        } catch (error) {
+          console.error('[PCMProcessor] chunk handler failed', JSON.stringify({ code: 'PCM_CHUNK_HANDLER_FAILED', message: String(error) }));
+        }
       }
     };
 
     this.inputNode.connect(this.processorNode);
-    // Connect to destination via silent node to keep processor running
-    const silentGain = this.audioCtx.createGain();
-    silentGain.gain.value = 0;
-    this.processorNode.connect(silentGain);
-    silentGain.connect(this.audioCtx.destination);
+    // Nối qua gain im lặng để ScriptProcessor tiếp tục chạy mà không phát thêm âm thanh.
+    this.silentGainNode = this.audioCtx.createGain();
+    this.silentGainNode.gain.value = 0;
+    this.processorNode.connect(this.silentGainNode);
+    this.silentGainNode.connect(this.audioCtx.destination);
   }
 
   private downsample(buffer: Float32Array, inputSampleRate: number, outputSampleRate: number): Float32Array {
@@ -112,7 +117,7 @@ export class PCMProcessor {
     return output;
   }
 
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+  private arrayBufferToBase64(buffer: ArrayBufferLike): string {
     let binary = '';
     const bytes = new Uint8Array(buffer);
     const len = bytes.byteLength;
@@ -124,9 +129,22 @@ export class PCMProcessor {
 
   stop(): void {
     if (this.processorNode) {
-      this.processorNode.disconnect();
-      this.processorNode.onaudioprocess = null;
+      const processorNode = this.processorNode;
+      try {
+        // Gỡ cả chiều input để không giữ processor trong đồ thị Web Audio sau khi dừng.
+        this.inputNode.disconnect(processorNode);
+      } catch (error) {
+        console.warn('[PCMProcessor] input disconnect failed', JSON.stringify({ code: 'PCM_INPUT_DISCONNECT_FAILED', message: String(error) }));
+      }
+      processorNode.disconnect();
+      processorNode.onaudioprocess = null;
       this.processorNode = null;
     }
+    if (this.silentGainNode) {
+      this.silentGainNode.disconnect();
+      this.silentGainNode = null;
+    }
+    this.accumulatedSamples = [];
+    this.accumulatedLength = 0;
   }
 }

@@ -1,5 +1,7 @@
 # Báo cáo Benchmark Chất lượng Dịch tiếng Việt — VietDub AI
 
+> **Phạm vi quan trọng:** Đây là benchmark offline dùng `MockSTT`/`TranslationEngine` rule-based và tiêu chí chấm điểm tự động, không phải đánh giá human hoặc AI production. Điểm số không đóng browser/runtime release gate; xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md).
+
 **Quy mô kiểm thử:** 30 đoạn mẫu tiếng Anh chuẩn hóa theo PRD Mục 10.4  
 **Phạm vi bao phủ:** 8 lĩnh vực (Hội thoại, Khoa học, Tin tức, Công nghệ, Tài chính, Tốc độ nói nhanh, Giọng vùng miền, Môi trường ồn)  
 **Tiêu chí chấm điểm:** Thang điểm 1 đến 5 (Mục tiêu PRD: Trung bình ≥ 4.0/5.0)  

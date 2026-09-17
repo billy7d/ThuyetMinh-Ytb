@@ -3,7 +3,9 @@
 **Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension  
 **Mục tiêu:** Rà soát kiến trúc WebExtensions, tương tác DOM/Audio trên các trang video bên thứ ba (YouTube, Vimeo, Bilibili), quản lý tài nguyên bộ nhớ, bảo vệ hạn mức ngân sách và xử lý ràng buộc Cross-Origin.  
 **Ngày thực hiện:** 17/09/2026  
-**Trạng thái:** Hoàn thành  
+**Trạng thái:** Snapshot audit lịch sử; runtime extension hiện tại còn gate browser độc lập
+
+> **Đính chính 2026-09-17:** Các kết luận media/cleanup và test rate-limit trong tài liệu này không thay thế browser extension E2E. Chrome capture còn cần action invocation thật; Firefox temporary-install E2E chưa chạy được trong host. Evidence hiện tại nằm trong [P0 Review Fix Report](P0_REVIEW_FIX_REPORT.md).
 
 ---
 
@@ -35,7 +37,7 @@ Web Audio API nếu không được ngắt kết nối đúng cách sẽ giữ l
   - `MediaElementAudioSourceNode` / `MediaStreamAudioSourceNode`
   - `GainNode` (`originalGainNode`, `ttsGainNode`, `sttTapNode`)
   - `ScriptProcessorNode` (`processorNode`)
-- **Cơ chế dọn dẹp đã triển khai (`stopCapture()` / `handleFirefoxStopCapture()`):**
+- **Cơ chế dọn dẹp đã triển khai (`stopCapture()` / `cleanupFirefoxSession()`):**
   1. `PCMProcessor.stop()`: Gọi `processorNode.disconnect()` và gán `onaudioprocess = null` để garbage collector thu hồi buffer.
   2. `AudioMixer.disconnect()`: Ngắt kết nối tất cả các GainNodes và SourceNode khỏi audio destination.
   3. `AudioContext.close()`: Đóng luồng âm thanh phần cứng, giải phóng thread xử lý âm thanh thời gian thực.
@@ -46,7 +48,7 @@ Web Audio API nếu không được ngắt kết nối đúng cách sẽ giữ l
 - Nếu kết nối mạng gián đoạn, client có timeout 7 giây để tự hủy phiên, không duy trì socket treo.
 - Khi đóng tab hoặc điều hướng sang URL mới:
   - Cả Chrome Background và Firefox Background đều lắng nghe sự kiện `chrome.tabs.onRemoved` và `chrome.tabs.onUpdated`.
-  - Khi tab đang thu âm bị đóng hoặc chuyển trang, background lập tức gọi `handleStopSession()`, giải phóng socket và tài nguyên offscreen/content script ngay lập tức.
+  - Khi tab đang thu âm bị đóng hoặc chuyển trang, background gọi `sessionManager.stop()`, giải phóng socket và tài nguyên offscreen/content script.
 
 ### 2.3. Dọn dẹp Giao diện DOM
 - Subtitle overlay (`#vietdub-subtitle-container`) được tạo động bên trong container của video YouTube.
@@ -62,7 +64,7 @@ Web Audio API nếu không được ngắt kết nối đúng cách sẽ giữ l
 ### 3.1. Khắc phục Xung đột Tần suất Chunk (Rate Limiting Fix)
 - **Vấn đề trước đây:** `PCMProcessor` gửi buffer 4096 mẫu ở tần số 48kHz, phát sinh ~11.7 chunks/giây, vượt ngưỡng chặn của `CostTracker` (`rateLimitChunksPerSecond = 10`), gây ngắt kết nối đột ngột sau 1 giây.
 - **Đã khắc phục:** Đưa vào bộ đệm tích lũy mẫu (chunk accumulator) phát ra chính xác 4000 mẫu ở tần số 16kHz tương đương khung 250ms (4 chunks/giây).
-- **Kết quả kiểm thử:** Tốc độ 4 chunks/giây thấp hơn 60% so với ngưỡng giới hạn, loại trừ 100% rủi ro bị backend ngắt kết nối do vượt tần suất.
+- **Kết quả kiểm thử offline/integration:** Tốc độ 4 chunks/giây thấp hơn 60% so với ngưỡng giới hạn. Đây không phải đo runtime browser end-to-end.
 
 ### 3.2. Giới hạn Ngân sách Tự động (Budget Guard)
 - `CostTracker` được cấu hình ngưỡng ngân sách mặc định `$0.50` cho mỗi phiên (tương đương ~22 phút thuyết minh liên tục nếu dùng cloud API cao cấp).
@@ -77,7 +79,7 @@ Web Audio API nếu không được ngắt kết nối đúng cách sẽ giữ l
 
 ### 4.2. Giải pháp Đa Tầng Đã Triển khai
 1. **Đối với Firefox:**
-   - Ưu tiên sử dụng `video.captureStream()` hoặc `video.mozCaptureStream()`: API này thu thập luồng render trực tiếp từ pipeline media của phần tử video, không bị giới hạn bởi CORS taint như `createMediaElementSource`.
-   - Cơ chế fallback: Nếu `captureStream` không khả dụng, hệ thống tự động chuyển sang `createMediaElementSource`.
+   - Implementation hiện tại ưu tiên `createMediaElementSource(video)` để điều khiển đúng đường loa gốc.
+   - Nếu media element source thất bại, implementation fallback sang `video.captureStream()` hoặc `video.mozCaptureStream()` và điều chỉnh volume native của video; khả năng CORS vẫn cần browser validation thực tế.
 2. **Đối với Chrome:**
    - Chrome sử dụng `chrome.tabCapture.getMediaStreamId()`. Cơ chế này hoạt động ở cấp độ renderer của cả tab trình duyệt (Browser-level capture), hoàn toàn độc lập và miễn nhiễm với các ràng buộc CORS của từng phần tử DOM.

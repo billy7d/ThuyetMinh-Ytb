@@ -13,18 +13,19 @@ const outDir = path.resolve(__dirname, `dist/${target}`);
 
 console.log(`[Extension Build] Starting build for ${target.toUpperCase()} in ${outDir}...`);
 
-// 1. Clean output directory
+// 1. Xóa riêng artifact của target đang build.
 if (fs.existsSync(outDir)) {
   fs.rmSync(outDir, { recursive: true, force: true });
 }
 fs.mkdirSync(outDir, { recursive: true });
 
-// 2. Build Popup (and Chrome Offscreen document)
+// 2. Build Popup và offscreen HTML (chỉ Chrome) bằng Vite.
 console.log(`[Extension Build] Step 1: Building Popup & Web UI...`);
 await build({
   root: __dirname,
   configFile: false,
   plugins: [react()],
+  base: './',
   build: {
     outDir,
     emptyOutDir: false,
@@ -43,7 +44,7 @@ await build({
   }
 });
 
-// 3. Build Background Script (IIFE for Firefox, ES for Chrome service worker)
+// 3. Build background script theo runtime của từng trình duyệt.
 console.log(`[Extension Build] Step 2: Building Background Script...`);
 if (isFirefox) {
   await build({
@@ -88,7 +89,7 @@ if (isFirefox) {
   });
 }
 
-// 4. Build Content Script as STRICT STANDALONE IIFE (No imports, no shared chunks!)
+// 4. Build content script thành IIFE độc lập, không để lại import/export.
 console.log(`[Extension Build] Step 3: Building Standalone IIFE Content Script...`);
 await build({
   configFile: false,
@@ -111,20 +112,10 @@ await build({
   }
 });
 
-// 5. Copy Manifest
+// 5. Copy manifest sau cùng để artifact luôn khớp target.
 const manifestSource = isFirefox ? 'manifest.firefox.json' : 'manifest.chrome.json';
 const targetManifest = path.resolve(outDir, 'manifest.json');
 fs.copyFileSync(path.resolve(__dirname, manifestSource), targetManifest);
 console.log(`[Extension Build] Copied ${manifestSource} -> ${targetManifest}`);
-
-// 6. Ensure Offscreen HTML location for Chrome
-if (!isFirefox) {
-  const offscreenTargetDir = path.resolve(outDir, 'src/offscreen');
-  if (!fs.existsSync(offscreenTargetDir)) fs.mkdirSync(offscreenTargetDir, { recursive: true });
-  fs.copyFileSync(
-    path.resolve(__dirname, 'src/offscreen/offscreen.html'),
-    path.resolve(offscreenTargetDir, 'offscreen.html')
-  );
-}
 
 console.log(`[Extension Build] Successfully completed build for ${target.toUpperCase()}!\n`);

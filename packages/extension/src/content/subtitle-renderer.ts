@@ -91,10 +91,15 @@ export class SubtitleRenderer {
 
   hideSubtitle(segmentId?: string): void {
     if (segmentId && this.currentSegmentId !== segmentId) return;
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
     if (this.textEl) {
       this.textEl.style.display = 'none';
       this.textEl.textContent = '';
     }
+    this.currentSegmentId = null;
   }
 
   setFontSize(sizePx: number): void {

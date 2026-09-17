@@ -21,19 +21,10 @@ export default defineConfig(({ mode }) => {
           const targetManifest = path.resolve(outFullPath, 'manifest.json');
           fs.copyFileSync(path.resolve(__dirname, manifestSource), targetManifest);
           console.log(`[Extension Build] Copied ${manifestSource} -> ${targetManifest}`);
-
-          // Copy offscreen.html for chrome
-          if (!isFirefox) {
-            const offscreenDir = path.resolve(outFullPath, 'src/offscreen');
-            if (!fs.existsSync(offscreenDir)) fs.mkdirSync(offscreenDir, { recursive: true });
-            fs.copyFileSync(
-              path.resolve(__dirname, 'src/offscreen/offscreen.html'),
-              path.resolve(offscreenDir, 'offscreen.html')
-            );
-          }
         }
       }
     ],
+    base: './',
     build: {
       outDir,
       emptyOutDir: true,

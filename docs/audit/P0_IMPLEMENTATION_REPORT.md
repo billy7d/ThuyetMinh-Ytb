@@ -1,10 +1,12 @@
-# Báo cáo Tổng kết Triển khai & Kiểm thử P0 (P0 Implementation & Validation Report)
+# Báo cáo Lịch sử Triển khai & Kiểm thử P0 (P0 Implementation & Validation Report)
+
+> **Đính chính 2026-09-17:** Đây là snapshot lịch sử, không phải bằng chứng nghiệm thu hiện tại. Các claim `100% PASS` về E2E trong tài liệu này đã bị supersede bởi [P0 Review Fix Report](./P0_REVIEW_FIX_REPORT.md). Current Chrome capture cần action toolbar thật và Firefox extension E2E cần temporary-install runner.
 
 **Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension  
 **Mục tiêu:** Khắc phục triệt để lỗi kết nối trên Firefox, chuẩn hóa hệ thống đóng gói WebExtension, ổn định luồng âm thanh và giao tiếp IPC.  
 **Nhánh Git:** `fix/firefox-extension-reliability-p0`  
 **Ngày hoàn thành:** 17/09/2026  
-**Trạng thái:** Sẵn sàng Review (Ready for PR Review)  
+**Trạng thái:** Snapshot lịch sử — không dùng làm release gate
 
 ---
 
@@ -18,9 +20,9 @@
 | **P0.2: Tái cấu trúc Build System** | ✅ Đạt | Viết script multi-pass `packages/extension/build.mjs`. Đóng gói content script thành tệp IIFE độc lập 100% không `import`/`export`. Viết bộ kiểm định tự động `scripts/validate-extension-build.mjs`. |
 | **P0.3: Chuẩn hóa Giao tiếp & Handshake** | ✅ Đạt | Triển khai Handshake `CONTENT_PING` / `PONG` với cơ chế tự động inject content script nếu tab chưa có listener. Idempotent guard `__VIETDUB_CONTENT_INJECTED__`. |
 | **P0.4: Đồng bộ Vòng đời Phiên (Lifecycle)** | ✅ Đạt | Quản lý sự kiện đóng tab (`tabs.onRemoved`), chuyển trang (`tabs.onUpdated`). Chờ backend xác nhận `SESSION_READY` trước khi trả về thành công cho popup. |
-| **P0.5: Ổn định Âm thanh & Rate Limiting** | ✅ Đạt | `PCMProcessor` tích lũy mẫu theo khung 250ms (4.000 mẫu @ 16kHz = 4 chunks/giây), loại bỏ 100% nguy cơ vượt hạn mức 10 chunks/giây của `CostTracker`. Bổ sung `audioCtx.resume()` cho Firefox. Giữ nguyên STT tap khi mute âm thanh gốc. |
-| **P0.6: Cải tiến Popup UI & State Machine** | ✅ Đạt | State machine 5 trạng thái (`IDLE`, `INITIALIZING`, `ACTIVE`, `STOPPING`, `ERROR`). Cơ chế tự động thử lại 3 lần với exponential backoff. Phân loại lỗi tiếng Việt rõ ràng và hiển thị huy hiệu độ trễ thời gian thực. |
-| **P0.7: Kiểm thử Tự động E2E & Validation** | ✅ Đạt | 22 unit & integration tests (`vitest`), 15 E2E tests (`playwright`) chạy trên cả Chrome và Firefox thật. 100% tests pass. |
+| **P0.5: Ổn định Âm thanh & Rate Limiting** | ✅ Đạt trong code/integration | `PCMProcessor` tích lũy mẫu theo khung 250ms (4.000 mẫu @ 16kHz = 4 chunks/giây), giảm nguy cơ vượt hạn mức 10 chunks/giây của `CostTracker`. Bổ sung `audioCtx.resume()` cho Firefox. Giữ nguyên STT tap khi mute âm thanh gốc; runtime browser vẫn cần evidence. |
+| **P0.6: Cải tiến Popup UI & State Machine** | ⚠️ Lịch sử | Snapshot cũ ghi nhận state machine và auto-retry; bản review hiện tại dùng một START duy nhất, không retry/inject ngầm trong popup. |
+| **P0.7: Kiểm thử Tự động E2E & Validation** | ⚠️ Lịch sử | Các số liệu E2E cũ không phải acceptance hiện tại; xem matrix evidence trong `P0_REVIEW_FIX_REPORT.md`. |
 | **P0.8 - P0.14: Báo cáo Audit & Tài liệu** | ✅ Đạt | Hoàn thiện 4 tài liệu kỹ thuật chuyên sâu trong thư mục `docs/audit/`. |
 
 ### 1.2. Danh sách Tệp tin Đã Chỉnh sửa và Tạo mới
@@ -81,10 +83,9 @@
 - **Kết quả:** 22 passed, 0 failed (100% Pass)
 - **Thời gian chạy:** ~1.1 giây
 
-### 2.3. Kiểm thử Đầu-cuối Trình duyệt Thực (`playwright test`)
-- **Tổng số ca kiểm thử:** 15 tests (8 tests Firefox, 7 tests Chrome)
-- **Kết quả:** 15 passed, 0 failed (100% Pass)
-- **Thời gian chạy:** ~16.2 giây
+### 2.3. Kiểm thử Đầu-cuối Trình duyệt Thực (`playwright test`) — dữ liệu lịch sử
+- Các test cũ từng dùng browser/page harness không đủ để chứng minh action invocation và temporary-install của extension.
+- Không dùng claim `15 passed, 0 failed` của snapshot này làm release evidence; trạng thái hiện tại nằm trong `P0_REVIEW_FIX_REPORT.md`.
 
 ---
 
