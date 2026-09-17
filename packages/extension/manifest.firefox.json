@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "VietDub AI - Thuyết minh tiếng Việt thời gian thực",
+  "version": "1.0.0",
+  "description": "Thuyết minh và phụ đề video tiếng Anh sang tiếng Việt theo thời gian thực cho trình duyệt.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background/firefox-background.js"],
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "VietDub AI"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "vietdub-ai@vietdub.local",
+      "strict_min_version": "109.0"
+    }
+  }
+}
