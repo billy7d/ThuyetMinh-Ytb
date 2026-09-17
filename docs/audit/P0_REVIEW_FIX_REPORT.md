@@ -5,7 +5,7 @@
 **Nhánh:** `fix/firefox-extension-reliability-p0`
 **Phạm vi:** sửa build artifact, handshake content script, session lifecycle, audio graph, popup state và regression tests.
 
-**CI_QUALITY:** PASS trên HEAD `7a1b734d012e338352bc2eddb77cf6f111deab5d`
+**CI_QUALITY:** PASS trên HEAD `fa2557f6e32d029bf4c13844eb61ef58c170ca42`
 **BROWSER_ACCEPTANCE:** BLOCKED — chưa có desktop toolbar/YouTube acceptance thực tế
 **MERGE_READY:** NO
 **PR:** [Draft PR #1](https://github.com/billy7d/ThuyetMinh-Ytb/pull/1)
@@ -14,22 +14,22 @@
 
 | Gate | Kết quả hiện tại | Bằng chứng |
 | :--- | :---: | :--- |
-| Typecheck shared/extension/backend/tests | PASS | Local clean checkout và CI job [typecheck workspaces](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540450) |
-| Extension build + artifact validator | PASS | Local target độc lập/full build và CI jobs [build Firefox](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540688), [build Chrome](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540356), [full build](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540486) |
-| Unit tests | PASS | 4 files, 17 tests; CI [unit tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540607) |
-| Integration tests | PASS | 5 files, 15 tests, gồm session race/handshake/audio graph/build regression; CI [integration tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540301) |
-| Bundle smoke | PASS | 2 tests, Chrome/Firefox content bundle parse được như IIFE; CI [extension bundle smoke](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762/job/105303540413) |
+| Typecheck shared/extension/backend/tests | PASS | Local clean checkout và CI job [typecheck workspaces](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902390) |
+| Extension build + artifact validator | PASS | Local target độc lập/full build và CI jobs [build Firefox](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902222), [build Chrome](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902446), [full build](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902547) |
+| Unit tests | PASS | 4 files, 17 tests; CI [unit tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902374) |
+| Integration tests | PASS | 5 files, 15 tests, gồm session race/handshake/audio graph/build regression; CI [integration tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902429) |
+| Bundle smoke | PASS | 2 tests, Chrome/Firefox content bundle parse được như IIFE; CI [extension bundle smoke](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205/job/105304902427) |
 | Chrome extension artifact — PING | PASS (Edge Chromium fallback) | Nạp artifact unpacked thật, service worker/content script thật; không dùng `page.addScriptTag` hay mock `chrome` |
 | Chrome capture lifecycle | BLOCKED | `tabCapture` trả `PERMISSION_DENIED`: action toolbar chưa được invoke trong CDP harness; 3 case được skip có lý do, không tính PASS |
 | Firefox media page smoke | BLOCKED | Playwright Firefox trong host hiện không tạo được page (`browserContext.newPage` lỗi nội bộ) |
 | Firefox extension runtime E2E | BLOCKED | Chưa có `web-ext`/temporary-install runner; không giữ lại test injection giả |
-| CI/PR checks | PASS | Workflow [Quality run #35251154762](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762), 9/9 job PASS trên đúng HEAD `7a1b734d012e338352bc2eddb77cf6f111deab5d` |
+| CI/PR checks | PASS | Workflow [Quality run #35251562205](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205), 9/9 job PASS trên đúng HEAD `fa2557f6e32d029bf4c13844eb61ef58c170ca42` |
 
 ## CI quality evidence
 
 Workflow: `.github/workflows/quality.yml` — trigger `pull_request`, push branch `fix/firefox-extension-reliability-p0` và `workflow_dispatch`; mỗi job dùng Node `24.18.0`, npm cache, `npm ci`, timeout hữu hạn và `contents: read`.
 
-Canonical PR run: [Quality #35251154762](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762). Push run tương ứng: [Quality #35251148464](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251148464). Cả hai đều `completed/success` trên HEAD `7a1b734d012e338352bc2eddb77cf6f111deab5d`.
+Canonical PR run: [Quality #35251562205](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205). Push run tương ứng: [Quality #35251558791](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251558791). Cả hai đều `completed/success` trên HEAD `fa2557f6e32d029bf4c13844eb61ef58c170ca42`.
 
 | Job | Kết quả |
 | :--- | :---: |
@@ -91,7 +91,7 @@ Chrome `tabCapture` bắt buộc extension phải được invoke trên tab hi�
 
 ## PR #1 và quyền GitHub
 
-`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. GitHub API read-only xác nhận PR #1 vẫn `open`, `draft=true`, base `aa0d620c150e89807b8d97f96ffa86c1fe89fb9a`, head `7a1b734d012e338352bc2eddb77cf6f111deab5d`.
+`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. GitHub API read-only xác nhận PR #1 vẫn `open`, `draft=true`, base `aa0d620c150e89807b8d97f96ffa86c1fe89fb9a`, head `fa2557f6e32d029bf4c13844eb61ef58c170ca42`.
 
 Vì không có authenticated write channel, mô tả PR chưa được cập nhật trực tiếp. Operator có thể dán nội dung sau vào PR #1 và giữ nguyên trạng thái Draft:
 
@@ -113,7 +113,7 @@ Vì không có authenticated write channel, mô tả PR chưa được cập nh�
 - Thêm `.github/workflows/quality.yml` cho pull request (kể cả Draft), push branch và workflow dispatch.
 - CI dùng Node 24.18.0, npm cache, `npm ci`, `contents: read`, timeout và concurrency.
 - Quality gates: shared/backend build, Firefox/Chrome build độc lập, full build + artifact validator, typecheck, unit, integration, bundle smoke và `git diff --check`.
-- Canonical run: https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251154762 — 9/9 jobs PASS trên `7a1b734d012e338352bc2eddb77cf6f111deab5d`.
+- Canonical run: https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35251562205 — 9/9 jobs PASS trên `fa2557f6e32d029bf4c13844eb61ef58c170ca42`.
 
 ## Test đã xác minh
 
