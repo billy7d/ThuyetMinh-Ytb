@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "build": "npm run build:chrome && npm run build:firefox",
+    "prebuild:chrome": "npm run build -w @vietdub/shared",
     "build:chrome": "node build.mjs --chrome",
+    "prebuild:firefox": "npm run build -w @vietdub/shared",
     "build:firefox": "node build.mjs --firefox",
     "typecheck": "tsc --noEmit"
   },
