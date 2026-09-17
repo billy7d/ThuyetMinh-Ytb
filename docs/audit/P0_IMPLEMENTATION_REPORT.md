@@ -2,10 +2,10 @@
 
 > **Đính chính 2026-09-17:** Đây là snapshot lịch sử, không phải bằng chứng nghiệm thu hiện tại. Các claim `100% PASS` về E2E trong tài liệu này đã bị supersede bởi [P0 Review Fix Report](./P0_REVIEW_FIX_REPORT.md). Current Chrome capture cần action toolbar thật và Firefox extension E2E cần temporary-install runner.
 
-**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension  
-**Mục tiêu:** Khắc phục triệt để lỗi kết nối trên Firefox, chuẩn hóa hệ thống đóng gói WebExtension, ổn định luồng âm thanh và giao tiếp IPC.  
-**Nhánh Git:** `fix/firefox-extension-reliability-p0`  
-**Ngày hoàn thành:** 17/09/2026  
+**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension
+**Mục tiêu:** Khắc phục triệt để lỗi kết nối trên Firefox, chuẩn hóa hệ thống đóng gói WebExtension, ổn định luồng âm thanh và giao tiếp IPC.
+**Nhánh Git:** `fix/firefox-extension-reliability-p0`
+**Ngày hoàn thành:** 17/09/2026
 **Trạng thái:** Snapshot lịch sử — không dùng làm release gate
 
 ---

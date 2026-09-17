@@ -1,8 +1,8 @@
 # Phân tích Khoảng cách AI Pipeline: Mock vs Real Production (AI Pipeline Gap Analysis)
 
-**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension  
-**Mục tiêu:** Đánh giá hiện trạng pipeline giả lập (Mock Pipeline), phân tích khoảng cách kỹ thuật với các giải pháp AI thực tế, và xây dựng lộ trình nâng cấp đạt mục tiêu độ trễ (< 1.5s) và chi phí (< $0.50/giờ).  
-**Ngày lập:** 17/09/2026  
+**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension
+**Mục tiêu:** Đánh giá hiện trạng pipeline giả lập (Mock Pipeline), phân tích khoảng cách kỹ thuật với các giải pháp AI thực tế, và xây dựng lộ trình nâng cấp đạt mục tiêu độ trễ (< 1.5s) và chi phí (< $0.50/giờ).
+**Ngày lập:** 17/09/2026
 
 ---
 

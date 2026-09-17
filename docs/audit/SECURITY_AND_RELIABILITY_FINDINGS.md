@@ -1,8 +1,8 @@
 # Báo cáo Đánh giá Bảo mật & Độ Ổn định Mở rộng (Security & Reliability Audit) — VietDub AI
 
-**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension  
-**Mục tiêu:** Rà soát kiến trúc WebExtensions, tương tác DOM/Audio trên các trang video bên thứ ba (YouTube, Vimeo, Bilibili), quản lý tài nguyên bộ nhớ, bảo vệ hạn mức ngân sách và xử lý ràng buộc Cross-Origin.  
-**Ngày thực hiện:** 17/09/2026  
+**Dự án:** VietDub AI — Real-time Vietnamese Dubbing Extension
+**Mục tiêu:** Rà soát kiến trúc WebExtensions, tương tác DOM/Audio trên các trang video bên thứ ba (YouTube, Vimeo, Bilibili), quản lý tài nguyên bộ nhớ, bảo vệ hạn mức ngân sách và xử lý ràng buộc Cross-Origin.
+**Ngày thực hiện:** 17/09/2026
 **Trạng thái:** Snapshot audit lịch sử; runtime extension hiện tại còn gate browser độc lập
 
 > **Đính chính 2026-09-17:** Các kết luận media/cleanup và test rate-limit trong tài liệu này không thay thế browser extension E2E. Chrome capture còn cần action invocation thật; Firefox temporary-install E2E chưa chạy được trong host. Evidence hiện tại nằm trong [P0 Review Fix Report](P0_REVIEW_FIX_REPORT.md).

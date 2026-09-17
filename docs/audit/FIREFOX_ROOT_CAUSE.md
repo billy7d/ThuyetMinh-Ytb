@@ -2,11 +2,11 @@
 
 > **Đính chính 2026-09-17:** Phân tích nguyên nhân và hướng sửa trong tài liệu này vẫn có giá trị, nhưng claim về E2E Firefox extension ở phần cuối là kế hoạch/lịch sử, chưa phải evidence hiện tại. Xem [P0 Review Fix Report](./P0_REVIEW_FIX_REPORT.md).
 
-**Mã lỗi:** `❌ Could not establish connection. Receiving end does not exist.`  
-**Nền tảng báo lỗi:** Mozilla Firefox Desktop (và tiềm ẩn trên Google Chrome)  
-**Địa chỉ kiểm thử:** YouTube (`https://www.youtube.com/watch?v=...`)  
-**Mức độ ưu tiên:** P0 — Blocker  
-**Ngày thực hiện:** 17/09/2026  
+**Mã lỗi:** `❌ Could not establish connection. Receiving end does not exist.`
+**Nền tảng báo lỗi:** Mozilla Firefox Desktop (và tiềm ẩn trên Google Chrome)
+**Địa chỉ kiểm thử:** YouTube (`https://www.youtube.com/watch?v=...`)
+**Mức độ ưu tiên:** P0 — Blocker
+**Ngày thực hiện:** 17/09/2026
 
 ---
 
