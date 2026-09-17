@@ -10,6 +10,10 @@ export class PCMProcessor {
   private targetSampleRate: number;
   private bufferSize: number;
 
+  private accumulatedSamples: Float32Array[] = [];
+  private accumulatedLength: number = 0;
+  private targetChunkSamples: number; // 4000 samples = 250ms at 16kHz
+
   constructor(
     audioCtx: AudioContext,
     inputNode: AudioNode,
@@ -22,6 +26,8 @@ export class PCMProcessor {
     this.onChunk = onChunk;
     this.targetSampleRate = targetSampleRate;
     this.bufferSize = bufferSize;
+    // 250ms chunk = 0.25 * targetSampleRate (e.g. 4000 samples) -> 4 chunks/sec
+    this.targetChunkSamples = Math.round(targetSampleRate * 0.25);
 
     this.initProcessor();
   }
@@ -33,11 +39,37 @@ export class PCMProcessor {
     this.processorNode.onaudioprocess = (e) => {
       const inputData = e.inputBuffer.getChannelData(0);
       const resampled = this.downsample(inputData, this.audioCtx.sampleRate, this.targetSampleRate);
-      const pcm16 = this.floatTo16BitPCM(resampled);
-      const base64 = this.arrayBufferToBase64(pcm16.buffer);
-      const timestampMs = Math.round(this.audioCtx.currentTime * 1000);
 
-      this.onChunk(base64, timestampMs);
+      this.accumulatedSamples.push(resampled);
+      this.accumulatedLength += resampled.length;
+
+      // When accumulated length reaches 250ms, combine and emit
+      while (this.accumulatedLength >= this.targetChunkSamples) {
+        const chunk = new Float32Array(this.targetChunkSamples);
+        let offset = 0;
+
+        while (offset < this.targetChunkSamples && this.accumulatedSamples.length > 0) {
+          const first = this.accumulatedSamples[0];
+          const needed = this.targetChunkSamples - offset;
+
+          if (first.length <= needed) {
+            chunk.set(first, offset);
+            offset += first.length;
+            this.accumulatedSamples.shift();
+          } else {
+            chunk.set(first.subarray(0, needed), offset);
+            this.accumulatedSamples[0] = first.subarray(needed);
+            offset += needed;
+          }
+        }
+
+        this.accumulatedLength -= this.targetChunkSamples;
+
+        const pcm16 = this.floatTo16BitPCM(chunk);
+        const base64 = this.arrayBufferToBase64(pcm16.buffer);
+        const timestampMs = Math.round(this.audioCtx.currentTime * 1000);
+        this.onChunk(base64, timestampMs);
+      }
     };
 
     this.inputNode.connect(this.processorNode);

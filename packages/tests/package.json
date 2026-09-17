@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run --dir unit",
-    "test:integration": "vitest run --dir integration",
+    "test:unit": "vitest run unit",
+    "test:integration": "vitest run integration",
     "test:spike": "node dist/spike/run-spike.js",
     "test:e2e": "playwright test",
     "test:e2e:chrome": "playwright test --project=chromium",

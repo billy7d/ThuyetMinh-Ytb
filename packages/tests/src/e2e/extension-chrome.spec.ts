@@ -98,4 +98,51 @@ test.describe('Google Chrome Extension E2E Flow', () => {
     expect(checkResult.originalRestored).toBe(true);
     expect(checkResult.errors.length).toBe(0);
   });
+
+  test('6. Should inject built Chrome content script bundle without syntax error and respond to PING', async () => {
+    await page.evaluate(() => {
+      (window as any).__vietdub_listeners = [];
+      (window as any).chrome = {
+        runtime: {
+          onMessage: {
+            addListener: (cb: any) => {
+              (window as any).__vietdub_listeners.push(cb);
+            }
+          },
+          sendMessage: () => Promise.resolve()
+        }
+      };
+    });
+
+    const contentJsPath = path.resolve(__dirname, '../../../extension/dist/chrome/content/content.js');
+    await page.addScriptTag({ path: contentJsPath });
+
+    const isInjected = await page.evaluate(() => (window as any).__VIETDUB_CONTENT_INJECTED__);
+    expect(isInjected).toBe(true);
+
+    const pingResponse = await page.evaluate(async () => {
+      return new Promise((resolve) => {
+        const listener = (window as any).__vietdub_listeners[0];
+        if (!listener) {
+          resolve({ error: 'No listener registered' });
+          return;
+        }
+        listener({ type: 'CONTENT_PING' }, {}, (res: any) => {
+          resolve(res);
+        });
+      });
+    });
+
+    expect(pingResponse).toBeTruthy();
+    expect((pingResponse as any).ready).toBe(true);
+    expect((pingResponse as any).hasVideo).toBe(true);
+  });
+
+  test('7. Should verify Chrome built content script is standalone IIFE bundle with zero module imports', () => {
+    const contentJsPath = path.resolve(__dirname, '../../../extension/dist/chrome/content/content.js');
+    const contentCode = fs.readFileSync(contentJsPath, 'utf-8');
+    expect(contentCode).toMatch(/^\s*\(function/);
+    expect(contentCode).not.toMatch(/^import\s+/m);
+    expect(contentCode).not.toMatch(/^export\s+/m);
+  });
 });

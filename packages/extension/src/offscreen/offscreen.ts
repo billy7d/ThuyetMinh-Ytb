@@ -68,31 +68,78 @@ async function startCapture(
 
   // 2. Setup AudioContext and AudioMixer
   audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
   const sourceNode = audioCtx.createMediaStreamSource(mediaStream);
   audioMixer = new AudioMixer(audioCtx, sourceNode);
 
-  // 3. Connect WebSocket to Backend
-  ws = new WebSocket(wsUrl);
+  // 3. Connect WebSocket to Backend and wait for SESSION_READY
+  await new Promise<void>((resolve, reject) => {
+    let isResolved = false;
+    const connectionTimeout = setTimeout(() => {
+      if (!isResolved) {
+        isResolved = true;
+        stopCapture();
+        reject(new Error('Hết thời gian chờ phản hồi từ máy chủ AI (Timeout). Vui lòng đảm bảo backend đang chạy.'));
+      }
+    }, 7000);
 
-  ws.onopen = () => {
-    const startMsg: ClientMessage = {
-      type: 'SESSION_START',
-      sessionId,
-      timestamp: Date.now(),
-      mode,
-      audioSampleRate: 16000
-    };
-    ws?.send(JSON.stringify(startMsg));
-  };
-
-  ws.onmessage = async (event) => {
     try {
-      const serverMsg = JSON.parse(event.data) as ServerMessage;
-      handleServerMessage(serverMsg);
-    } catch (err) {
-      console.error('[Offscreen] WS parse error:', err);
+      ws = new WebSocket(wsUrl);
+    } catch (wsErr: any) {
+      clearTimeout(connectionTimeout);
+      reject(new Error(`Không thể kết nối đến máy chủ WebSocket (${wsUrl}): ${wsErr.message}`));
+      return;
     }
-  };
+
+    ws.onopen = () => {
+      const startMsg: ClientMessage = {
+        type: 'SESSION_START',
+        sessionId,
+        timestamp: Date.now(),
+        mode,
+        audioSampleRate: 16000
+      };
+      ws?.send(JSON.stringify(startMsg));
+    };
+
+    ws.onerror = (err) => {
+      console.error('[Offscreen] WebSocket error:', err);
+      if (!isResolved) {
+        isResolved = true;
+        clearTimeout(connectionTimeout);
+        stopCapture();
+        reject(new Error('Không thể kết nối với máy chủ xử lý thuyết minh (ws://localhost:8080). Vui lòng kiểm tra backend.'));
+      }
+    };
+
+    ws.onclose = (ev) => {
+      console.log(`[Offscreen] WebSocket closed (${ev.code}): ${ev.reason}`);
+      if (!isResolved) {
+        isResolved = true;
+        clearTimeout(connectionTimeout);
+        stopCapture();
+        reject(new Error('Máy chủ WebSocket đã đóng kết nối trước khi khởi tạo phiên thành công.'));
+      }
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const serverMsg = JSON.parse(event.data) as ServerMessage;
+        if (serverMsg.type === 'SESSION_READY') {
+          if (!isResolved) {
+            isResolved = true;
+            clearTimeout(connectionTimeout);
+            resolve();
+          }
+        }
+        handleServerMessage(serverMsg);
+      } catch (err) {
+        console.error('[Offscreen] WS parse error:', err);
+      }
+    };
+  });
 
   // 4. Setup PCM Streaming from STT Tap
   pcmProcessor = new PCMProcessor(

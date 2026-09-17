@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "build": "npm run build:chrome && npm run build:firefox",
-    "build:chrome": "vite build --mode chrome",
-    "build:firefox": "vite build --mode firefox",
+    "build:chrome": "node build.mjs --chrome",
+    "build:firefox": "node build.mjs --firefox",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

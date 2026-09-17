@@ -1,22 +1,59 @@
 import React, { useState, useEffect } from 'react';
 import { OperationMode, AudioMixerConfig, DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME } from '@vietdub/shared';
 
+type SessionState = 'IDLE' | 'INITIALIZING' | 'ACTIVE' | 'STOPPING' | 'ERROR';
+
 export const Popup: React.FC = () => {
+  const [sessionState, setSessionState] = useState<SessionState>('IDLE');
   const [hasVideo, setHasVideo] = useState<boolean>(true);
   const [videoTitle, setVideoTitle] = useState<string>('');
-  const [isCapturing, setIsCapturing] = useState<boolean>(false);
-  const [statusText, setStatusText] = useState<string>('Đã tắt');
+  const [statusText, setStatusText] = useState<string>('Sẵn sàng');
   const [mode, setMode] = useState<OperationMode>(DEFAULT_MODE);
   const [originalVolume, setOriginalVolume] = useState<number>(DEFAULT_ORIGINAL_VOLUME);
   const [originalMuted, setOriginalMuted] = useState<boolean>(false);
   const [ttsVolume, setTtsVolume] = useState<number>(DEFAULT_TTS_VOLUME);
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorHint, setErrorHint] = useState<string | null>(null);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+
+  // Helper to categorize errors and provide actionable hints
+  const classifyError = (rawError: string): { message: string; hint: string } => {
+    const lower = (rawError || '').toLowerCase();
+    if (
+      lower.includes('localhost:8080') ||
+      lower.includes('websocket') ||
+      lower.includes('econnrefused') ||
+      lower.includes('máy chủ ai') ||
+      lower.includes('timeout') ||
+      lower.includes('closed before')
+    ) {
+      return {
+        message: 'Không thể kết nối máy chủ AI (ws://localhost:8080).',
+        hint: 'Vui lòng mở terminal trong thư mục dự án và chạy: npm run dev:server'
+      };
+    }
+    if (lower.includes('video') || lower.includes('không tìm thấy')) {
+      return {
+        message: 'Không tìm thấy thẻ video trên trang này.',
+        hint: 'Hãy mở video YouTube và bấm Play để bắt đầu.'
+      };
+    }
+    if (lower.includes('tabcapture') || lower.includes('permission') || lower.includes('notallowederror')) {
+      return {
+        message: 'Không có quyền truy cập âm thanh tab.',
+        hint: 'Vui lòng cấp quyền thu âm tab trong trình duyệt và thử lại.'
+      };
+    }
+    return {
+      message: rawError || 'Đã xảy ra lỗi không xác định.',
+      hint: 'Hãy thử tải lại trang (F5) hoặc khởi động lại extension.'
+    };
+  };
 
   const checkVideoInTab = (tabId: number, isKnownVideo: boolean, attempt = 1) => {
     chrome.tabs.sendMessage(tabId, { type: 'CHECK_VIDEO' }, (res) => {
       if (chrome.runtime.lastError || !res) {
-        // Content script might not be injected yet (e.g. tab opened before extension loaded)
         if (attempt === 1) {
           const scripting = (chrome as any).scripting;
           if (scripting?.executeScript) {
@@ -64,9 +101,12 @@ export const Popup: React.FC = () => {
         // Query session status from background
         chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res) => {
           if (res) {
-            setIsCapturing(res.isCapturing);
             if (res.isCapturing) {
+              setSessionState('ACTIVE');
               setStatusText('Đang thuyết minh');
+            } else {
+              setSessionState('IDLE');
+              setStatusText('Sẵn sàng');
             }
             if (res.mode) setMode(res.mode);
             if (res.mixerConfig) {
@@ -78,67 +118,117 @@ export const Popup: React.FC = () => {
         });
       }
     });
+
+    // 2. Listen for latency metrics & session state updates
+    const messageListener = (msg: any) => {
+      if (msg.type === 'LATENCY_METRIC' && msg.totalPipelineMs) {
+        setLatencyMs(Math.round(msg.totalPipelineMs));
+      }
+      if (msg.type === 'ERROR' && msg.fatal) {
+        setSessionState('ERROR');
+        const classified = classifyError(msg.message);
+        setErrorMessage(classified.message);
+        setErrorHint(classified.hint);
+        setStatusText('Lỗi kết nối');
+      }
+    };
+    chrome.runtime.onMessage.addListener(messageListener);
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(messageListener);
+    };
   }, []);
 
-  const handleStart = () => {
-    if (!activeTabId) return;
-    setStatusText('Đang khởi tạo thuyết minh...');
-    setErrorMessage(null);
-
-    // Make sure content script is injected
-    const startAction = () => {
+  const executeStart = (tabId: number, retryAttempt = 0): Promise<void> => {
+    return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         {
           type: 'START_SESSION',
-          tabId: activeTabId,
+          tabId,
           mode,
           mixerConfig: { originalVolume, originalMuted, ttsVolume }
         },
         (res) => {
-          if (res?.success) {
-            setIsCapturing(true);
-            setStatusText('Đang thuyết minh');
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (res?.success) {
+            resolve();
           } else {
-            setIsCapturing(false);
-            setStatusText('Đã tắt');
-            setErrorMessage(res?.error || 'Không thể bắt đầu phiên thu âm');
+            reject(new Error(res?.error || 'Không thể bắt đầu phiên'));
           }
         }
       );
-    };
+    });
+  };
 
+  const handleStartWithRetry = async () => {
+    if (!activeTabId) return;
+    setSessionState('INITIALIZING');
+    setStatusText('Đang kết nối...');
+    setErrorMessage(null);
+    setErrorHint(null);
+
+    // Step 1: Ensure content script injection if possible
     const scripting = (chrome as any).scripting;
     if (scripting?.executeScript) {
-      scripting.executeScript({
-        target: { tabId: activeTabId },
-        files: ['content/content.js']
-      }).then(() => {
-        setTimeout(startAction, 200);
-      }).catch(() => {
-        startAction();
-      });
-    } else {
-      startAction();
+      try {
+        await scripting.executeScript({
+          target: { tabId: activeTabId },
+          files: ['content/content.js']
+        });
+      } catch {
+        // Content script might already exist or restricted page
+      }
     }
+
+    // Step 2: Retry loop (up to 3 attempts with backoff)
+    const MAX_ATTEMPTS = 3;
+    let lastErr: any = null;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        if (attempt > 1) {
+          setStatusText(`Đang thử lại lần ${attempt}/${MAX_ATTEMPTS}...`);
+          await new Promise((r) => setTimeout(r, 400 * Math.pow(2, attempt - 2)));
+        }
+        await executeStart(activeTabId, attempt);
+        setSessionState('ACTIVE');
+        setStatusText('Đang thuyết minh');
+        return;
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`[POPUP] Start attempt ${attempt} failed:`, err);
+      }
+    }
+
+    // All attempts failed
+    setSessionState('ERROR');
+    setStatusText('Lỗi kết nối');
+    const classified = classifyError(lastErr?.message || '');
+    setErrorMessage(classified.message);
+    setErrorHint(classified.hint);
   };
 
   const handleStop = () => {
+    setSessionState('STOPPING');
+    setStatusText('Đang dừng...');
     chrome.runtime.sendMessage({ type: 'STOP_SESSION' }, () => {
-      setIsCapturing(false);
-      setStatusText('Đã tắt');
+      setSessionState('IDLE');
+      setStatusText('Sẵn sàng');
+      setLatencyMs(null);
     });
   };
 
   const handleModeSelect = (newMode: OperationMode) => {
     setMode(newMode);
-    if (isCapturing) {
+    if (sessionState === 'ACTIVE') {
       chrome.runtime.sendMessage({ type: 'CHANGE_MODE', mode: newMode });
     }
   };
 
   const handleOriginalVolumeChange = (val: number) => {
     setOriginalVolume(val);
-    if (isCapturing) {
+    if (sessionState === 'ACTIVE') {
       chrome.runtime.sendMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { originalVolume: val }
@@ -148,7 +238,7 @@ export const Popup: React.FC = () => {
 
   const handleOriginalMuteToggle = (muted: boolean) => {
     setOriginalMuted(muted);
-    if (isCapturing) {
+    if (sessionState === 'ACTIVE') {
       chrome.runtime.sendMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { originalMuted: muted }
@@ -158,7 +248,7 @@ export const Popup: React.FC = () => {
 
   const handleTtsVolumeChange = (val: number) => {
     setTtsVolume(val);
-    if (isCapturing) {
+    if (sessionState === 'ACTIVE') {
       chrome.runtime.sendMessage({
         type: 'UPDATE_MIXER_CONFIG',
         config: { ttsVolume: val }
@@ -171,7 +261,12 @@ export const Popup: React.FC = () => {
       {/* Header */}
       <div style={styles.header}>
         <h1 style={styles.title}>VietDub AI</h1>
-        <div style={styles.badge(isCapturing)}>{statusText}</div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {sessionState === 'ACTIVE' && latencyMs !== null && (
+            <div style={styles.latencyBadge}>⚡ {latencyMs}ms</div>
+          )}
+          <div style={styles.badge(sessionState)}>{statusText}</div>
+        </div>
       </div>
       <div style={styles.subHeader}>Thuyết minh tiếng Việt theo thời gian thực</div>
 
@@ -227,7 +322,17 @@ export const Popup: React.FC = () => {
 
       {errorMessage && (
         <div style={styles.alertError}>
-          ❌ {errorMessage}
+          <div style={{ fontWeight: 600 }}>❌ {errorMessage}</div>
+          {errorHint && <div style={styles.errorHint}>💡 {errorHint}</div>}
+          <div style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              style={styles.btnRetry}
+              onClick={handleStartWithRetry}
+            >
+              🔄 Thử lại
+            </button>
+          </div>
         </div>
       )}
 
@@ -304,17 +409,21 @@ export const Popup: React.FC = () => {
 
       {/* Action Button */}
       <div style={styles.actionContainer}>
-        {!isCapturing ? (
+        {sessionState === 'ACTIVE' ? (
+          <button style={styles.btnDanger} onClick={handleStop}>
+            Dừng thuyết minh
+          </button>
+        ) : sessionState === 'INITIALIZING' || sessionState === 'STOPPING' ? (
+          <button style={styles.btnDisabled} disabled>
+            {statusText}
+          </button>
+        ) : (
           <button
             style={styles.btnPrimary}
-            onClick={handleStart}
+            onClick={handleStartWithRetry}
             disabled={!hasVideo && !videoTitle.toLowerCase().includes('youtube')}
           >
             Bắt đầu thuyết minh
-          </button>
-        ) : (
-          <button style={styles.btnDanger} onClick={handleStop}>
-            Dừng thuyết minh
           </button>
         )}
       </div>
@@ -342,14 +451,56 @@ const styles: Record<string, any> = {
     margin: 0,
     color: '#38bdf8'
   },
-  badge: (active: boolean) => ({
+  latencyBadge: {
     fontSize: 11,
-    padding: '3px 8px',
-    borderRadius: 12,
-    backgroundColor: active ? '#166534' : '#3f3f46',
-    color: active ? '#4ade80' : '#a1a1aa',
+    padding: '3px 6px',
+    borderRadius: 6,
+    backgroundColor: '#064e3b',
+    color: '#34d399',
     fontWeight: 600
-  }),
+  },
+  badge: (state: SessionState) => {
+    switch (state) {
+      case 'ACTIVE':
+        return {
+          fontSize: 11,
+          padding: '3px 8px',
+          borderRadius: 12,
+          backgroundColor: '#166534',
+          color: '#4ade80',
+          fontWeight: 600
+        };
+      case 'INITIALIZING':
+      case 'STOPPING':
+        return {
+          fontSize: 11,
+          padding: '3px 8px',
+          borderRadius: 12,
+          backgroundColor: '#854d0e',
+          color: '#fef08a',
+          fontWeight: 600
+        };
+      case 'ERROR':
+        return {
+          fontSize: 11,
+          padding: '3px 8px',
+          borderRadius: 12,
+          backgroundColor: '#7f1d1d',
+          color: '#fca5a5',
+          fontWeight: 600
+        };
+      case 'IDLE':
+      default:
+        return {
+          fontSize: 11,
+          padding: '3px 8px',
+          borderRadius: 12,
+          backgroundColor: '#3f3f46',
+          color: '#a1a1aa',
+          fontWeight: 600
+        };
+    }
+  },
   subHeader: {
     fontSize: 12,
     color: '#71717a',
@@ -370,9 +521,25 @@ const styles: Record<string, any> = {
     border: '1px solid #991b1b',
     color: '#fca5a5',
     fontSize: 12,
-    padding: 8,
+    padding: 10,
     borderRadius: 6,
     marginBottom: 12
+  },
+  errorHint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#fed7aa',
+    lineHeight: 1.4
+  },
+  btnRetry: {
+    padding: '4px 10px',
+    backgroundColor: '#991b1b',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 600
   },
   section: {
     marginBottom: 16
@@ -451,5 +618,16 @@ const styles: Record<string, any> = {
     fontSize: 14,
     fontWeight: 600,
     cursor: 'pointer'
+  },
+  btnDisabled: {
+    width: '100%',
+    padding: '10px 0',
+    backgroundColor: '#3f3f46',
+    color: '#a1a1aa',
+    border: 'none',
+    borderRadius: 8,
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: 'not-allowed'
   }
 };

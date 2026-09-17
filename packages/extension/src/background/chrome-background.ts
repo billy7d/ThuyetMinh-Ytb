@@ -124,3 +124,18 @@ async function handleStopSession(): Promise<void> {
   currentSessionId = null;
   currentTabId = null;
 }
+
+// Tab lifecycle management
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === currentTabId) {
+    console.log(`[CHROME-BACKGROUND] Captured tab ${tabId} closed, cleaning up session`);
+    handleStopSession().catch(() => {});
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId === currentTabId && changeInfo.status === 'loading' && changeInfo.url) {
+    console.log(`[CHROME-BACKGROUND] Captured tab ${tabId} navigated to new URL, stopping session`);
+    handleStopSession().catch(() => {});
+  }
+});
