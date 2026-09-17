@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VietDub AI - P0 Audio Capture Feasibility Spike</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; background: #111; color: #eee; }
+    .box { background: #222; border: 1px solid #444; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    video { width: 400px; border-radius: 4px; background: #000; }
+    button { background: #0066cc; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
+    button:hover { background: #0052a3; }
+    .meter { height: 20px; background: #333; border-radius: 10px; overflow: hidden; margin-top: 8px; }
+    .bar { height: 100%; width: 0%; background: #00cc66; transition: width 0.1s; }
+    pre { background: #000; padding: 8px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>VietDub AI - P0 Feasibility Spike Test Page</h1>
+  <div class="box">
+    <h2>1. HTML5 Video with Real Audio</h2>
+    <video id="testVideo" controls loop playsinline></video>
+    <div>
+      <button id="btnPlayVideo">Play Video</button>
+      <button id="btnStopVideo">Stop Video</button>
+    </div>
+  </div>
+
+  <div class="box">
+    <h2>2. Audio Monitor (STT Tap RMS Signal)</h2>
+    <div>STT Input Signal Level: <span id="rmsValue">0.0000</span></div>
+    <div class="meter"><div class="bar" id="rmsBar"></div></div>
+    <div>TTS Playback Level: <span id="ttsRmsValue">0.0000</span></div>
+    <div class="meter"><div class="bar" id="ttsRmsBar" style="background:#cc6600"></div></div>
+  </div>
+
+  <div class="box">
+    <h2>3. Logs & Diagnostics</h2>
+    <pre id="logOutput"></pre>
+  </div>
+
+  <script>
+    // Create synthetic video with real audio track using Web Audio + Canvas
+    const video = document.getElementById('testVideo');
+    const logEl = document.getElementById('logOutput');
+    const rmsEl = document.getElementById('rmsValue');
+    const rmsBar = document.getElementById('rmsBar');
+    const ttsRmsEl = document.getElementById('ttsRmsValue');
+    const ttsRmsBar = document.getElementById('ttsRmsBar');
+
+    function log(msg) {
+      logEl.textContent += `[${new Date().toISOString().slice(11, 23)}] ${msg}\n`;
+      console.log(msg);
+    }
+
+    // Set up test stream with canvas + audio oscillator simulating speech frequencies
+    let streamCtx, osc1, osc2, mediaStream, streamDestination;
+    function initSyntheticMedia() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 360;
+      const ctx = canvas.getContext('2d');
+      let frame = 0;
+      function draw() {
+        ctx.fillStyle = '#1e1e2e';
+        ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = '#89b4fa';
+        ctx.font = '30px sans-serif';
+        ctx.fillText('VietDub AI Audio Test Video', 50, 100);
+        ctx.fillStyle = '#a6e3a1';
+        ctx.font = '20px monospace';
+        ctx.fillText(`Frame: ${frame++} | Time: ${(frame/30).toFixed(1)}s`, 50, 180);
+        requestAnimationFrame(draw);
+      }
+      draw();
+
+      const videoStream = canvas.captureStream(30);
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      streamDestination = audioCtx.createMediaStreamDestination();
+
+      // Multi-tone generator simulating voice harmonics (300Hz, 800Hz, 2500Hz)
+      osc1 = audioCtx.createOscillator();
+      osc1.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(300, audioCtx.currentTime);
+
+      const oscGain = audioCtx.createGain();
+      oscGain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+
+      osc1.connect(oscGain);
+      oscGain.connect(streamDestination);
+      osc1.start();
+
+      const combinedStream = new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...streamDestination.stream.getAudioTracks()
+      ]);
+
+      video.srcObject = combinedStream;
+      log('Synthetic video with real audio stream initialized.');
+    }
+
+    document.getElementById('btnPlayVideo').onclick = () => {
+      video.play().then(() => log('Video playing')).catch(e => log('Play error: ' + e));
+    };
+    document.getElementById('btnStopVideo').onclick = () => {
+      video.pause();
+      log('Video paused');
+    };
+
+    initSyntheticMedia();
+
+    // Global test runner for spike
+    window.__vietdub_spike__ = {
+      video,
+      async runFeasibilityCheck() {
+        const results = {
+          browser: navigator.userAgent,
+          html5VideoPlaying: false,
+          hasAudioTracks: false,
+          methodTested: '',
+          sttSignalRMS_original100: 0,
+          sttSignalRMS_original50: 0,
+          sttSignalRMS_original0: 0,
+          ttsPlayedSeparately: false,
+          ttsSignalRMS: 0,
+          originalRestored: false,
+          errors: []
+        };
+
+        try {
+          await video.play();
+          results.html5VideoPlaying = !video.paused;
+          const stream = video.srcObject;
+          results.hasAudioTracks = stream && stream.getAudioTracks().length > 0;
+
+          // Build Web Audio routing graph
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          let sourceNode;
+
+          // Determine capture method
+          if (video.captureStream || video.mozCaptureStream) {
+            results.methodTested = 'captureStream';
+            const capStream = (video.captureStream || video.mozCaptureStream).call(video);
+            sourceNode = audioCtx.createMediaStreamSource(capStream);
+          } else {
+            results.methodTested = 'createMediaElementSource';
+            sourceNode = audioCtx.createMediaElementSource(video);
+          }
+
+          // Audio graph nodes
+          const originalGainNode = audioCtx.createGain();
+          originalGainNode.gain.value = 1.0;
+
+          const sttAnalyser = audioCtx.createAnalyser();
+          sttAnalyser.fftSize = 512;
+          const dataArray = new Float32Array(sttAnalyser.frequencyBinCount);
+
+          // Connect STT branch BEFORE originalGainNode
+          sourceNode.connect(sttAnalyser);
+          sourceNode.connect(originalGainNode);
+          originalGainNode.connect(audioCtx.destination);
+
+          // Helper to measure RMS
+          function measureRMS(analyser, samples = 10) {
+            return new Promise(resolve => {
+              let totalRMS = 0;
+              let count = 0;
+              const interval = setInterval(() => {
+                analyser.getFloatTimeDomainData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                  sum += dataArray[i] * dataArray[i];
+                }
+                const rms = Math.sqrt(sum / dataArray.length);
+                totalRMS += rms;
+                count++;
+                rmsEl.textContent = rms.toFixed(4);
+                rmsBar.style.width = Math.min(100, rms * 400) + '%';
+                if (count >= samples) {
+                  clearInterval(interval);
+                  resolve(totalRMS / count);
+                }
+              }, 50);
+            });
+          }
+
+          // 1. Measure at 100% original volume
+          originalGainNode.gain.value = 1.0;
+          results.sttSignalRMS_original100 = await measureRMS(sttAnalyser, 10);
+          log(`RMS at 100% original volume: ${results.sttSignalRMS_original100.toFixed(4)}`);
+
+          // 2. Measure at 50% original volume
+          originalGainNode.gain.value = 0.5;
+          results.sttSignalRMS_original50 = await measureRMS(sttAnalyser, 10);
+          log(`RMS at 50% original volume: ${results.sttSignalRMS_original50.toFixed(4)}`);
+
+          // 3. Measure at 0% (MUTED original output to speaker)
+          originalGainNode.gain.value = 0.0;
+          results.sttSignalRMS_original0 = await measureRMS(sttAnalyser, 10);
+          log(`RMS at 0% original volume: ${results.sttSignalRMS_original0.toFixed(4)}`);
+
+          // 4. Test TTS independent playback branch
+          const ttsOsc = audioCtx.createOscillator();
+          ttsOsc.type = 'sine';
+          ttsOsc.frequency.setValueAtTime(600, audioCtx.currentTime);
+
+          const ttsGain = audioCtx.createGain();
+          ttsGain.gain.value = 0.8;
+
+          const ttsAnalyser = audioCtx.createAnalyser();
+          ttsAnalyser.fftSize = 512;
+          const ttsData = new Float32Array(ttsAnalyser.frequencyBinCount);
+
+          ttsOsc.connect(ttsGain);
+          ttsGain.connect(ttsAnalyser);
+          ttsAnalyser.connect(audioCtx.destination);
+          ttsOsc.start();
+
+          // Measure TTS RMS
+          let ttsSum = 0;
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            ttsAnalyser.getFloatTimeDomainData(ttsData);
+            let s = 0;
+            for (let j = 0; j < ttsData.length; j++) s += ttsData[j] * ttsData[j];
+            ttsSum += Math.sqrt(s / ttsData.length);
+          }
+          results.ttsSignalRMS = ttsSum / 10;
+          results.ttsPlayedSeparately = results.ttsSignalRMS > 0.05;
+          log(`TTS independent branch RMS: ${results.ttsSignalRMS.toFixed(4)}`);
+          ttsOsc.stop();
+
+          // 5. Test Stop and Cleanup
+          originalGainNode.gain.value = 1.0;
+          sourceNode.disconnect();
+          originalGainNode.disconnect();
+          sttAnalyser.disconnect();
+          await audioCtx.close();
+          results.originalRestored = true;
+          log('Audio graph safely disconnected and restored.');
+
+        } catch (err) {
+          log('Feasibility check error: ' + err);
+          results.errors.push(String(err));
+        }
+
+        return results;
+      }
+    };
+  </script>
+</body>
+</html>

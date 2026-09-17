@@ -1,0 +1,29 @@
+{
+  "name": "@vietdub/tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:unit": "vitest run --dir unit",
+    "test:integration": "vitest run --dir integration",
+    "test:spike": "node dist/spike/run-spike.js",
+    "test:e2e": "playwright test",
+    "test:e2e:chrome": "playwright test --project=chromium",
+    "test:e2e:firefox": "playwright test --project=firefox",
+    "benchmark": "tsx benchmarks/run-benchmarks.ts",
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@vietdub/shared": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.1",
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "playwright": "^1.50.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
