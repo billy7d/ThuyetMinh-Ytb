@@ -59,6 +59,16 @@ async function startThroughBackground(page: Page, wsUrl: string): Promise<any> {
   });
 }
 
+async function startThroughPopup(popupPage: Page): Promise<any> {
+  await popupPage.getByRole('button', { name: 'Thuyết minh + phụ đề', exact: true }).click();
+  await popupPage.getByRole('button', { name: 'Bắt đầu thuyết minh', exact: true }).click();
+  await expect.poll(
+    async () => (await sendRuntimeMessage<any>(popupPage, { type: 'GET_STATUS' })).state,
+    { timeout: 15000 }
+  ).toMatch(/ACTIVE|ERROR/);
+  return sendRuntimeMessage<any>(popupPage, { type: 'GET_STATUS' });
+}
+
 function skipWhenActionInvocationIsRequired(responseOrResponses: any): void {
   const responses = Array.isArray(responseOrResponses) ? responseOrResponses : [responseOrResponses];
   const blocked = responses.find((response) => {
@@ -174,7 +184,97 @@ test.describe('Chrome extension E2E — artifact thật', () => {
       expect(response.success).toBe(true);
       await expect(videoPage.locator('#vietdub-subtitle-text')).toHaveText('Bản dịch kiểm thử đã hiển thị.');
       await expect(videoPage.locator('#vietdub-subtitle-text')).toBeVisible();
+
+      const geometry = await videoPage.locator('#vietdub-subtitle-container').evaluate((element) => {
+        const text = element.querySelector<HTMLElement>('#vietdub-subtitle-text');
+        const video = document.querySelector<HTMLVideoElement>('video');
+        const containerRect = element.getBoundingClientRect();
+        const videoRect = video?.getBoundingClientRect();
+        const containerStyle = getComputedStyle(element);
+        const textStyle = text ? getComputedStyle(text) : null;
+        return {
+          containerDisplay: containerStyle.display,
+          containerPosition: containerStyle.position,
+          containerZIndex: containerStyle.zIndex,
+          textDisplay: textStyle?.display,
+          textVisibility: textStyle?.visibility,
+          textOpacity: textStyle?.opacity,
+          overlapsVideo: Boolean(videoRect &&
+            containerRect.left < videoRect.right &&
+            containerRect.right > videoRect.left &&
+            containerRect.top < videoRect.bottom &&
+            containerRect.bottom > videoRect.top),
+          containerWidth: containerRect.width,
+          containerHeight: containerRect.height
+        };
+      });
+      expect(geometry).toMatchObject({
+        containerDisplay: 'flex',
+        containerPosition: 'absolute',
+        containerZIndex: '2147483647',
+        textDisplay: 'block',
+        textVisibility: 'visible',
+        textOpacity: '1',
+        overlapsVideo: true
+      });
+      expect(geometry.containerWidth).toBeGreaterThan(0);
+      expect(geometry.containerHeight).toBeGreaterThan(0);
+
+      // YouTube thay node video trong SPA; renderer phải gắn lại vào node mới.
+      await videoPage.evaluate(() => {
+        const currentVideo = document.querySelector<HTMLVideoElement>('video');
+        if (!currentVideo || !currentVideo.parentElement) throw new Error('Không tìm thấy video fixture để thay node.');
+        const replacementVideo = currentVideo.cloneNode(false) as HTMLVideoElement;
+        replacementVideo.id = 'vietdub-replacement-video';
+        currentVideo.replaceWith(replacementVideo);
+        window.dispatchEvent(new Event('yt-navigate-finish'));
+      });
+      await expect(videoPage.locator('#vietdub-subtitle-container')).toHaveCount(1);
+
+      const replacementResponse = await popupPage.evaluate((request) => new Promise<any>((resolve, reject) => {
+        chrome.tabs.sendMessage(request.tabId, request.message, (result) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(result);
+        });
+      }), {
+        tabId,
+        message: {
+          type: 'SUBTITLE_EVENT',
+          sessionId: 'browser_renderer_regression_after_navigation',
+          segmentId: 'seg_renderer_2',
+          text: 'Phụ đề vẫn còn sau khi thay video.',
+          startMs: 0,
+          endMs: 4000,
+          action: 'show'
+        }
+      });
+      expect(replacementResponse.success).toBe(true);
+      await expect(videoPage.locator('#vietdub-subtitle-text')).toHaveText('Phụ đề vẫn còn sau khi thay video.');
+      await expect(videoPage.locator('#vietdub-subtitle-text')).toBeVisible();
     } finally {
+      await popupPage.close();
+    }
+  });
+
+  test('Popup mode → backend → background → content → SubtitleRenderer hiển thị subtitle', async () => {
+    const popupPage = await openPopupPage();
+    let active = false;
+    try {
+      const status = await startThroughPopup(popupPage);
+      skipWhenActionInvocationIsRequired({
+        code: status.error?.code,
+        error: status.error?.message
+      });
+      expect(status.state, JSON.stringify(status)).toBe('ACTIVE');
+      expect(status.mode).toBe('dubbing_and_subtitle');
+      active = true;
+
+      // Đây là assertion browser thật của relay backend → offscreen → background → content → renderer.
+      const subtitle = videoPage.locator('#vietdub-subtitle-text');
+      await expect(subtitle).toBeVisible({ timeout: 15000 });
+      expect(await subtitle.innerText()).toBeTruthy();
+    } finally {
+      if (active) await stopThroughBackground(popupPage);
       await popupPage.close();
     }
   });

@@ -4,6 +4,7 @@ import {
   DEFAULT_ORIGINAL_VOLUME,
   DEFAULT_TTS_VOLUME,
   OperationMode,
+  SubtitleEventMessage,
   VideoPlaybackState
 } from '@vietdub/shared';
 import {
@@ -15,6 +16,7 @@ import {
   toSessionError
 } from './session-manager.js';
 import { ContentPingResponse, ContentScriptHandshake } from './content-handshake.js';
+import { relaySubtitleEvent } from './subtitle-relay.js';
 
 interface RuntimeResponse {
   success?: boolean;
@@ -331,8 +333,13 @@ chrome.runtime.onMessage.addListener((msg: any, sender, sendResponse) => {
       return false;
 
     case 'SUBTITLE_EVENT':
-      if (msg.sessionId === sessionManager.getSnapshot().sessionId && sessionManager.getSnapshot().tabId !== null) {
-        void sendTabMessage(sessionManager.getSnapshot().tabId as number, msg).catch((error) => {
+      {
+        const snapshot = sessionManager.getSnapshot();
+        void relaySubtitleEvent(msg as SubtitleEventMessage, {
+          sessionId: snapshot.sessionId,
+          tabId: snapshot.tabId,
+          send: (tabId, message) => sendTabMessage(tabId, message)
+        }).catch((error) => {
           console.debug('[CHROME-BACKGROUND] subtitle relay skipped', JSON.stringify(toSessionError(error, 'SUBTITLE_RELAY_FAILED')));
         });
       }

@@ -105,6 +105,38 @@ describe('RealtimePipeline End-to-End Flow', () => {
     pipeline.stop();
   });
 
+  it('không phát subtitle trong dubbing_only nhưng vẫn phát TTS', async () => {
+    const receivedMessages: ServerMessage[] = [];
+    const pipeline = new RealtimePipeline(
+      'sess_dubbing_only_mode',
+      'dubbing_only',
+      new MockSTTProvider(["Let's break it down."]),
+      new TranslationEngine(),
+      new VietnameseTTSEngine(),
+      { sendMessage: (msg) => receivedMessages.push(msg) }
+    );
+
+    pipeline.start();
+    const voiceChunk = Buffer.alloc(3200);
+    for (let index = 0; index < voiceChunk.length; index += 2) {
+      voiceChunk.writeInt16LE(Math.floor(Math.sin(index / 10) * 15000), index);
+    }
+    const silentChunk = Buffer.alloc(3200);
+
+    pipeline.handleAudioChunk(voiceChunk, 100);
+    pipeline.handleAudioChunk(voiceChunk, 200);
+    pipeline.handleAudioChunk(voiceChunk, 300);
+    pipeline.handleAudioChunk(voiceChunk, 400);
+    pipeline.handleAudioChunk(silentChunk, 1200);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const messageTypes = receivedMessages.map((message) => message.type);
+    expect(messageTypes).not.toContain('SUBTITLE_EVENT');
+    expect(messageTypes).toContain('TTS_CHUNK');
+    pipeline.stop();
+  });
+
   it('should finalize continuous mock speech without waiting for a silence boundary', async () => {
     const receivedMessages: ServerMessage[] = [];
     const pipeline = new RealtimePipeline(

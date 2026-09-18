@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, OperationMode, SessionState } from '@vietdub/shared';
+import { createStartSessionMessage } from './start-session-message.js';
 
 export const Popup: React.FC = () => {
   const configuredBackendUrl = new URLSearchParams(window.location.search).get('wsUrl') || undefined;
@@ -153,14 +154,13 @@ export const Popup: React.FC = () => {
     setErrorHint(null);
     setCanRetry(false);
     try {
-      const response: any = await sendExtensionMessage({
-        type: 'START_SESSION',
+      const response: any = await sendExtensionMessage(createStartSessionMessage({
         tabId: activeTabId,
         mode,
         mixerConfig: { originalVolume, originalMuted, ttsVolume },
         // Cho phép smoke test dùng cổng động; người dùng bình thường dùng backend mặc định.
         wsUrl: configuredBackendUrl
-      });
+      }));
       if (!response?.success) {
         const error = new Error(response?.error || 'Không thể bắt đầu phiên') as Error & { code?: string; retryable?: boolean };
         error.code = response?.code;
