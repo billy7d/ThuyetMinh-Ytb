@@ -6,7 +6,7 @@
 **Phạm vi:** sửa build artifact, handshake content script, session lifecycle, audio graph, popup state, regression tests và audit runtime phụ đề/thuyết minh.
 
 **LOCAL_QUALITY:** PASS — `npm test` 40/40; unit 22/22; integration 18/18; build/validator Chrome+Firefox độc lập và full build PASS; typecheck PASS; bundle smoke 2/2 PASS.
-**CI_QUALITY:** PASS — push run [#35326943761](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326943761) và PR run [#35326947726](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326947726), 9/9 jobs PASS trên commit `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3`.
+**CI_QUALITY:** PASS — push run [#35327315531](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327315531) và PR run [#35327318315](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327318315), 9/9 jobs PASS trên source/report HEAD `db2c0f24b49869d6ed03875b8b40057023857bc3`.
 **BROWSER_ACCEPTANCE:** BLOCKED — Chrome page mở được sau khi user khởi động, nhưng policy chặn `chrome://extensions`; Firefox vẫn không được expose
 **MERGE_READY:** NO
 **PR:** [Draft PR #1](https://github.com/billy7d/ThuyetMinh-Ytb/pull/1)
@@ -36,13 +36,13 @@ Kết quả mới nhất và trace rút gọn nằm tại [2026-09-18-subtitle-d
 | Chrome capture lifecycle | BLOCKED | `tabCapture` trả `PERMISSION_DENIED`: action toolbar chưa được invoke trong CDP harness; 3 case được skip có lý do, không tính PASS |
 | Firefox media page smoke | BLOCKED | Playwright Firefox trong host hiện không tạo được page (`browserContext.newPage` lỗi nội bộ) |
 | Firefox extension runtime E2E | BLOCKED | Firefox không xuất hiện trong browser inventory, không có executable chuẩn và chưa có `web-ext`/temporary-install runner; không giữ lại test injection giả |
-| CI/PR checks | PASS | Push [Quality run #35326943761](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326943761) và PR [Quality run #35326947726](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326947726), 9/9 jobs PASS trên `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3` |
+| CI/PR checks | PASS | Push [Quality run #35327315531](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327315531) và PR [Quality run #35327318315](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327318315), 9/9 jobs PASS trên `db2c0f24b49869d6ed03875b8b40057023857bc3` |
 
 ## CI quality evidence
 
 Workflow: `.github/workflows/quality.yml` — trigger `pull_request`, push branch `fix/firefox-extension-reliability-p0` và `workflow_dispatch`; mỗi job dùng Node `24.18.0`, npm cache, `npm ci`, timeout hữu hạn và `contents: read`.
 
-Current canonical runs: push [Quality #35326943761](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326943761) và PR [Quality #35326947726](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326947726). Cả hai đều `completed/success` trên `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3`; baseline cũ chỉ giữ để tham chiếu lịch sử.
+Current canonical runs: push [Quality #35327315531](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327315531) và PR [Quality #35327318315](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327318315). Cả hai đều `completed/success` trên `db2c0f24b49869d6ed03875b8b40057023857bc3`; baseline cũ chỉ giữ để tham chiếu lịch sử.
 
 | Job | Kết quả |
 | :--- | :---: |
@@ -109,7 +109,7 @@ Evidence mới của lần kiểm tra desktop này nằm tại [2026-09-18-p0-re
 
 ## PR #1 và quyền GitHub
 
-`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. Read-only GitHub Actions xác nhận PR run #35326947726 `completed/success` trên head `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3`; PR #1 vẫn phải giữ `open`, `draft=true`. Mô tả PR chưa được cập nhật trực tiếp vì thiếu authenticated write channel.
+`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. Read-only GitHub Actions xác nhận PR run #35327318315 `completed/success` trên head `db2c0f24b49869d6ed03875b8b40057023857bc3`; PR #1 vẫn phải giữ `open`, `draft=true`. Mô tả PR chưa được cập nhật trực tiếp vì thiếu authenticated write channel.
 
 Vì không có authenticated write channel, mô tả PR chưa được cập nhật trực tiếp. Operator có thể dán nội dung sau vào PR #1 và giữ nguyên trạng thái Draft:
 
@@ -131,7 +131,7 @@ Vì không có authenticated write channel, mô tả PR chưa được cập nh�
 - Thêm `.github/workflows/quality.yml` cho pull request (kể cả Draft), push branch và workflow dispatch.
 - CI dùng Node 24.18.0, npm cache, `npm ci`, `contents: read`, timeout và concurrency.
 - Quality gates: shared/backend build, Firefox/Chrome build độc lập, full build + artifact validator, typecheck, unit, integration, bundle smoke và `git diff --check`.
-- Current canonical runs: [push #35326943761](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326943761) và [PR #35326947726](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326947726) — 9/9 jobs PASS trên `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3`. Baseline cũ chỉ giữ để tham chiếu lịch sử.
+- Current canonical runs: [push #35327315531](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327315531) và [PR #35327318315](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327318315) — 9/9 jobs PASS trên `db2c0f24b49869d6ed03875b8b40057023857bc3`. Baseline cũ chỉ giữ để tham chiếu lịch sử.
 
 ## Test đã xác minh
 

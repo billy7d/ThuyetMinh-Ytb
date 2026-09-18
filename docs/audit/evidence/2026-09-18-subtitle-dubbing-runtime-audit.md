@@ -79,4 +79,4 @@ API browser hiện chỉ cung cấp screenshot dưới dạng ảnh inline, khô
 - `npm run test:e2e -w @vietdub/tests -- --project=bundle-smoke`: 2/2 PASS; các browser runtime cases vẫn BLOCKED bởi harness/browser availability.
 - `git diff --check`: PASS.
 
-CI trên commit sửa mới đã PASS: push run [35326943761](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326943761) và PR run [35326947726](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35326947726), 9/9 jobs completed/success trên `20fc8f6c1a4d6253061d625e435dda6e2f4ac4e3`. Browser acceptance vẫn BLOCKED độc lập với CI.
+CI trên source/report HEAD `db2c0f24b49869d6ed03875b8b40057023857bc3` đã PASS: push run [35327315531](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327315531) và PR run [35327318315](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35327318315), 9/9 jobs completed/success. Browser acceptance vẫn BLOCKED độc lập với CI.
