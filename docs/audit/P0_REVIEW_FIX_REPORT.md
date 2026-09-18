@@ -159,7 +159,7 @@ Backend hiện vẫn dùng MockSTT/TTS theo phạm vi P0; CI và test không ch�
 1. Build trước đây copy lại `src/offscreen/offscreen.html` sau Vite, làm artifact production còn `offscreen.ts`. Build mới để Vite sở hữu HTML compile và validator resolve resource theo đúng thư mục HTML.
 2. Content script được build IIFE độc lập. `ContentScriptHandshake` dùng một flight theo tab: PING, inject nhiều nhất một lần, rồi PING xác nhận; lỗi permission/restricted được fail-closed.
 3. `SessionManager` tập trung state `IDLE → INITIALIZING → READY → CONNECTING → ACTIVE`, `STOPPING`, `ERROR`, tạo session ID UUID, coalescing duplicate START, hủy bằng `AbortController`, chặn stale response và cleanup idempotent.
-4. Chrome dùng `tabCapture` + Offscreen; Firefox dùng content-side `MediaElementSource` hoặc fallback `captureStream`. Nhánh STT tách trước gain, TTS độc lập, `captureStream` không được nối lại vào destination gây double playback, và volume/mute được khôi phục khi stop.
+4. Chrome dùng `tabCapture` + Offscreen; Firefox content-side ưu tiên `captureStream`/`mozCaptureStream` có audio track và chỉ fallback sang `MediaElementSource`. Nhánh STT tách trước gain, TTS độc lập, `captureStream` không được nối lại vào destination gây double playback, và volume/mute được khôi phục khi stop.
 5. Popup chỉ đọc trạng thái và gửi một START duy nhất; background mới điều phối handshake/injection. Không còn tự inject/retry ngầm trong popup và không suy đoán có video từ URL/title.
 6. Content lifecycle xử lý video node/URL thay đổi trong YouTube SPA, tab đóng/navigate, WebSocket disconnect, seek generation và dọn AudioContext/PCM/WebSocket.
 
