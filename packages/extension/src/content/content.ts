@@ -1,4 +1,4 @@
-import { SubtitleRenderer } from './subtitle-renderer.js';
+import { SubtitleRenderer, resolveSubtitleDisplayDurationMs } from './subtitle-renderer.js';
 import { VideoSyncController } from '../sync/video-sync.js';
 import { AudioMixer, AudioSourceMode } from '../audio/mixer.js';
 import { PCMProcessor } from '../audio/pcm-processor.js';
@@ -181,7 +181,11 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
           textLength: typeof msg.text === 'string' ? msg.text.length : 0
         });
         if (subtitleRenderer && msg.text) {
-          const displayed = subtitleRenderer.showSubtitle(msg.segmentId, msg.text, (msg.endMs - msg.startMs) || 4000);
+          const displayed = subtitleRenderer.showSubtitle(
+            msg.segmentId,
+            msg.text,
+            resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs)
+          );
           emitDiagnostic('content', 'subtitle_event_rendered', {
             sessionRef: diagnosticSessionRef(msg.sessionId),
             displayed
@@ -498,7 +502,11 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       });
     }
     if (message.type === 'SUBTITLE_EVENT' && subtitleRenderer && message.action === 'show') {
-      const displayed = subtitleRenderer.showSubtitle(message.segmentId, message.text, (message.endMs - message.startMs) || 4000);
+      const displayed = subtitleRenderer.showSubtitle(
+        message.segmentId,
+        message.text,
+        resolveSubtitleDisplayDurationMs(message.startMs, message.endMs)
+      );
       emitDiagnostic('firefox_ws', 'subtitle_event_rendered', {
         sessionRef: diagnosticSessionRef(session.sessionId),
         displayed,

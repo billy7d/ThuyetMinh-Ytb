@@ -37,4 +37,22 @@ describe('MockSTTProvider runtime VAD contract', () => {
     expect(onFinal).toHaveBeenCalledTimes(1);
     vadProcess.mockRestore();
   });
+
+  it('chốt nhiều đoạn mock khi tín hiệu voice liên tục và reset đúng state VAD', () => {
+    const onFinal = vi.fn();
+    const provider = new MockSTTProvider(["Let's break it down."]);
+    const stream = provider.createStream('mock_continuous_voice', {
+      onInterim: vi.fn(),
+      onFinal,
+      onError: vi.fn()
+    });
+
+    const voice = voiceBuffer();
+    for (let index = 0; index < 20; index += 1) {
+      stream.sendAudioChunk(voice, index * 250);
+    }
+
+    // Không chờ silence; mỗi segment tối đa 1.5 giây phải tạo một final riêng.
+    expect(onFinal).toHaveBeenCalledTimes(2);
+  });
 });

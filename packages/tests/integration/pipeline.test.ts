@@ -104,4 +104,36 @@ describe('RealtimePipeline End-to-End Flow', () => {
 
     pipeline.stop();
   });
+
+  it('should finalize continuous mock speech without waiting for a silence boundary', async () => {
+    const receivedMessages: ServerMessage[] = [];
+    const pipeline = new RealtimePipeline(
+      'sess_continuous_voice',
+      'dubbing_and_subtitle',
+      new MockSTTProvider(["Let's break it down."]),
+      new TranslationEngine(),
+      new VietnameseTTSEngine(),
+      { sendMessage: (msg) => receivedMessages.push(msg) }
+    );
+
+    pipeline.start();
+    const voiceChunk = Buffer.alloc(3200);
+    for (let i = 0; i < voiceChunk.length; i += 2) {
+      voiceChunk.writeInt16LE(Math.floor(Math.sin(i / 10) * 15000), i);
+    }
+
+    // Không có silence; đây là tình huống video nói hoặc nhạc liên tục trên browser thật.
+    for (let index = 0; index < 8; index += 1) {
+      pipeline.handleAudioChunk(voiceChunk, index * 250);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const messageTypes = receivedMessages.map((message) => message.type);
+    expect(messageTypes).toContain('TRANSCRIPT_FINAL');
+    expect(messageTypes).toContain('TRANSLATION_READY');
+    expect(messageTypes).toContain('SUBTITLE_EVENT');
+    expect(messageTypes).toContain('TTS_CHUNK');
+    pipeline.stop();
+  });
 });

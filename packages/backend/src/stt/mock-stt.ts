@@ -7,6 +7,9 @@ export class MockSTTProvider implements STTProvider {
   private predefinedSentences: string[];
   private currentIndex = 0;
 
+  // Mock cần chốt đoạn nói liên tục để browser acceptance không phụ thuộc vào khoảng lặng của video.
+  private static readonly MAX_SPEECH_SEGMENT_MS = 1500;
+
   constructor(customSentences?: string[]) {
     this.predefinedSentences = customSentences || [
       "Let's break it down.",
@@ -22,7 +25,26 @@ export class MockSTTProvider implements STTProvider {
     let streamActive = true;
     let interimSent = false;
     let speechStartMs = 0;
+    let hasActiveSpeech = false;
     const sessionRef = diagnosticSessionRef(sessionId);
+
+    const emitFinalSentence = (startMs: number, endMs: number, reason: 'vad_silence' | 'max_duration'): void => {
+      const finalSentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
+      this.currentIndex++;
+      emitDiagnostic('stt', 'transcript_final_ready', {
+        sessionRef,
+        startMs,
+        endMs,
+        textLength: finalSentence.length,
+        reason
+      });
+      callbacks.onFinal(finalSentence, startMs, endMs);
+      interimSent = false;
+      hasActiveSpeech = false;
+      speechStartMs = 0;
+      // Boundary cưỡng bức không đi qua nhánh silence của VAD nên phải reset state nội bộ.
+      vad.reset();
+    };
 
     return {
       sendAudioChunk: (pcmData: Buffer, timestampMs: number) => {
@@ -42,6 +64,7 @@ export class MockSTTProvider implements STTProvider {
 
         if (vadResult.speechStarted) {
           speechStartMs = timestampMs;
+          hasActiveSpeech = true;
           interimSent = false;
         }
 
@@ -56,16 +79,19 @@ export class MockSTTProvider implements STTProvider {
 
         // When VAD detects speech end (silence boundary)
         if (vadResult.speechEnded) {
-          const finalSentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
-          this.currentIndex++;
-          emitDiagnostic('stt', 'transcript_final_ready', {
-            sessionRef,
-            startMs: vadResult.startMs,
-            endMs: vadResult.endMs,
-            textLength: finalSentence.length
-          });
-          callbacks.onFinal(finalSentence, vadResult.startMs, vadResult.endMs);
-          interimSent = false;
+          emitFinalSentence(vadResult.startMs, vadResult.endMs, 'vad_silence');
+          return;
+        }
+
+        // Video nhạc hoặc lời nói liên tục có thể không tạo silence boundary; vẫn phải phát mock final định kỳ.
+        const chunkDurationMs = (pcmData.length / 2 / 16000) * 1000;
+        const speechDurationMs = timestampMs - speechStartMs + chunkDurationMs;
+        if (
+          hasActiveSpeech &&
+          vadResult.isVoice &&
+          speechDurationMs >= MockSTTProvider.MAX_SPEECH_SEGMENT_MS
+        ) {
+          emitFinalSentence(speechStartMs, timestampMs + chunkDurationMs, 'max_duration');
         }
       },
 

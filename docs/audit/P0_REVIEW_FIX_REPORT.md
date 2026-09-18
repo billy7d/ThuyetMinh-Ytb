@@ -5,8 +5,8 @@
 **Nhánh:** `fix/firefox-extension-reliability-p0`
 **Phạm vi:** sửa build artifact, handshake content script, session lifecycle, audio graph, popup state, regression tests và audit runtime phụ đề/thuyết minh.
 
-**LOCAL_QUALITY:** PASS — `npm test` 35/35; unit 18/18; integration 17/17; build/validator Chrome+Firefox PASS; typecheck PASS.
-**CI_QUALITY:** PASS — push run [#35307275840](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307275840) và PR run [#35307278052](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307278052), 9/9 jobs PASS trên commit `e6fa01c9c22936d3d1c0c83074717d138c273a27`.
+**LOCAL_QUALITY:** PASS — `npm test` 40/40; unit 22/22; integration 18/18; build/validator Chrome+Firefox độc lập và full build PASS; typecheck PASS; bundle smoke 2/2 PASS.
+**CI_QUALITY:** PENDING — đang chờ workflow mới trên commit sửa mock continuous speech/subtitle display; CI canonical trước đó là 9/9 PASS trên commit `e6fa01c9c22936d3d1c0c83074717d138c273a27`.
 **BROWSER_ACCEPTANCE:** BLOCKED — Chrome page mở được sau khi user khởi động, nhưng policy chặn `chrome://extensions`; Firefox vẫn không được expose
 **MERGE_READY:** NO
 **PR:** [Draft PR #1](https://github.com/billy7d/ThuyetMinh-Ytb/pull/1)
@@ -18,6 +18,7 @@ Kết quả mới nhất và trace rút gọn nằm tại [2026-09-18-subtitle-d
 - Direct WebSocket runtime đã PASS toàn bộ mock path từ `SESSION_START` tới `SUBTITLE_EVENT`, `TTS_CHUNK` và `SESSION_METRICS` khi PCM có RMS `0.3239`; silence có RMS `0` và VAD phát hiện speech boundary.
 - Không được kết luận browser capture PASS từ việc volume thay đổi. AudioMixer có thể điều khiển native playback trong khi STT tap vẫn silent hoặc chưa gửi chunk.
 - Hai lỗi P0 đã sửa: VAD stateful bị gọi hai lần trên cùng chunk; PCM timestamp có thể trùng khi một callback tạo nhiều chunk. Firefox capture nay ưu tiên `captureStream`/`mozCaptureStream` có audio track và log RMS/source mode.
+- Tái hiện runtime cho thấy mock VAD không chốt câu nếu voice liên tục không có silence; vì vậy không có downstream `TRANSLATION_READY`, `SUBTITLE_EVENT` hoặc `TTS_CHUNK`. Mock STT nay chốt đoạn tối đa 1500 ms và reset VAD. Subtitle renderer giữ segment ngắn tối thiểu 1500 ms để event không biến mất gần như ngay lập tức.
 - Renderer/decoder browser thật chưa có evidence vì Chrome URL policy chặn `chrome://extensions` và Firefox không xuất hiện. Vì vậy nguyên nhân browser-specific cuối cùng vẫn là `NOT_RUN`, không suy diễn thành PASS.
 - `P0 mock pipeline: PASS`; `Real STT: NOT_IMPLEMENTED`; `Real Translation: NOT_IMPLEMENTED`; `Real Vietnamese TTS: NOT_IMPLEMENTED`.
 
@@ -27,9 +28,9 @@ Kết quả mới nhất và trace rút gọn nằm tại [2026-09-18-subtitle-d
 | :--- | :---: | :--- |
 | Typecheck shared/extension/backend/tests | PASS | Local clean checkout và CI job [typecheck workspaces](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308275948) |
 | Extension build + artifact validator | PASS | Local target độc lập/full build và CI jobs [build Firefox](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276186), [build Chrome](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276168), [full build](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276585) |
-| Unit tests | PASS | 4 files, 17 tests; CI [unit tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276299) |
-| Integration tests | PASS | 5 files, 15 tests, gồm session race/handshake/audio graph/build regression; CI [integration tests](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276179) |
-| Bundle smoke | PASS | 2 tests, Chrome/Firefox content bundle parse được như IIFE; CI [extension bundle smoke](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548/job/105308276235) |
+| Unit tests | PASS | 6 files, 22 tests; local full regression |
+| Integration tests | PASS | 6 files, 18 tests, gồm session race/handshake/audio graph/pipeline continuous speech/build regression |
+| Bundle smoke | PASS | 2 tests, Chrome/Firefox content bundle parse được như IIFE |
 | Chrome extension artifact — PING | PASS (Edge Chromium fallback) | Nạp artifact unpacked thật, service worker/content script thật; không dùng `page.addScriptTag` hay mock `chrome` |
 | Chrome native extension install/toolbar | BLOCKED | YouTube page thật mở được, nhưng browser URL policy chặn `chrome://extensions`; chưa thể nạp artifact hoặc invoke toolbar |
 | Chrome capture lifecycle | BLOCKED | `tabCapture` trả `PERMISSION_DENIED`: action toolbar chưa được invoke trong CDP harness; 3 case được skip có lý do, không tính PASS |
@@ -76,7 +77,7 @@ Chrome `tabCapture` bắt buộc extension phải được invoke trên tab hi�
 ## Test evidence và regression
 
 - `npm run build`: PASS từ trạng thái đã bỏ toàn bộ generated package artifacts; `npm run build:firefox` và `npm run build:chrome` PASS độc lập khi target còn lại không tồn tại; validator target-specific PASS.
-- Baseline trước runtime audit: `npm test` 32/32; unit 17/17; integration 15/15. Current results được ghi ở Addendum: `npm test` 35/35; unit 18/18; integration 17/17.
+- Baseline trước runtime audit: `npm test` 32/32; unit 17/17; integration 15/15. Current results: `npm test` 40/40; unit 22/22; integration 18/18.
 - `npm run test:e2e`: bundle smoke 2/2 PASS; 9 case browser runtime SKIPPED có annotation `BLOCKED`, 0 fake extension PASS.
 - Chrome/Edge artifact smoke: PING thật PASS trên Edge Chromium fallback; Chrome capture lifecycle BLOCKED bởi `activeTab` action invocation.
 - Audio graph regression: 2/2 integration PASS cho capture-stream không double playback, STT tap, TTS branch và restoration.
@@ -108,7 +109,7 @@ Evidence mới của lần kiểm tra desktop này nằm tại [2026-09-18-p0-re
 
 ## PR #1 và quyền GitHub
 
-`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. GitHub API read-only tại thời điểm kiểm tra xác nhận PR #1 `open`, `draft=true`, base `aa0d620c150e89807b8d97f96ffa86c1fe89fb9a`, head `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`.
+`gh auth status` đã chạy nhưng không thực hiện được vì môi trường không có GitHub CLI: `gh: The term 'gh' is not recognized as a name of a cmdlet, function, script file, or executable program.` Không thử lách xác thực hoặc tự nhập thông tin đăng nhập. PR #1 vẫn phải giữ `open`, `draft=true`; trạng thái head và CI mới sẽ được cập nhật sau khi push.
 
 Vì không có authenticated write channel, mô tả PR chưa được cập nhật trực tiếp. Operator có thể dán nội dung sau vào PR #1 và giữ nguyên trạng thái Draft:
 

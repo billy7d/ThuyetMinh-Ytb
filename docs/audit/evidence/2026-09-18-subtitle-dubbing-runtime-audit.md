@@ -9,13 +9,15 @@
 
 ## Kết luận ngắn
 
-Backend mock pipeline không bị kẹt khi nhận PCM có tín hiệu. Trace runtime trực tiếp đã đi qua `SESSION_START`, `SESSION_READY`, `AUDIO_CHUNK`, VAD, `TRANSCRIPT_FINAL`, `TRANSLATION_READY`, `SUBTITLE_EVENT`, `TTS_CHUNK` và `SESSION_METRICS`.
+Backend mock pipeline không bị kẹt khi nhận PCM có tín hiệu và có ranh giới speech hợp lệ. Trace runtime trực tiếp đã đi qua `SESSION_START`, `SESSION_READY`, `AUDIO_CHUNK`, VAD, `TRANSCRIPT_FINAL`, `TRANSLATION_READY`, `SUBTITLE_EVENT`, `TTS_CHUNK` và `SESSION_METRICS`.
 
 Nguyên nhân làm lần kiểm tra thực tế không có phụ đề/giọng đọc chưa thể quy về một lỗi duy nhất ở browser vì extension không được nạp vào Chrome surface khả dụng và Firefox không được expose. Bằng chứng hiện có khoanh vùng lỗi trước backend hoặc ở renderer: việc điều khiển volume chứng minh nhánh AudioMixer/native playback hoạt động, không chứng minh STT tap đã có PCM. Hai lỗi P0 trong code có thể làm mất/đảo điều kiện downstream đã được sửa:
 
 1. `MockSTTProvider` gọi `SimpleVAD.process()` hai lần cho cùng một chunk, làm sai stateful VAD và mốc speech end.
 2. `PCMProcessor` lấy timestamp từ `AudioContext.currentTime`; nhiều chunk sinh trong cùng callback có thể trùng timestamp. Timestamp nay tính theo số sample đã phát ra, nên tăng đều theo chunk 250 ms.
 3. Firefox ưu tiên `MediaElementSource`, không chứng minh được capture signal trên video cross-origin. Nhánh Firefox nay ưu tiên `captureStream`/`mozCaptureStream` có audio track, giữ native playback riêng; fallback vẫn được log RMS để fail-closed khi silent.
+
+Trong lần tái hiện bổ sung, một luồng voice liên tục có PCM thật (3200 bytes/chunk, RMS `0.3239`, timestamp cách nhau 250 ms) chỉ tạo `TRANSCRIPT_INTERIM` rồi không có final vì mock VAD chỉ chốt câu khi gặp silence. Khi đó `RealtimePipeline` không có điều kiện phát `TRANSLATION_READY`, `SUBTITLE_EVENT` hoặc `TTS_CHUNK`. Mock STT nay chốt đoạn tối đa sau 1500 ms, reset VAD rồi tiếp tục nhận đoạn mới. Subtitle renderer cũng giữ event ngắn tối thiểu 1500 ms; trace cũ có segment 300 ms nên dễ biến mất trước khi người dùng quan sát được. Đây là sửa P0 cho mock pipeline, không phải bằng chứng rằng browser capture hoặc AI production đã hoạt động.
 
 Các thay đổi này không biến mock thành AI production. Browser capture, renderer thật và audio decoder/playback thật vẫn cần acceptance trên Chrome/Firefox desktop.
 
@@ -30,7 +32,7 @@ Các thay đổi này không biến mock thành AI production. Browser capture, 
 | Phát `TRANSCRIPT_FINAL` | PASS — `textLength` chỉ được log | NOT_RUN |
 | Phát `TRANSLATION_READY` | PASS — rule-based mock, chỉ log độ dài | NOT_RUN |
 | Phát `SUBTITLE_EVENT` | PASS — mode `dubbing_and_subtitle` | NOT_RUN |
-| Renderer nhận/hiển thị subtitle | Instrumentation + artifact regression đã thêm; test browser bị skip | BLOCKED — Chrome URL policy chặn `chrome://extensions`, Firefox không có target |
+| Renderer nhận/hiển thị subtitle | PASS trong pipeline/instrumentation và helper regression; test browser bị skip | BLOCKED — Chrome URL policy chặn `chrome://extensions`, Firefox không có target |
 | Phát `TTS_CHUNK` | PASS — mock WAV có payload, `audioBytesApprox=70044` | NOT_RUN |
 | Decoder/playback hoặc lỗi | Có log `decoded_and_played`/`decoder_or_playback_error` ở cả client path | NOT_RUN |
 
@@ -67,12 +69,14 @@ API browser hiện chỉ cung cấp screenshot dưới dạng ảnh inline, khô
 
 ## Regression và quality gates
 
-- `npm test`: PASS — 11 test files, 35 tests.
-- `npm run test:unit`: PASS — 5 files, 18 tests.
-- `npm run test:integration`: PASS — 6 files, 17 tests.
+- `npm test`: PASS — 12 test files, 40 tests.
+- `npm run test:unit`: PASS — 6 files, 22 tests.
+- `npm run test:integration`: PASS — 6 files, 18 tests.
 - `npm run typecheck -w @vietdub/extension`: PASS.
-- `npm run build`: PASS — build và validator độc lập cho Chrome/Firefox.
-- `npm run test:e2e`: 2 bundle-smoke PASS; 9 browser runtime cases SKIPPED/BLOCKED bởi harness/browser availability.
+- `npm run build:chrome`: PASS — build và validator Chrome độc lập.
+- `npm run build:firefox`: PASS — build và validator Firefox độc lập.
+- `npm run build`: PASS — full build và validator hai target.
+- `npm run test:e2e -w @vietdub/tests -- --project=bundle-smoke`: 2/2 PASS; các browser runtime cases vẫn BLOCKED bởi harness/browser availability.
 - `git diff --check`: PASS.
 
-CI mới đã PASS trên commit `e6fa01c9c22936d3d1c0c83074717d138c273a27`: push run [35307275840](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307275840) và PR run [35307278052](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307278052), 9/9 jobs completed/success. Browser acceptance vẫn BLOCKED độc lập với CI.
+CI canonical trước thay đổi này đã PASS trên commit `e6fa01c9c22936d3d1c0c83074717d138c273a27`: push run [35307275840](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307275840) và PR run [35307278052](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307278052), 9/9 jobs completed/success. CI trên commit sửa mới sẽ được ghi sau khi push. Browser acceptance vẫn BLOCKED độc lập với CI.
