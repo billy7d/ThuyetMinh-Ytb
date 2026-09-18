@@ -1,1 +1,1 @@
-{"root":["./src/constants.ts","./src/index.ts","./src/protocol.ts","./src/types.ts"],"version":"5.9.3"}
+{"root":["./src/constants.ts","./src/diagnostics.ts","./src/index.ts","./src/protocol.ts","./src/types.ts"],"version":"5.9.3"}

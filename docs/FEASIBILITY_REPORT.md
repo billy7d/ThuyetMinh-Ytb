@@ -1,5 +1,7 @@
 # P0 Feasibility Spike Report — VietDub AI
 
+> **Phạm vi quan trọng:** Đây là kiểm chứng media page/Web Audio lịch sử, không phải E2E runtime của extension. Bảng `PASS` bên dưới không thay thế action invocation của Chrome hoặc temporary-install của Firefox. Xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md) cho evidence hiện tại.
+
 **Ngày thực hiện:** 2026-09-17T05:50:34.168Z
 **Môi trường thử nghiệm:** Windows 11 (NT 10.0), Node.js v24.18.0
 

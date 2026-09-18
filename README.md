@@ -1,8 +1,10 @@
 # VietDub AI — Real-time Vietnamese Dubbing Extension
 
-> **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) thuyết minh tiếng Việt và tạo phụ đề video tiếng Anh theo thời gian thực.**
+> **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) cho pipeline thuyết minh tiếng Việt và phụ đề video tiếng Anh theo thời gian thực.**
 
-VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với giọng thuyết minh tiếng Việt tự nhiên, ngắt nghỉ chuẩn xác và phụ đề đồng bộ, không cần tải video về máy hay tạo video mới.
+> **Trạng thái kỹ thuật:** backend hiện dùng MockSTT/Translation/TTS theo phạm vi PRD; các số liệu benchmark và browser gate được phân biệt rõ trong [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
+
+VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với phụ đề đồng bộ và đường truyền audio thời gian thực, không cần tải video về máy hay tạo video mới.
 
 ---
 
@@ -26,12 +28,12 @@ VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh tr�
 4. **Pipeline AI Chất lượng Cao:**
    - **Streaming STT:** Tích hợp Voice Activity Detection (VAD) xác định chính xác ngắt câu.
    - **Context-aware Translation:** Dịch theo nghĩa toàn câu với văn phong nói tự nhiên của người Việt, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ chuyên ngành.
-   - **Vietnamese TTS:** Giọng đọc tự nhiên, phản hồi nhanh và cơ chế hủy (`cancelGeneration`) tức thì khi người dùng tua video hoặc tạm dừng.
+   - **Vietnamese TTS:** Pipeline có cơ chế hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng; backend hiện dùng engine mô phỏng, chưa phải giọng production.
 
 5. **Đo lường & Kiểm chứng Thực tế:**
-   - Đạt chuẩn kiểm thử trên trình duyệt Google Chrome (152+) và Mozilla Firefox (155+) thật.
-   - Độ trễ p50 thực tế đạt **~318 ms** (vượt xa mục tiêu PRD ≤ 3,000 ms).
-   - Điểm chất lượng dịch đạt **4.6 / 5.0** trên bộ 30 mẫu benchmark chuẩn hóa.
+   - Feasibility/media spike lịch sử đã chạy trên Google Chrome (152+) và Mozilla Firefox (155+); đây không phải bằng chứng runtime extension hiện tại.
+   - Độ trễ p50 **~318 ms** và điểm chất lượng dịch **4.6 / 5.0** là các số liệu benchmark lịch sử, không phải tiêu chí release hiện tại.
+   - Ma trận runtime và các gate còn thiếu được cập nhật trong [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
 
 ---
 
@@ -209,6 +211,8 @@ npm run test:e2e -w @vietdub/tests
 # 4. Chạy bộ Benchmark 30 mẫu dịch & đo đạc độ trễ
 npm run benchmark
 ```
+
+> E2E runtime hiện ghi nhận rõ `BLOCKED` khi môi trường không cung cấp Chrome action invocation hoặc Firefox temporary-install runner; test không dùng mock để biến blocker thành `PASS`. Xem [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
 
 ---
 

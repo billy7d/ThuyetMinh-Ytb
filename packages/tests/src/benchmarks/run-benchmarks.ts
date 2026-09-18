@@ -152,6 +152,8 @@ async function runBenchmarks() {
   // 1. docs/LATENCY_REPORT.md
   const latencyReportMd = `# Báo cáo đo lường độ trễ (Latency Profile Report) — VietDub AI
 
+> **Phạm vi quan trọng:** Đây là benchmark offline trên pipeline hiện tại (MockSTT/Translation/TTS và dữ liệu chuẩn hóa), không phải đo runtime extension hoặc AI production. Không dùng các số liệu \`PASS\` này để đóng browser release gate; xem \`docs/audit/P0_REVIEW_FIX_REPORT.md\`.
+
 **Ngày đo kiểm:** ${new Date().toISOString()}  
 **Môi trường:** Node.js v24.18.0, Windows 11 Desktop  
 **Số mẫu kiểm thử:** ${results.length} đoạn câu tiếng Anh chuẩn hóa  
@@ -200,6 +202,8 @@ async function runBenchmarks() {
   }
 
   const translationBenchMd = `# Báo cáo Benchmark Chất lượng Dịch tiếng Việt — VietDub AI
+
+> **Phạm vi quan trọng:** Đây là benchmark offline dùng \`MockSTT\`/\`TranslationEngine\` rule-based và tiêu chí chấm điểm tự động, không phải đánh giá human hoặc AI production. Điểm số không đóng browser/runtime release gate; xem \`docs/audit/P0_REVIEW_FIX_REPORT.md\`.
 
 **Quy mô kiểm thử:** 30 đoạn mẫu tiếng Anh chuẩn hóa theo PRD Mục 10.4  
 **Phạm vi bao phủ:** 8 lĩnh vực (Hội thoại, Khoa học, Tin tức, Công nghệ, Tài chính, Tốc độ nói nhanh, Giọng vùng miền, Môi trường ồn)  

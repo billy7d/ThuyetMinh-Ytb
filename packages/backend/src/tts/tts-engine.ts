@@ -1,8 +1,10 @@
 import { TTSProvider, TTSRequest, TTSResponse } from './types.js';
 import { generateSyntheticWavBuffer } from './wav-generator.js';
+import { diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
 export class VietnameseTTSEngine implements TTSProvider {
   name = 'VietnameseTTSEngine';
+  readonly implementation = 'mock_synthetic_wav';
   private cancelledGenerations = new Set<number>();
   private activeGeneration = 1;
 
@@ -36,6 +38,13 @@ export class VietnameseTTSEngine implements TTSProvider {
     const textLength = request.text.trim().length;
     const durationSeconds = Math.max(0.8, textLength / 16.0);
     const durationMs = Math.round(durationSeconds * 1000);
+    emitDiagnostic('tts', 'synthetic_generation', {
+      sessionRef: diagnosticSessionRef(request.sessionId),
+      segmentRef: diagnosticSessionRef(request.segmentId),
+      generation: request.generation,
+      textLength,
+      durationMs
+    });
 
     // If external cloud TTS is configured (e.g. Google Cloud TTS / Edge TTS), call it here
     if (process.env.GCP_TTS_API_KEY) {

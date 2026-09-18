@@ -1,3 +1,20 @@
+import { emitDiagnostic } from '@vietdub/shared';
+
+export const MIN_SUBTITLE_DISPLAY_DURATION_MS = 1500;
+
+/** Bảo đảm subtitle không biến mất quá nhanh khi backend chỉ trả về boundary ngắn. */
+export function resolveSubtitleDisplayDurationMs(
+  startMs: number,
+  endMs: number,
+  fallbackMs = 4000
+): number {
+  const segmentDurationMs = endMs - startMs;
+  const durationMs = Number.isFinite(segmentDurationMs) && segmentDurationMs > 0
+    ? segmentDurationMs
+    : fallbackMs;
+  return Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs);
+}
+
 export interface SubtitleConfig {
   fontSizePx: number;
   visible: boolean;
@@ -75,8 +92,15 @@ export class SubtitleRenderer {
     }
   }
 
-  showSubtitle(segmentId: string, text: string, durationMs: number = 4000): void {
-    if (!this.textEl || !this.config.visible) return;
+  showSubtitle(segmentId: string, text: string, durationMs: number = 4000): boolean {
+    if (!this.textEl || !this.config.visible) {
+      emitDiagnostic('subtitle_renderer', 'display_skipped', {
+        hasTextElement: Boolean(this.textEl),
+        visible: this.config.visible,
+        textLength: text.length
+      });
+      return false;
+    }
 
     this.currentSegmentId = segmentId;
     this.textEl.textContent = text;
@@ -86,15 +110,25 @@ export class SubtitleRenderer {
 
     this.hideTimeout = setTimeout(() => {
       this.hideSubtitle(segmentId);
-    }, durationMs);
+    }, Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs));
+    emitDiagnostic('subtitle_renderer', 'displayed', {
+      textLength: text.length,
+      durationMs: Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs)
+    });
+    return true;
   }
 
   hideSubtitle(segmentId?: string): void {
     if (segmentId && this.currentSegmentId !== segmentId) return;
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
     if (this.textEl) {
       this.textEl.style.display = 'none';
       this.textEl.textContent = '';
     }
+    this.currentSegmentId = null;
   }
 
   setFontSize(sizePx: number): void {

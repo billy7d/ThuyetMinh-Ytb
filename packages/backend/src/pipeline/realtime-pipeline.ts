@@ -7,7 +7,9 @@ import {
   TTSChunkMessage,
   SubtitleEventMessage,
   LatencyMetricMessage,
-  ErrorMessage
+  ErrorMessage,
+  diagnosticSessionRef,
+  emitDiagnostic
 } from '@vietdub/shared';
 import { STTProvider, STTStreamSession } from '../stt/types.js';
 import { TranslationEngine } from '../translation/translation-engine.js';
@@ -30,6 +32,7 @@ export class RealtimePipeline {
   private ttsEngine: TTSProvider;
   private costTracker: CostTracker;
   private callbacks: PipelineCallbacks;
+  private readonly sessionRef: string;
 
   private isActive: boolean = false;
 
@@ -47,11 +50,13 @@ export class RealtimePipeline {
     this.translationEngine = translationEngine;
     this.ttsEngine = ttsEngine;
     this.callbacks = callbacks;
+    this.sessionRef = diagnosticSessionRef(sessionId);
     this.costTracker = new CostTracker(sessionId);
   }
 
   start(): void {
     this.isActive = true;
+    emitDiagnostic('pipeline', 'started', { sessionRef: this.sessionRef, mode: this.mode });
     this.sttSession = this.sttProvider.createStream(this.sessionId, {
       onInterim: (text, startMs, endMs) => this.handleInterimTranscript(text, startMs, endMs),
       onFinal: (text, startMs, endMs) => this.handleFinalTranscript(text, startMs, endMs),
@@ -65,6 +70,11 @@ export class RealtimePipeline {
     try {
       const durationSec = (pcmData.length / 2) / 16000;
       this.costTracker.recordAudioChunk(durationSec);
+      emitDiagnostic('pipeline', 'audio_forwarded_to_stt', {
+        sessionRef: this.sessionRef,
+        pcmBytes: pcmData.length,
+        timestampMs
+      });
       this.sttSession.sendAudioChunk(pcmData, timestampMs);
     } catch (err: any) {
       this.handleError('AUDIO_CHUNK_ERROR', err.message, false);
@@ -90,6 +100,11 @@ export class RealtimePipeline {
     const segmentId = `seg_${++this.segmentCounter}`;
     const sttEndTime = Date.now();
 
+    if (!this.isActive) {
+      emitDiagnostic('pipeline', 'transcript_ignored_after_stop', { sessionRef: this.sessionRef, generation: currentGen });
+      return;
+    }
+
     // 1. Send final transcript
     const transFinalMsg: TranscriptFinalMessage = {
       type: 'TRANSCRIPT_FINAL',
@@ -101,6 +116,14 @@ export class RealtimePipeline {
       endMs
     };
     this.callbacks.sendMessage(transFinalMsg);
+    emitDiagnostic('pipeline', 'transcript_final_emitted', {
+      sessionRef: this.sessionRef,
+      segmentId,
+      generation: currentGen,
+      startMs,
+      endMs,
+      sourceLength: sourceText.length
+    });
 
     // 2. Translate with context awareness
     const transStartTime = Date.now();
@@ -110,6 +133,11 @@ export class RealtimePipeline {
 
     // If buffered (incomplete thought), wait for completion
     if (transResult.buffered || !transResult.translatedText) {
+      emitDiagnostic('pipeline', 'translation_buffered', {
+        sessionRef: this.sessionRef,
+        segmentId,
+        sourceLength: sourceText.length
+      });
       return;
     }
 
@@ -117,6 +145,16 @@ export class RealtimePipeline {
 
     // If generation changed during translation (due to seek), discard
     if (currentGen !== this.generation) {
+      emitDiagnostic('pipeline', 'translation_discarded_generation', {
+        sessionRef: this.sessionRef,
+        segmentId,
+        generation: currentGen,
+        currentGeneration: this.generation
+      });
+      return;
+    }
+    if (!this.isActive) {
+      emitDiagnostic('pipeline', 'translation_discarded_after_stop', { sessionRef: this.sessionRef, segmentId });
       return;
     }
 
@@ -133,6 +171,12 @@ export class RealtimePipeline {
       generation: currentGen
     };
     this.callbacks.sendMessage(transReadyMsg);
+    emitDiagnostic('pipeline', 'translation_ready_emitted', {
+      sessionRef: this.sessionRef,
+      segmentId,
+      generation: currentGen,
+      translatedLength: transResult.translatedText.length
+    });
 
     // 4. Send subtitle if mode includes subtitles
     if (this.mode === 'subtitle_only' || this.mode === 'dubbing_and_subtitle') {
@@ -147,6 +191,14 @@ export class RealtimePipeline {
         action: 'show'
       };
       this.callbacks.sendMessage(subMsg);
+      emitDiagnostic('pipeline', 'subtitle_event_emitted', {
+        sessionRef: this.sessionRef,
+        segmentId,
+        generation: currentGen,
+        textLength: transResult.translatedText.length,
+        startMs,
+        endMs
+      });
     }
 
     // 5. Synthesize Vietnamese TTS if mode includes dubbing
@@ -154,6 +206,7 @@ export class RealtimePipeline {
     if (this.mode === 'dubbing_only' || this.mode === 'dubbing_and_subtitle') {
       const ttsStartTime = Date.now();
       const ttsRes = await this.ttsEngine.synthesize({
+        sessionId: this.sessionId,
         segmentId,
         text: transResult.translatedText,
         generation: currentGen,
@@ -179,11 +232,27 @@ export class RealtimePipeline {
           endMs
         };
         this.callbacks.sendMessage(ttsMsg);
+        emitDiagnostic('pipeline', 'tts_chunk_emitted', {
+          sessionRef: this.sessionRef,
+          segmentId,
+          generation: currentGen,
+          audioBytesApprox: Math.floor((ttsRes.audioBase64.length * 3) / 4),
+          durationMs: ttsRes.durationMs,
+          textLength: transResult.translatedText.length
+        });
+      } else {
+        emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
+          sessionRef: this.sessionRef,
+          segmentId,
+          generation: currentGen,
+          cancelled: ttsRes.cancelled,
+          hasAudio: Boolean(ttsRes.audioBase64)
+        });
       }
     }
 
     // 6. Record and send latency breakdown
-    const totalPipelineMs = (Date.now() - sttEndTime) + translationDurationMs + ttsDurationMs;
+    const totalPipelineMs = Date.now() - sttEndTime;
     const latencyMsg: LatencyMetricMessage = {
       type: 'LATENCY_METRIC',
       sessionId: this.sessionId,
@@ -202,6 +271,12 @@ export class RealtimePipeline {
     this.generation++;
     this.ttsEngine.cancelGeneration(this.generation - 1);
     this.translationEngine.reset();
+    emitDiagnostic('pipeline', 'generation_changed', {
+      sessionRef: this.sessionRef,
+      fromMs,
+      toMs,
+      generation: this.generation
+    });
   }
 
   setMode(newMode: OperationMode): void {
@@ -213,6 +288,7 @@ export class RealtimePipeline {
   }
 
   private handleError(code: string, message: string, fatal: boolean): void {
+    emitDiagnostic('pipeline', 'error', { sessionRef: this.sessionRef, code, fatal, messageLength: message.length });
     const errorMsg: ErrorMessage = {
       type: 'ERROR',
       sessionId: this.sessionId,
@@ -226,6 +302,7 @@ export class RealtimePipeline {
 
   stop(): void {
     this.isActive = false;
+    emitDiagnostic('pipeline', 'stopped', { sessionRef: this.sessionRef });
     if (this.sttSession) {
       this.sttSession.endStream();
       this.sttSession = null;

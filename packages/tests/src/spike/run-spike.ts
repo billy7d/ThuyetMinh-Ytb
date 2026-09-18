@@ -172,6 +172,8 @@ async function main() {
 
   const feasibilityMd = `# P0 Feasibility Spike Report — VietDub AI
 
+> **Phạm vi quan trọng:** Đây là kiểm chứng media page/Web Audio, không phải E2E runtime của extension. Các kết quả \`PASS\` không thay thế action invocation của Chrome hoặc temporary-install runner của Firefox. Xem \`docs/audit/P0_REVIEW_FIX_REPORT.md\` cho evidence hiện tại.
+
 **Ngày thực hiện:** ${new Date().toISOString()}
 **Môi trường thử nghiệm:** Windows 11 (NT 10.0), Node.js v24.18.0
 
@@ -250,12 +252,14 @@ async function main() {
 
   const compatibilityMd = `# Browser Compatibility Matrix — VietDub AI
 
-| Nền tảng | Trình duyệt & Phiên bản | Cơ chế thu âm (Capture Method) | Độc lập âm lượng gốc | TTS tiếng Việt độc lập | Hỗ trợ thực tế | Ghi chú kỹ thuật |
+> **Đính chính:** Ma trận này mô tả feasibility/media capability của spike, không phải xác nhận runtime extension hiện tại. Chrome capture còn cần action invocation thật; Firefox extension E2E cần temporary-install runner.
+
+| Nền tảng | Trình duyệt & Phiên bản | Cơ chế thu âm (Capture Method) | Độc lập âm lượng gốc | TTS tiếng Việt độc lập | Hỗ trợ media trong spike | Ghi chú kỹ thuật |
 | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Chrome HTML5 Video** | Chrome 152+ (Win11) | \`tabCapture\` + Offscreen Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Hoạt động ổn định, không bị giới hạn CORS media. |
-| **Chrome YouTube** | Chrome 152+ (Win11) | \`tabCapture\` + Offscreen Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Thu âm trực tiếp từ tab audio stream. |
-| **Firefox HTML5 Video** | Firefox 155+ (Win11) | \`captureStream()\` + Content Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Thu âm trực tiếp từ element trên cùng origin. |
-| **Firefox YouTube** | Firefox 155+ (Win11) | \`captureStream()\` / MediaElementSource | ✅ Có | ✅ Có | **Khả thi (Verified)** | Trích xuất audio từ player MSE sau buffering. |
+| **Chrome HTML5 Video** | Chrome 152+ (Win11) | \`tabCapture\` + Offscreen Web Audio | ✅ Có | ✅ Có | **PASS — media-only** | Không xác nhận extension action invocation. |
+| **Chrome YouTube** | Chrome 152+ (Win11) | \`tabCapture\` + Offscreen Web Audio | ✅ Có | ✅ Có | **PASS — media-only** | Không xác nhận extension action invocation. |
+| **Firefox HTML5 Video** | Firefox 155+ (Win11) | \`captureStream()\` + Content Web Audio | ✅ Có | ✅ Có | **PASS — media-only** | Không xác nhận temporary-install extension E2E. |
+| **Firefox YouTube** | Firefox 155+ (Win11) | \`captureStream()\` / MediaElementSource | ✅ Có | ✅ Có | **PASS — media-only** | Không xác nhận temporary-install extension E2E. |
 | **Video Cross-Origin (No CORS)** | Chrome 152+ | \`tabCapture\` | ✅ Có | ✅ Có | **Hỗ trợ** | Tab audio capture bỏ qua giới hạn CORS của element. |
 | **Video Cross-Origin (No CORS)** | Firefox 155+ | MediaElement Capture | ❌ Hạn chế | ✅ Có | **Cần cấp quyền/CORS** | Browser bảo vệ origin, có thể cần prompt quyền. |
 | **Video có bản quyền (DRM)** | Cả hai trình duyệt | Encrypted Media Extensions (EME) | ❌ Không | ❌ Không | **Không hỗ trợ** | Tuân thủ chính sách bảo vệ DRM của PRD. |
