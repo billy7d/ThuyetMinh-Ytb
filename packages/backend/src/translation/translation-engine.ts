@@ -1,5 +1,6 @@
 import { ContextManager } from './context-manager.js';
 import { SentenceCompletionGuard } from './completion-guard.js';
+import { emitDiagnostic } from '@vietdub/shared';
 
 export interface TranslationOptions {
   preserveNumbers?: boolean;
@@ -102,6 +103,8 @@ export class TranslationEngine {
     // 2. Check if LLM API is available in environment
     if (process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY) {
       try {
+        // Không tự gọi provider trong P0; đây chỉ là điểm mở rộng đã được ghi rõ.
+        emitDiagnostic('translation', 'llm_provider_not_implemented', { sourceLength: trimmed.length });
         const llmResult = await this.callLLM(trimmed);
         if (llmResult) return llmResult;
       } catch (err) {
@@ -129,7 +132,8 @@ Tuân thủ 7 quy tắc bắt buộc:
 ${contextPrompt ? `Ngữ cảnh các câu trước đó:\n${contextPrompt}` : ''}
 Chỉ trả về câu dịch tiếng Việt duy nhất, không giải thích gì thêm.`;
 
-    // Stub for live API call
+    // Stub có chủ đích: không gửi text hoặc phát sinh chi phí API trong P0.
+    void sourceText;
     return null;
   }
 

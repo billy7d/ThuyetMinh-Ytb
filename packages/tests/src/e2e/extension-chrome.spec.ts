@@ -149,6 +149,36 @@ test.describe('Chrome extension E2E — artifact thật', () => {
     }
   });
 
+  test('content script nhận SUBTITLE_EVENT thật và renderer hiển thị overlay', async () => {
+    const popupPage = await openPopupPage();
+    try {
+      const tabId = await getActiveTabId(popupPage);
+      const response = await popupPage.evaluate((request) => new Promise<any>((resolve, reject) => {
+        chrome.tabs.sendMessage(request.tabId, request.message, (result) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(result);
+        });
+      }), {
+        tabId,
+        message: {
+          type: 'SUBTITLE_EVENT',
+          sessionId: 'browser_renderer_regression',
+          segmentId: 'seg_renderer_1',
+          text: 'Bản dịch kiểm thử đã hiển thị.',
+          startMs: 0,
+          endMs: 4000,
+          action: 'show'
+        }
+      });
+
+      expect(response.success).toBe(true);
+      await expect(videoPage.locator('#vietdub-subtitle-text')).toHaveText('Bản dịch kiểm thử đã hiển thị.');
+      await expect(videoPage.locator('#vietdub-subtitle-text')).toBeVisible();
+    } finally {
+      await popupPage.close();
+    }
+  });
+
   test('START → SESSION_READY → ACTIVE → STOP dọn offscreen và khôi phục audio', async () => {
     await videoPage.locator('video').evaluate((video: HTMLVideoElement) => {
       video.volume = 0.4;

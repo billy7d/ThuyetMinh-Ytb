@@ -1,5 +1,6 @@
 import { STTProvider, STTStreamCallbacks, STTStreamSession } from './types.js';
 import { SimpleVAD } from './vad.js';
+import { diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
 export class MockSTTProvider implements STTProvider {
   name = 'MockSTTProvider';
@@ -18,17 +19,26 @@ export class MockSTTProvider implements STTProvider {
 
   createStream(sessionId: string, callbacks: STTStreamCallbacks): STTStreamSession {
     const vad = new SimpleVAD();
-    let accumulatedPcmBytes = 0;
     let streamActive = true;
     let interimSent = false;
     let speechStartMs = 0;
+    const sessionRef = diagnosticSessionRef(sessionId);
 
     return {
       sendAudioChunk: (pcmData: Buffer, timestampMs: number) => {
         if (!streamActive) return;
 
-        accumulatedPcmBytes += pcmData.length;
+        // Mỗi chunk chỉ được đưa qua VAD một lần để không làm sai trạng thái tích lũy.
         const vadResult = vad.process(pcmData, timestampMs);
+        emitDiagnostic('stt', 'vad_chunk', {
+          sessionRef,
+          timestampMs,
+          pcmBytes: pcmData.length,
+          rms: Math.round(vadResult.rms * 10000) / 10000,
+          isVoice: vadResult.isVoice,
+          speechStarted: vadResult.speechStarted,
+          speechEnded: vadResult.speechEnded
+        });
 
         if (vadResult.speechStarted) {
           speechStartMs = timestampMs;
@@ -36,7 +46,7 @@ export class MockSTTProvider implements STTProvider {
         }
 
         // Simulate interim transcript after 300ms of speech
-        if (vad.process(pcmData, timestampMs).isVoice && !interimSent && timestampMs - speechStartMs > 300) {
+        if (vadResult.isVoice && !interimSent && timestampMs - speechStartMs > 300) {
           interimSent = true;
           const sentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
           const words = sentence.split(' ');
@@ -48,6 +58,12 @@ export class MockSTTProvider implements STTProvider {
         if (vadResult.speechEnded) {
           const finalSentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
           this.currentIndex++;
+          emitDiagnostic('stt', 'transcript_final_ready', {
+            sessionRef,
+            startMs: vadResult.startMs,
+            endMs: vadResult.endMs,
+            textLength: finalSentence.length
+          });
           callbacks.onFinal(finalSentence, vadResult.startMs, vadResult.endMs);
           interimSent = false;
         }

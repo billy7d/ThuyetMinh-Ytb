@@ -1,0 +1,23 @@
+[VIETDUB][TRACE] source=direct-websocket-gateway browser_acceptance=blocked
+[VIETDUB][DIAG] gateway.session_start_received sessionRef=s_<redacted> mode=dubbing_and_subtitle audioSampleRate=16000 hasVideoMetadata=false
+[VIETDUB][DIAG] pipeline.started sessionRef=s_<redacted> mode=dubbing_and_subtitle
+[VIETDUB][DIAG] gateway.session_ready_emitted sessionRef=s_<redacted> chunkDurationMs=250
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=0 timestampMs=0 pcmBytes=3200 sampleCount=1600 rms=0.3239 peak=0.4578 nonZeroSamples=1599
+[VIETDUB][DIAG] stt.vad_chunk sessionRef=s_<redacted> timestampMs=0 rms=0.3239 isVoice=true speechStarted=true speechEnded=false
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=1 timestampMs=100 pcmBytes=3200 sampleCount=1600 rms=0.3239 peak=0.4578 nonZeroSamples=1599
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=2 timestampMs=200 pcmBytes=3200 sampleCount=1600 rms=0.3239 peak=0.4578 nonZeroSamples=1599
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=3 timestampMs=300 pcmBytes=3200 sampleCount=1600 rms=0.3239 peak=0.4578 nonZeroSamples=1599
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=4 timestampMs=400 pcmBytes=3200 sampleCount=1600 rms=0 peak=0 nonZeroSamples=0
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=5 timestampMs=700 pcmBytes=3200 sampleCount=1600 rms=0 peak=0 nonZeroSamples=0
+[VIETDUB][DIAG] gateway.audio_chunk_received sequence=6 timestampMs=1000 pcmBytes=3200 sampleCount=1600 rms=0 peak=0 nonZeroSamples=0
+[VIETDUB][DIAG] stt.vad_chunk sessionRef=s_<redacted> timestampMs=1000 rms=0 isVoice=false speechStarted=false speechEnded=true
+[VIETDUB][DIAG] stt.transcript_final_ready sessionRef=s_<redacted> startMs=0 endMs=300 textLength=20
+[VIETDUB][DIAG] pipeline.transcript_final_emitted sessionRef=s_<redacted> segmentId=seg_1 generation=1 sourceLength=20
+[VIETDUB][DIAG] pipeline.translation_ready_emitted sessionRef=s_<redacted> segmentId=seg_1 generation=1 translatedLength=35
+[VIETDUB][DIAG] pipeline.subtitle_event_emitted sessionRef=s_<redacted> segmentId=seg_1 generation=1 textLength=35 startMs=0 endMs=300
+[VIETDUB][DIAG] tts.synthetic_generation sessionRef=s_<redacted> segmentRef=s_<redacted> generation=1 textLength=35 durationMs=2188
+[VIETDUB][DIAG] pipeline.tts_chunk_emitted sessionRef=s_<redacted> segmentId=seg_1 generation=1 audioBytesApprox=70044 durationMs=2188 textLength=35
+[VIETDUB][DIAG] gateway.session_stop_received sessionRef=s_<redacted> reasonLength=4
+[VIETDUB][DIAG] pipeline.stopped sessionRef=s_<redacted>
+[VIETDUB][TRACE] server_events=SESSION_READY,TRANSCRIPT_INTERIM,TRANSCRIPT_FINAL,TRANSLATION_READY,SUBTITLE_EVENT,TTS_CHUNK,LATENCY_METRIC,SESSION_METRICS
+[VIETDUB][TRACE] raw_audio=not_logged raw_text=not_logged tokens=not_logged api_keys=not_logged

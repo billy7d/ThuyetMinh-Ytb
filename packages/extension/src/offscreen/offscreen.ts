@@ -7,7 +7,9 @@ import {
   DEFAULT_TTS_VOLUME,
   OperationMode,
   ServerMessage,
-  VideoPlaybackState
+  VideoPlaybackState,
+  diagnosticSessionRef,
+  emitDiagnostic
 } from '@vietdub/shared';
 
 interface RuntimeResponse {
@@ -142,6 +144,10 @@ async function startCapture(
   wsUrl = 'ws://localhost:8080'
 ): Promise<void> {
   if (!streamId || !sessionId) throw runtimeError('INVALID_START_REQUEST', 'Thiếu streamId hoặc sessionId.');
+  emitDiagnostic('chrome_capture', 'start_requested', {
+    sessionRef: diagnosticSessionRef(sessionId),
+    mode
+  });
 
   if (currentSession?.sessionId === sessionId && startFlight) return startFlight;
   if (currentSession) await stopCapture(currentSession.sessionId, 'replaced-by-new-start');
@@ -189,15 +195,29 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
       video: false
     });
     assertCurrent(session);
+    emitDiagnostic('chrome_capture', 'media_stream_ready', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      audioTracks: session.mediaStream.getAudioTracks().length,
+      totalTracks: session.mediaStream.getTracks().length
+    });
 
     session.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
     if (session.audioCtx.state === 'suspended') await session.audioCtx.resume();
     assertCurrent(session);
+    emitDiagnostic('chrome_capture', 'audio_context_ready', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      state: session.audioCtx.state,
+      sampleRate: session.audioCtx.sampleRate
+    });
 
     const sourceNode = session.audioCtx.createMediaStreamSource(session.mediaStream);
     session.audioMixer = new AudioMixer(session.audioCtx, sourceNode, {
       sourceMode: 'media-stream',
       initialConfig: mixerConfig
+    });
+    emitDiagnostic('chrome_capture', 'audio_graph_ready', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      sourceMode: 'media-stream'
     });
 
     await connectWebSocket(session);
@@ -222,7 +242,10 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
         } catch (error) {
           void failSession(session, runtimeError('AUDIO_SEND_FAILED', String(error), true, true));
         }
-      }
+      },
+      16000,
+      4096,
+      session.sessionId
     );
     assertCurrent(session);
     session.ready = true;
@@ -262,6 +285,7 @@ async function connectWebSocket(session: OffscreenSession): Promise<void> {
       };
       try {
         socket.send(JSON.stringify(startMessage));
+        emitDiagnostic('chrome_ws', 'session_start_sent', { sessionRef: diagnosticSessionRef(session.sessionId) });
       } catch (error) {
         if (!settled) {
           settled = true;
@@ -309,8 +333,14 @@ async function connectWebSocket(session: OffscreenSession): Promise<void> {
           settled = true;
           clearTimeout(timeout);
           session.ready = true;
+          emitDiagnostic('chrome_ws', 'session_ready_received', { sessionRef: diagnosticSessionRef(session.sessionId) });
           resolve();
         }
+        emitDiagnostic('chrome_ws', 'server_event_received', {
+          sessionRef: diagnosticSessionRef(session.sessionId),
+          type: serverMessage.type,
+          generation: 'generation' in serverMessage ? serverMessage.generation : undefined
+        });
         void handleServerMessage(session, serverMessage);
       } catch (error) {
         console.error('[Offscreen] WebSocket message parse failed', JSON.stringify({ code: 'WS_MESSAGE_INVALID', message: String(error) }));
@@ -324,6 +354,11 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
 
   if (message.type === 'SUBTITLE_EVENT' || message.type === 'LATENCY_METRIC' || message.type === 'SESSION_METRICS') {
     notifyBackground(message);
+    emitDiagnostic('chrome_ws', 'event_forwarded_to_background', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      type: message.type,
+      textLength: message.type === 'SUBTITLE_EVENT' ? message.text.length : undefined
+    });
   }
 
   if (message.type === 'ERROR') {
@@ -342,8 +377,17 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
       const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
       if (isCurrent(session) && message.generation === session.generation && session.audioMixer) {
         session.audioMixer.playTTSBuffer(audioBuffer);
+        emitDiagnostic('chrome_tts', 'decoded_and_played', {
+          sessionRef: diagnosticSessionRef(session.sessionId),
+          generation: message.generation,
+          durationMs: Math.round(audioBuffer.duration * 1000)
+        });
       }
     } catch (error) {
+      emitDiagnostic('chrome_tts', 'decoder_or_playback_error', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        generation: message.generation
+      });
       console.error('[Offscreen] TTS playback failed', JSON.stringify({ code: 'TTS_PLAY_FAILED', message: String(error) }));
     }
   }
@@ -430,6 +474,10 @@ async function cleanupSession(session: OffscreenSession, reason: string): Promis
   if (session.cleanupPromise) return session.cleanupPromise;
 
   session.cleanupPromise = (async () => {
+    emitDiagnostic('chrome_capture', 'cleanup_started', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      reasonLength: reason.length
+    });
     if (session.pcmProcessor) {
       session.pcmProcessor.stop();
       session.pcmProcessor = null;
@@ -472,6 +520,7 @@ async function cleanupSession(session: OffscreenSession, reason: string): Promis
       session.ws = null;
     }
     session.ready = false;
+    emitDiagnostic('chrome_capture', 'cleanup_finished', { sessionRef: diagnosticSessionRef(session.sessionId) });
   })();
 
   return session.cleanupPromise;

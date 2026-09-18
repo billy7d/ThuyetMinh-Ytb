@@ -1,7 +1,67 @@
 import { describe, it, expect } from 'vitest';
 import { CostTracker } from '@vietdub/backend';
+import { PCMProcessor } from '../../extension/src/audio/pcm-processor.js';
+
+class FakeAudioNode {
+  connect(node: FakeAudioNode): FakeAudioNode {
+    return node;
+  }
+
+  disconnect(): void {}
+}
+
+class FakeProcessorNode extends FakeAudioNode {
+  onaudioprocess: ((event: { inputBuffer: { getChannelData: (channel: number) => Float32Array } }) => void) | null = null;
+}
+
+class FakeGainNode extends FakeAudioNode {
+  readonly gain = {
+    value: 1,
+    setValueAtTime: (value: number) => {
+      this.gain.value = value;
+    }
+  };
+}
+
+class FakeAudioContext {
+  readonly sampleRate = 48000;
+  readonly destination = new FakeAudioNode();
+  currentTime = 0;
+  processor: FakeProcessorNode | null = null;
+
+  createScriptProcessor(): FakeProcessorNode {
+    this.processor = new FakeProcessorNode();
+    return this.processor;
+  }
+
+  createGain(): FakeGainNode {
+    return new FakeGainNode();
+  }
+}
 
 describe('Extension Communication & Resilience', () => {
+  it('phát timestamp PCM tăng đều khi một callback tạo nhiều chunk', () => {
+    const context = new FakeAudioContext();
+    const timestamps: number[] = [];
+    new PCMProcessor(
+      context as unknown as AudioContext,
+      new FakeAudioNode() as unknown as AudioNode,
+      (_pcmBase64, timestampMs) => timestamps.push(timestampMs),
+      16000,
+      4096,
+      'pcm_timestamp_regression'
+    );
+
+    const inputBlock = new Float32Array(4096);
+    inputBlock.fill(0.1);
+    for (let index = 0; index < 13; index += 1) {
+      context.currentTime = ((index + 1) * 4096) / context.sampleRate;
+      context.processor?.onaudioprocess?.({ inputBuffer: { getChannelData: () => inputBlock } });
+    }
+
+    expect(timestamps).toEqual([0, 250, 500, 750]);
+  });
+
   describe('PCM Chunk Accumulator & Rate Limit Verification', () => {
     it('should accumulate audio into 250ms chunks and never exceed backend 10 chunks/s limit', () => {
       const targetSampleRate = 16000;

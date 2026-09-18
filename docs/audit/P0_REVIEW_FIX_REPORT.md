@@ -3,12 +3,23 @@
 **Dự án:** VietDub AI
 **Ngày kiểm chứng:** 2026-09-18
 **Nhánh:** `fix/firefox-extension-reliability-p0`
-**Phạm vi:** sửa build artifact, handshake content script, session lifecycle, audio graph, popup state và regression tests.
+**Phạm vi:** sửa build artifact, handshake content script, session lifecycle, audio graph, popup state, regression tests và audit runtime phụ đề/thuyết minh.
 
-**CI_QUALITY:** PASS — CI run cuối xác minh commit `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`
+**LOCAL_QUALITY:** PASS — `npm test` 35/35; unit 18/18; integration 17/17; build/validator Chrome+Firefox PASS; typecheck PASS.
+**CI_QUALITY:** PENDING_REMOTE — các run CI được dẫn ở dưới là của commit cũ `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`; không dùng chúng làm bằng chứng cho thay đổi runtime audit mới trước khi push.
 **BROWSER_ACCEPTANCE:** BLOCKED — Chrome page mở được sau khi user khởi động, nhưng policy chặn `chrome://extensions`; Firefox vẫn không được expose
 **MERGE_READY:** NO
 **PR:** [Draft PR #1](https://github.com/billy7d/ThuyetMinh-Ytb/pull/1)
+
+## Addendum — missing subtitles/dubbing runtime audit
+
+Kết quả mới nhất và trace rút gọn nằm tại [2026-09-18-subtitle-dubbing-runtime-audit.md](evidence/2026-09-18-subtitle-dubbing-runtime-audit.md) và [2026-09-18-runtime-trace.log](evidence/2026-09-18-runtime-trace.log).
+
+- Direct WebSocket runtime đã PASS toàn bộ mock path từ `SESSION_START` tới `SUBTITLE_EVENT`, `TTS_CHUNK` và `SESSION_METRICS` khi PCM có RMS `0.3239`; silence có RMS `0` và VAD phát hiện speech boundary.
+- Không được kết luận browser capture PASS từ việc volume thay đổi. AudioMixer có thể điều khiển native playback trong khi STT tap vẫn silent hoặc chưa gửi chunk.
+- Hai lỗi P0 đã sửa: VAD stateful bị gọi hai lần trên cùng chunk; PCM timestamp có thể trùng khi một callback tạo nhiều chunk. Firefox capture nay ưu tiên `captureStream`/`mozCaptureStream` có audio track và log RMS/source mode.
+- Renderer/decoder browser thật chưa có evidence vì Chrome URL policy chặn `chrome://extensions` và Firefox không xuất hiện. Vì vậy nguyên nhân browser-specific cuối cùng vẫn là `NOT_RUN`, không suy diễn thành PASS.
+- `P0 mock pipeline: PASS`; `Real STT: NOT_IMPLEMENTED`; `Real Translation: NOT_IMPLEMENTED`; `Real Vietnamese TTS: NOT_IMPLEMENTED`.
 
 ## Trạng thái nghiệm thu
 
@@ -24,13 +35,13 @@
 | Chrome capture lifecycle | BLOCKED | `tabCapture` trả `PERMISSION_DENIED`: action toolbar chưa được invoke trong CDP harness; 3 case được skip có lý do, không tính PASS |
 | Firefox media page smoke | BLOCKED | Playwright Firefox trong host hiện không tạo được page (`browserContext.newPage` lỗi nội bộ) |
 | Firefox extension runtime E2E | BLOCKED | Firefox không xuất hiện trong browser inventory, không có executable chuẩn và chưa có `web-ext`/temporary-install runner; không giữ lại test injection giả |
-| CI/PR checks | PASS | Workflow [Quality run #35252585548](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548), 9/9 job PASS trên đúng HEAD `a7282d2f4026dc4ed56b7e95d2c751d5286ba554` |
+| CI/PR checks | PASS (baseline cũ) | Workflow [Quality run #35252585548](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548), 9/9 job PASS trên đúng HEAD cũ `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`; current runtime audit vẫn PENDING_REMOTE |
 
 ## CI quality evidence
 
 Workflow: `.github/workflows/quality.yml` — trigger `pull_request`, push branch `fix/firefox-extension-reliability-p0` và `workflow_dispatch`; mỗi job dùng Node `24.18.0`, npm cache, `npm ci`, timeout hữu hạn và `contents: read`.
 
-Canonical PR run: [Quality #35252585548](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548). Push run tương ứng: [Quality #35252581671](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252581671). Cả hai đều `completed/success` trên HEAD `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`.
+Canonical PR run baseline: [Quality #35252585548](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548). Push run tương ứng: [Quality #35252581671](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252581671). Cả hai đều `completed/success` trên HEAD cũ `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`; workflow của commit runtime audit mới chưa chạy ở thời điểm lập addendum.
 
 | Job | Kết quả |
 | :--- | :---: |
@@ -55,7 +66,9 @@ Chrome `tabCapture` bắt buộc extension phải được invoke trên tab hi�
 | Chrome offscreen HTML bị source copy ghi đè | Đã để Vite sở hữu HTML compile, thêm regression test và validator asset path. |
 | `build:firefox`/`build:chrome` phụ thuộc artifact target khác | Đã tách validator theo `--target`; mỗi lệnh build chỉ kiểm tra target của nó. |
 | Popup inject/retry và session race | Popup chỉ gửi START; background có handshake single-flight, `SessionManager`, generation và cleanup idempotent. |
-| Firefox audio capture có nguy cơ double playback/mất STT | MediaElementSource được ưu tiên; captureStream là fallback có native-volume control; STT tap nằm trước gain và TTS độc lập. |
+| Firefox audio capture có nguy cơ double playback/mất STT | `captureStream`/`mozCaptureStream` được ưu tiên khi có audio track; `MediaElementSource` chỉ là fallback. STT tap nằm trước gain, TTS độc lập và native playback không bị nối lại vào destination. |
+| Mock VAD state bị đọc hai lần | `MockSTTProvider` dùng đúng một kết quả `vad.process()` cho mỗi chunk; regression test đếm số lần gọi và vẫn chốt final transcript. |
+| PCM timestamp có thể trùng | `PCMProcessor` tính timestamp theo số sample đã phát ra; regression test kiểm tra chuỗi `0,250,500,750` khi một callback tạo nhiều chunk. |
 | Test cũ mô phỏng extension bằng injection | Đã bỏ fake messaging tests; thêm production integration, bundle smoke và artifact extension E2E fail-closed. |
 | Test phụ thuộc backend/cổng cố định | E2E tự build backend, health-check và dùng cổng động; cleanup process/profile theo test. |
 | UI suy đoán video hoặc ACTIVE/retry sai | `hasVideo` mặc định false, popup lấy snapshot background, phân loại lỗi và không tự retry permission/video error. |
@@ -63,8 +76,8 @@ Chrome `tabCapture` bắt buộc extension phải được invoke trên tab hi�
 ## Test evidence và regression
 
 - `npm run build`: PASS từ trạng thái đã bỏ toàn bộ generated package artifacts; `npm run build:firefox` và `npm run build:chrome` PASS độc lập khi target còn lại không tồn tại; validator target-specific PASS.
-- `npm test`: 9 files, 32/32 PASS; `npm run test:unit`: 17/17 PASS; `npm run test:integration`: 15/15 PASS.
-- `npm run test:e2e`: bundle smoke 2/2 PASS; 8 case browser runtime SKIPPED có annotation `BLOCKED`, 0 fake extension PASS.
+- Baseline trước runtime audit: `npm test` 32/32; unit 17/17; integration 15/15. Current results được ghi ở Addendum: `npm test` 35/35; unit 18/18; integration 17/17.
+- `npm run test:e2e`: bundle smoke 2/2 PASS; 9 case browser runtime SKIPPED có annotation `BLOCKED`, 0 fake extension PASS.
 - Chrome/Edge artifact smoke: PING thật PASS trên Edge Chromium fallback; Chrome capture lifecycle BLOCKED bởi `activeTab` action invocation.
 - Audio graph regression: 2/2 integration PASS cho capture-stream không double playback, STT tap, TTS branch và restoration.
 - Audio restoration runtime browser, Firefox extension E2E và YouTube smoke: `BLOCKED`/`NOT_RUN`, không suy diễn từ media spike.
@@ -91,7 +104,7 @@ Evidence mới của lần kiểm tra desktop này nằm tại [2026-09-18-p0-re
 
 ## Merge readiness
 
-**NOT READY — P0 browser evidence còn thiếu.** `CI_QUALITY=PASS`, nhưng `BROWSER_ACCEPTANCE=BLOCKED`: Chrome capture action invocation, Firefox extension lifecycle và YouTube smoke chưa có evidence desktop. Theo phạm vi PRD, branch chưa merge, chưa deploy và chưa xóa.
+**NOT READY — P0 browser evidence còn thiếu.** Với thay đổi hiện tại, `CI_QUALITY=PENDING_REMOTE`, `BROWSER_ACCEPTANCE=BLOCKED`: Chrome capture action invocation, Firefox extension lifecycle và YouTube smoke chưa có evidence desktop. Theo phạm vi PRD, branch chưa merge, chưa deploy và chưa xóa.
 
 ## PR #1 và quyền GitHub
 
@@ -117,7 +130,7 @@ Vì không có authenticated write channel, mô tả PR chưa được cập nh�
 - Thêm `.github/workflows/quality.yml` cho pull request (kể cả Draft), push branch và workflow dispatch.
 - CI dùng Node 24.18.0, npm cache, `npm ci`, `contents: read`, timeout và concurrency.
 - Quality gates: shared/backend build, Firefox/Chrome build độc lập, full build + artifact validator, typecheck, unit, integration, bundle smoke và `git diff --check`.
-- Canonical run: https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548 — 9/9 jobs PASS trên `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`.
+- Baseline canonical run: https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35252585548 — 9/9 jobs PASS trên commit cũ `a7282d2f4026dc4ed56b7e95d2c751d5286ba554`; không thay thế CI run của commit runtime audit mới.
 
 ## Test đã xác minh
 
@@ -138,7 +151,7 @@ Backend hiện vẫn dùng MockSTT/TTS theo phạm vi P0; CI và test không ch�
 
 ## Điều kiện merge
 
-`CI_QUALITY=PASS`, `BROWSER_ACCEPTANCE=BLOCKED`, `MERGE_READY=NO`. Chỉ xem xét merge sau khi có bằng chứng desktop Chrome/Firefox toolbar, tab capture, lifecycle audio và YouTube smoke; giữ PR ở Draft cho tới lúc đó.
+`CI_QUALITY=PENDING_REMOTE`, `BROWSER_ACCEPTANCE=BLOCKED`, `MERGE_READY=NO`. Chỉ xem xét merge sau khi có CI trên commit mới và bằng chứng desktop Chrome/Firefox toolbar, tab capture, lifecycle audio và YouTube smoke; giữ PR ở Draft cho tới lúc đó.
 ```
 
 ## Nguyên nhân gốc và thay đổi

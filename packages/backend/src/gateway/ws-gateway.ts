@@ -4,7 +4,10 @@ import {
   ServerMessage,
   SessionReadyMessage,
   SessionMetricsMessage,
-  DEFAULT_MODE
+  DEFAULT_MODE,
+  calculatePcm16Stats,
+  diagnosticSessionRef,
+  emitDiagnostic
 } from '@vietdub/shared';
 import { RealtimePipeline } from '../pipeline/realtime-pipeline.js';
 import { MockSTTProvider } from '../stt/mock-stt.js';
@@ -62,6 +65,14 @@ export class WebSocketGateway {
       case 'SESSION_START': {
         const sessionId = msg.sessionId;
         const mode = msg.mode || DEFAULT_MODE;
+        const sessionRef = diagnosticSessionRef(sessionId);
+
+        emitDiagnostic('gateway', 'session_start_received', {
+          sessionRef,
+          mode,
+          audioSampleRate: msg.audioSampleRate,
+          hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
+        });
 
         // Clean up any existing session with this ID
         this.terminateSession(sessionId);
@@ -94,6 +105,11 @@ export class WebSocketGateway {
           }
         };
         this.sendSafe(ws, readyMsg);
+        emitDiagnostic('gateway', 'session_ready_emitted', {
+          sessionRef,
+          audioSampleRate: readyMsg.sessionConfig.audioSampleRate,
+          chunkDurationMs: readyMsg.sessionConfig.chunkDurationMs
+        });
         break;
       }
 
@@ -101,7 +117,24 @@ export class WebSocketGateway {
         const session = this.activeSessions.get(msg.sessionId);
         if (session) {
           const pcmBuffer = Buffer.from(msg.pcmBase64, 'base64');
+          const stats = calculatePcm16Stats(pcmBuffer);
+          emitDiagnostic('gateway', 'audio_chunk_received', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            sequence: msg.sequence,
+            timestampMs: msg.timestampMs,
+            pcmBytes: pcmBuffer.length,
+            sampleCount: stats.sampleCount,
+            rms: Math.round(stats.rms * 10000) / 10000,
+            peak: Math.round(stats.peak * 10000) / 10000,
+            nonZeroSamples: stats.nonZeroSamples
+          });
           session.pipeline.handleAudioChunk(pcmBuffer, msg.timestampMs);
+        } else {
+          emitDiagnostic('gateway', 'audio_chunk_ignored', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            sequence: msg.sequence,
+            hasSession: false
+          });
         }
         break;
       }
@@ -125,6 +158,10 @@ export class WebSocketGateway {
       case 'SESSION_STOP': {
         const session = this.activeSessions.get(msg.sessionId);
         if (session) {
+          emitDiagnostic('gateway', 'session_stop_received', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            reasonLength: msg.reason?.length || 0
+          });
           const metrics = session.pipeline.getCostTracker().getMetrics();
           const metricsMsg: SessionMetricsMessage = {
             type: 'SESSION_METRICS',

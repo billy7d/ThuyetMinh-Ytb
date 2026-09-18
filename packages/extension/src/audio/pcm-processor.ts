@@ -1,3 +1,5 @@
+import { calculateFloatPcmStats, diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
+
 export interface PCMChunkHandler {
   (pcmBase64: string, timestampMs: number): void;
 }
@@ -14,19 +16,23 @@ export class PCMProcessor {
   private accumulatedSamples: Float32Array[] = [];
   private accumulatedLength: number = 0;
   private targetChunkSamples: number; // 4000 samples = 250ms at 16kHz
+  private emittedSamples = 0;
+  private sessionId?: string;
 
   constructor(
     audioCtx: AudioContext,
     inputNode: AudioNode,
     onChunk: PCMChunkHandler,
     targetSampleRate = 16000,
-    bufferSize = 4096
+    bufferSize = 4096,
+    sessionId?: string
   ) {
     this.audioCtx = audioCtx;
     this.inputNode = inputNode;
     this.onChunk = onChunk;
     this.targetSampleRate = targetSampleRate;
     this.bufferSize = bufferSize;
+    this.sessionId = sessionId;
     // 250ms chunk = 0.25 * targetSampleRate (e.g. 4000 samples) -> 4 chunks/sec
     this.targetChunkSamples = Math.round(targetSampleRate * 0.25);
 
@@ -68,7 +74,20 @@ export class PCMProcessor {
 
         const pcm16 = this.floatTo16BitPCM(chunk);
         const base64 = this.arrayBufferToBase64(pcm16.buffer);
-        const timestampMs = Math.round(this.audioCtx.currentTime * 1000);
+        // Timestamp tính theo số mẫu đã phát ra để nhiều chunk trong một callback vẫn tăng đều.
+        const timestampMs = Math.round((this.emittedSamples / this.targetSampleRate) * 1000);
+        this.emittedSamples += chunk.length;
+        const stats = calculateFloatPcmStats(chunk);
+        emitDiagnostic('pcm', 'chunk_emitted', {
+          sessionRef: diagnosticSessionRef(this.sessionId),
+          sampleCount: stats.sampleCount,
+          byteLength: pcm16.byteLength,
+          rms: Math.round(stats.rms * 10000) / 10000,
+          peak: Math.round(stats.peak * 10000) / 10000,
+          nonZeroSamples: stats.nonZeroSamples,
+          hasSignal: stats.rms >= 0.015,
+          timestampMs
+        });
         try {
           this.onChunk(base64, timestampMs);
         } catch (error) {
@@ -146,5 +165,6 @@ export class PCMProcessor {
     }
     this.accumulatedSamples = [];
     this.accumulatedLength = 0;
+    this.emittedSamples = 0;
   }
 }

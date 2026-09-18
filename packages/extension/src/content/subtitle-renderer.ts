@@ -1,3 +1,5 @@
+import { emitDiagnostic } from '@vietdub/shared';
+
 export interface SubtitleConfig {
   fontSizePx: number;
   visible: boolean;
@@ -75,8 +77,15 @@ export class SubtitleRenderer {
     }
   }
 
-  showSubtitle(segmentId: string, text: string, durationMs: number = 4000): void {
-    if (!this.textEl || !this.config.visible) return;
+  showSubtitle(segmentId: string, text: string, durationMs: number = 4000): boolean {
+    if (!this.textEl || !this.config.visible) {
+      emitDiagnostic('subtitle_renderer', 'display_skipped', {
+        hasTextElement: Boolean(this.textEl),
+        visible: this.config.visible,
+        textLength: text.length
+      });
+      return false;
+    }
 
     this.currentSegmentId = segmentId;
     this.textEl.textContent = text;
@@ -87,6 +96,11 @@ export class SubtitleRenderer {
     this.hideTimeout = setTimeout(() => {
       this.hideSubtitle(segmentId);
     }, durationMs);
+    emitDiagnostic('subtitle_renderer', 'displayed', {
+      textLength: text.length,
+      durationMs
+    });
+    return true;
   }
 
   hideSubtitle(segmentId?: string): void {
