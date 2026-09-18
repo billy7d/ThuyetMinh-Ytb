@@ -75,4 +75,4 @@ API browser hiện chỉ cung cấp screenshot dưới dạng ảnh inline, khô
 - `npm run test:e2e`: 2 bundle-smoke PASS; 9 browser runtime cases SKIPPED/BLOCKED bởi harness/browser availability.
 - `git diff --check`: PASS.
 
-`CI_QUALITY` của commit mới chỉ được gọi là PASS sau khi push và workflow mới hoàn tất; run CI cũ trên commit trước không được dùng làm bằng chứng cho thay đổi này.
+CI mới đã PASS trên commit `e6fa01c9c22936d3d1c0c83074717d138c273a27`: push run [35307275840](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307275840) và PR run [35307278052](https://github.com/billy7d/ThuyetMinh-Ytb/actions/runs/35307278052), 9/9 jobs completed/success. Browser acceptance vẫn BLOCKED độc lập với CI.
