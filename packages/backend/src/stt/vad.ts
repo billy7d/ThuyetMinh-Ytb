@@ -33,11 +33,23 @@ export class SimpleVAD {
     speechEnded: boolean;
     startMs: number;
     endMs: number;
+    rms: number;
   } {
-    const numSamples = pcmBuffer.length / 2;
+    const numSamples = Math.floor(pcmBuffer.length / 2);
+    if (numSamples === 0) {
+      return {
+        isVoice: false,
+        speechStarted: false,
+        speechEnded: false,
+        startMs: this.speechStartMs,
+        endMs: currentTimestampMs,
+        rms: 0
+      };
+    }
+
     let sumSquares = 0;
 
-    for (let i = 0; i < pcmBuffer.length; i += 2) {
+    for (let i = 0; i < numSamples * 2; i += 2) {
       const sample = pcmBuffer.readInt16LE(i) / 32768.0;
       sumSquares += sample * sample;
     }
@@ -81,7 +93,8 @@ export class SimpleVAD {
       speechStarted,
       speechEnded,
       startMs: outStartMs,
-      endMs: outEndMs
+      endMs: outEndMs,
+      rms
     };
   }
 

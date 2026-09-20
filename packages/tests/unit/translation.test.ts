@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ContextManager,
   SentenceCompletionGuard,
+  DeterministicTranslationProvider,
   TranslationEngine
 } from '@vietdub/backend';
 
@@ -49,7 +50,7 @@ describe('SentenceCompletionGuard', () => {
 
 describe('TranslationEngine with PRD Rule Set', () => {
   it('should correctly translate PRD reference sentences into natural spoken Vietnamese', async () => {
-    const engine = new TranslationEngine();
+    const engine = new TranslationEngine(new DeterministicTranslationProvider());
 
     const r1 = await engine.translate("Let's break it down.", 0, 1000);
     expect(r1.translatedText).toBe('Chúng ta cùng phân tích kỹ hơn nhé.');
@@ -68,7 +69,7 @@ describe('TranslationEngine with PRD Rule Set', () => {
   });
 
   it('should buffer incomplete thoughts until resolved', async () => {
-    const engine = new TranslationEngine();
+    const engine = new TranslationEngine(new DeterministicTranslationProvider());
 
     // Partial sentence ending with 'because'
     const step1 = await engine.translate("We stopped the project because", 0, 1000);

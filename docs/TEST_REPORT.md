@@ -1,51 +1,36 @@
-# Báo cáo Tổng hợp Kiểm thử (Test Report) — VietDub AI
+# Test Report — VietDub AI
 
-**Ngày hoàn thành:** 17/09/2026  
-**Môi trường thực thi:**  
-- Hệ điều hành: Windows 11 (NT 10.0)  
-- Node.js: v24.18.0, npm: 11.16.0  
-- Google Chrome: v152.0.7977.78 (Desktop thật)  
-- Mozilla Firefox: v155.0 (Desktop thật)  
+Ngày cập nhật: 2026-09-21
 
----
+## Trạng thái tổng thể
 
-## 1. Tóm tắt Kết quả Thực thi
+`BLOCKED — LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED` — runtime mặc định đã chuyển sang worker local fail-closed, manifest/checksum/license gate, downloader có consent và zero-cost enforcement. Chưa thể công bố P0 PASS vì môi trường này không có model/worker local, Firefox runtime hoặc phần cứng/evidence live.
 
-| Phân loại Kiểm thử | Framework | Số lượng Test Cases | Passed | Failed | Trạng thái |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **P0 Feasibility Spike** | Node.js + Playwright (Chrome & Firefox thật) | 6 tiêu chí âm thanh | 6 | 0 | **PASS (100%)** |
-| **Unit Tests** | Vitest v3.2.7 | 16 tests | 16 | 0 | **PASS (100%)** |
-| **Integration Tests** | Vitest v3.2.7 | 2 tests | 2 | 0 | **PASS (100%)** |
-| **E2E Chrome Tests** | Playwright (Chrome Extension Unpacked) | 5 tests | 5 | 0 | **PASS (100%)** |
-| **E2E Firefox Tests** | Playwright (Firefox Browser Context) | 5 tests | 5 | 0 | **PASS (100%)** |
-| **Translation & Latency Benchmark** | 30 mẫu kiểm thử chuẩn hóa | 30 mẫu | 30 | 0 | **PASS (100%)** |
-| **TỔNG CỘNG** | — | **64 tests & checks** | **64** | **0** | **100% PASS** |
+## Đã kiểm tra cục bộ
 
----
+- TypeScript typecheck: PASS.
+- Production build cho shared, backend, Chrome extension, Firefox extension và test package: PASS.
+- Unit/integration/provider/local-runtime/P0 reliability contract tests: 16 test files, 53 tests PASS.
+- Chrome/Firefox extension artifact validators: PASS.
+- Current Chrome artifact E2E: BLOCKED before tests because the macOS harness cannot expose the unpacked MV3 service worker; an earlier 5/5 local HTML5 fixture run on the pre-merge base is not final acceptance evidence.
+- Firefox smoke E2E: BLOCKED vì Playwright Firefox executable không có trong môi trường.
+- `npm run benchmark`: command PASS for 30 samples, explicitly `FIXTURE_ONLY_NOT_PRODUCTION_EVIDENCE`; no live quality score is claimed.
+- `npm audit --omit=dev`: 0 production vulnerabilities. Full audit còn 2 moderate trong Vitest/@vitest/mocker; bản sửa là breaking Vitest 5 và chưa tự động áp dụng.
+- Tracked-source secret scan và `git diff --check`: PASS.
 
-## 2. Chi tiết Kết quả từng Bộ Kiểm thử
+## Chưa được phép gọi là PASS
 
-### 2.1. P0 Feasibility Spike (Kiểm chứng Âm thanh Thực tế)
-- **Chrome Capture:** Tín hiệu RMS đạt `0.1333` ở 100% âm lượng; khi tắt âm thanh gốc về 0%, tín hiệu STT tap vẫn đạt `0.1558` (> 0).
-- **Firefox Capture:** Tín hiệu RMS đạt `0.1494` ở 100% âm lượng; khi tắt âm thanh gốc về 0%, tín hiệu STT tap vẫn đạt `0.1524` (> 0).
-- **Nhánh TTS độc lập:** Phát âm thanh độc lập với RMS `0.5704` (Chrome) và `0.5651` (Firefox).
-- **Phục hồi an toàn:** Ngắt kết nối Web Audio và trả lại trạng thái phát video bình thường không gây lỗi.
+- Chưa chạy STT/translation/TTS worker local thật vì môi trường không có model weights, worker binary/Python runtime hoặc hardware profile.
+- Chưa đo latency p50/p95 live và chưa chạy soak 30 phút.
+- Chưa có Chrome acceptance trên YouTube/HTML5 với local model thật.
+- Chưa có Firefox acceptance; máy hiện không có Firefox executable.
+- Chưa xác minh audio restoration bằng thao tác người dùng trên cả hai browser.
+- Backend health smoke PASS: loopback server trả HTTP 503 an toàn khi manifest/worker thiếu.
 
-### 2.2. Unit & Integration Tests (Vitest)
-- `unit/vad.test.ts`: Kiểm tra phát hiện khoảng lặng, biên độ giọng nói và kích hoạt sự kiện kết thúc câu dứt điểm. (3/3 pass)
-- `unit/translation.test.ts`: Kiểm tra bộ nhớ trượt 5 câu gần nhất, tra cứu từ điển thuật ngữ chuyên ngành, kiểm tra câu chưa hoàn chỉnh (`SentenceCompletionGuard`) và 5 câu mẫu bắt buộc trong PRD. (7/7 pass)
-- `unit/tts.test.ts`: Kiểm tra tạo buffer WAV chuẩn RIFF, định dạng PCM 16-bit Mono và cơ chế hủy generation (`cancelGeneration`) khi người dùng tua video. (3/3 pass)
-- `unit/cost.test.ts`: Kiểm tra tính toán chi phí phiên, công thức dự toán 1 giờ video và `BudgetGuard` ngắt kết nối an toàn khi vượt hạn mức. (3/3 pass)
-- `integration/pipeline.test.ts`: Kiểm tra luồng dữ liệu trọn vẹn từ audio chunk đầu vào -> STT -> Dịch thuật -> TTS -> Subtitle -> Latency metrics; kiểm tra chế độ `subtitle_only` không phát TTS. (2/2 pass)
+## Evidence cần bổ sung để đóng P0
 
-### 2.3. Browser E2E Tests (Playwright)
-- **Chrome:** Phát hiện HTML5 video, xác nhận âm thanh vào STT tap khi video gốc 100% và 0%, phát TTS độc lập, khôi phục khi dừng. (5/5 pass)
-- **Firefox:** Phát hiện HTML5 video, xác nhận âm thanh vào STT tap khi video gốc 100% và 0%, phát TTS độc lập, khôi phục khi dừng. (5/5 pass)
+Hoàn thiện `models/manifest.json` và ba local workers theo `docs/LOCAL_RUNTIME.md`, sau đó chạy manual/browser acceptance checklist, lưu log không chứa dữ liệu nhạy cảm, transcript/translation/TTS evidence và latency report. Chỉ khi đủ evidence cho cả Chrome và Firefox mới đổi trạng thái P0 sang PASS.
 
-### 2.4. Benchmark Chất lượng Dịch & Độ trễ
-- **Số mẫu:** 30 đoạn câu tiếng Anh bao phủ 8 lĩnh vực.
-- **Điểm chất lượng trung bình:** **4.6 / 5.0** (Vượt mục tiêu PRD ≥ 4.0).
-- **Độ trễ p50:** **318 ms** (Mục tiêu PRD ≤ 3000 ms).
-- **Độ trễ p95:** **368 ms** (Mục tiêu PRD ≤ 6000 ms).
-- **Độ lệch phụ đề:** **~15 ms** (Mục tiêu PRD ≤ 300 ms).
-- **Phát trùng lặp:** **0 lần**.
+## Ghi chú an toàn
+
+Không commit API key hoặc model weights. Audio chỉ được gửi tới worker sau Start; backend không lưu transcript/audio theo thiết kế hiện tại. `npm audit` vẫn cần được xử lý riêng trước khi release vì dependency tree còn cảnh báo moderate.

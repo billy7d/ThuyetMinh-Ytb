@@ -120,6 +120,9 @@
           sttSignalRMS_original100: 0,
           sttSignalRMS_original50: 0,
           sttSignalRMS_original0: 0,
+          originalOutputRMS_original100: 0,
+          originalOutputRMS_original50: 0,
+          originalOutputRMS_original0: 0,
           ttsPlayedSeparately: false,
           ttsSignalRMS: 0,
           originalRestored: false,
@@ -153,11 +156,15 @@
           const sttAnalyser = audioCtx.createAnalyser();
           sttAnalyser.fftSize = 512;
           const dataArray = new Float32Array(sttAnalyser.frequencyBinCount);
+          const originalOutputAnalyser = audioCtx.createAnalyser();
+          originalOutputAnalyser.fftSize = 512;
+          const originalOutputData = new Float32Array(originalOutputAnalyser.frequencyBinCount);
 
-          // Connect STT branch BEFORE originalGainNode
+          // Nhánh STT nằm trước gain âm thanh gốc để vẫn giữ tín hiệu khi giảm volume.
           sourceNode.connect(sttAnalyser);
           sourceNode.connect(originalGainNode);
-          originalGainNode.connect(audioCtx.destination);
+          originalGainNode.connect(originalOutputAnalyser);
+          originalOutputAnalyser.connect(audioCtx.destination);
 
           // Helper to measure RMS
           function measureRMS(analyser, samples = 10) {
@@ -183,20 +190,46 @@
             });
           }
 
+          function measureOutputRMS(samples = 10) {
+            return new Promise(resolve => {
+              let totalRMS = 0;
+              let count = 0;
+              const interval = setInterval(() => {
+                originalOutputAnalyser.getFloatTimeDomainData(originalOutputData);
+                let sum = 0;
+                for (let i = 0; i < originalOutputData.length; i++) {
+                  sum += originalOutputData[i] * originalOutputData[i];
+                }
+                totalRMS += Math.sqrt(sum / originalOutputData.length);
+                count++;
+                if (count >= samples) {
+                  clearInterval(interval);
+                  resolve(totalRMS / count);
+                }
+              }, 50);
+            });
+          }
+
           // 1. Measure at 100% original volume
           originalGainNode.gain.value = 1.0;
           results.sttSignalRMS_original100 = await measureRMS(sttAnalyser, 10);
+          results.originalOutputRMS_original100 = await measureOutputRMS(10);
           log(`RMS at 100% original volume: ${results.sttSignalRMS_original100.toFixed(4)}`);
+          log(`Original output RMS at 100%: ${results.originalOutputRMS_original100.toFixed(4)}`);
 
           // 2. Measure at 50% original volume
           originalGainNode.gain.value = 0.5;
           results.sttSignalRMS_original50 = await measureRMS(sttAnalyser, 10);
+          results.originalOutputRMS_original50 = await measureOutputRMS(10);
           log(`RMS at 50% original volume: ${results.sttSignalRMS_original50.toFixed(4)}`);
+          log(`Original output RMS at 50%: ${results.originalOutputRMS_original50.toFixed(4)}`);
 
           // 3. Measure at 0% (MUTED original output to speaker)
           originalGainNode.gain.value = 0.0;
           results.sttSignalRMS_original0 = await measureRMS(sttAnalyser, 10);
+          results.originalOutputRMS_original0 = await measureOutputRMS(10);
           log(`RMS at 0% original volume: ${results.sttSignalRMS_original0.toFixed(4)}`);
+          log(`Original output RMS at 0%: ${results.originalOutputRMS_original0.toFixed(4)}`);
 
           // 4. Test TTS independent playback branch
           const ttsOsc = audioCtx.createOscillator();
@@ -234,6 +267,7 @@
           sourceNode.disconnect();
           originalGainNode.disconnect();
           sttAnalyser.disconnect();
+          originalOutputAnalyser.disconnect();
           await audioCtx.close();
           results.originalRestored = true;
           log('Audio graph safely disconnected and restored.');

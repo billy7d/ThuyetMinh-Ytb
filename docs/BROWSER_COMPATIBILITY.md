@@ -1,12 +1,21 @@
-# Browser Compatibility Matrix — VietDub AI
+# Browser Compatibility Status
 
-| Nền tảng | Trình duyệt & Phiên bản | Cơ chế thu âm (Capture Method) | Độc lập âm lượng gốc | TTS tiếng Việt độc lập | Hỗ trợ thực tế | Ghi chú kỹ thuật |
-| :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Chrome HTML5 Video** | Chrome 152+ (Win11) | `tabCapture` + Offscreen Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Hoạt động ổn định, không bị giới hạn CORS media. |
-| **Chrome YouTube** | Chrome 152+ (Win11) | `tabCapture` + Offscreen Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Thu âm trực tiếp từ tab audio stream. |
-| **Firefox HTML5 Video** | Firefox 155+ (Win11) | `captureStream()` + Content Web Audio | ✅ Có | ✅ Có | **Toàn diện (Full)** | Thu âm trực tiếp từ element trên cùng origin. |
-| **Firefox YouTube** | Firefox 155+ (Win11) | `captureStream()` / MediaElementSource | ✅ Có | ✅ Có | **Khả thi (Verified)** | Trích xuất audio từ player MSE sau buffering. |
-| **Video Cross-Origin (No CORS)** | Chrome 152+ | `tabCapture` | ✅ Có | ✅ Có | **Hỗ trợ** | Tab audio capture bỏ qua giới hạn CORS của element. |
-| **Video Cross-Origin (No CORS)** | Firefox 155+ | MediaElement Capture | ❌ Hạn chế | ✅ Có | **Cần cấp quyền/CORS** | Browser bảo vệ origin, có thể cần prompt quyền. |
-| **Video có bản quyền (DRM)** | Cả hai trình duyệt | Encrypted Media Extensions (EME) | ❌ Không | ❌ Không | **Không hỗ trợ** | Tuân thủ chính sách bảo vệ DRM của PRD. |
-| **Livestream (HLS/DASH)** | Cả hai trình duyệt | Continuous Buffer Capture | ✅ Có | ✅ Có | **Hỗ trợ** | Thuyết minh liên tục với độ trễ có kiểm soát. |
+Ngày cập nhật: 2026-09-21
+
+## Current status
+
+| Browser | Build artifact | Live production acceptance | Status |
+|---|---|---|---|
+| Chrome | `packages/extension/dist/chrome` | Artifact builds/validates; current MV3 service-worker harness blocked before tests | BLOCKED / NOT VERIFIED |
+| Firefox | `packages/extension/dist/firefox` | Firefox executable không có trong môi trường | BLOCKED |
+
+The extension contains separate Chrome offscreen and Firefox content capture paths. Buildability is not browser acceptance: the PRD requires real Chrome and Firefox evidence for audio capture, subtitle visibility, Vietnamese TTS audibility, restore-on-stop and lifecycle cleanup.
+
+## Manual acceptance prerequisites
+
+1. Install/load the matching unpacked extension artifact in Chrome and Firefox.
+2. Install verified local models/workers and start the backend with `docs/PROVIDER_SETUP.md` and `docs/LOCAL_RUNTIME.md`.
+3. Run the checklist in `docs/BROWSER_ACCEPTANCE_CHECKLIST.md` on both a YouTube tab and a plain HTML5 video page.
+4. Save console/backend logs and screen/audio evidence without credentials.
+
+Historical feasibility/media spikes are retained in `docs/audit/`; they are not live local-model acceptance evidence.

@@ -1,262 +1,670 @@
-import { SubtitleRenderer } from './subtitle-renderer.js';
+import { SubtitleRenderer, resolveSubtitleDisplayDurationMs } from './subtitle-renderer.js';
 import { VideoSyncController } from '../sync/video-sync.js';
-import { AudioMixer } from '../audio/mixer.js';
+import { AudioMixer, AudioSourceMode } from '../audio/mixer.js';
 import { PCMProcessor } from '../audio/pcm-processor.js';
-import { ClientMessage, ServerMessage, OperationMode, AudioMixerConfig } from '@vietdub/shared';
+import {
+  AudioMixerConfig,
+  ClientMessage,
+  DEFAULT_ORIGINAL_VOLUME,
+  DEFAULT_TTS_VOLUME,
+  OperationMode,
+  ServerMessage,
+  diagnosticSessionRef,
+  emitDiagnostic
+} from '@vietdub/shared';
 
-let activeVideo: HTMLVideoElement | null = null;
-let subtitleRenderer: SubtitleRenderer | null = null;
-let syncController: VideoSyncController | null = null;
-
-// Firefox-specific audio context & mixer state
-let fxAudioCtx: AudioContext | null = null;
-let fxAudioMixer: AudioMixer | null = null;
-let fxPcmProcessor: PCMProcessor | null = null;
-let fxWs: WebSocket | null = null;
-let fxSessionId: string | null = null;
-let fxCurrentGeneration: number = 1;
-
-function findVideoElement(): HTMLVideoElement | null {
-  // 1. YouTube-specific main video selectors
-  const ytVideo = document.querySelector<HTMLVideoElement>(
-    'video.html5-main-video, #movie_player video, .html5-video-player video'
-  );
-  if (ytVideo) return ytVideo;
-
-  // 2. Generic HTML5 videos
-  const videos = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
-  if (videos.length === 0) return null;
-
-  // 3. Prefer currently playing video
-  const playing = videos.find(v => !v.paused && v.currentTime > 0);
-  if (playing) return playing;
-
-  // 4. Prefer video with valid src or srcObject
-  const withSrc = videos.find(v => !!v.src || !!v.srcObject || v.readyState > 0);
-  if (withSrc) return withSrc;
-
-  // 5. Fallback to largest video element
-  return videos.sort((a, b) => {
-    const aArea = (a.clientWidth || a.videoWidth || 1) * (a.clientHeight || a.videoHeight || 1);
-    const bArea = (b.clientWidth || b.videoWidth || 1) * (b.clientHeight || b.videoHeight || 1);
-    return bArea - aArea;
-  })[0];
+interface FirefoxSession {
+  sessionId: string;
+  mode: OperationMode;
+  wsUrl: string;
+  video: HTMLVideoElement;
+  syncController: VideoSyncController | null;
+  audioCtx: AudioContext | null;
+  captureStream: MediaStream | null;
+  audioMixer: AudioMixer | null;
+  pcmProcessor: PCMProcessor | null;
+  ws: WebSocket | null;
+  generation: number;
+  sequence: number;
+  cancelled: boolean;
+  ready: boolean;
+  playbackEpoch: number;
+  failureNotified: boolean;
+  cleanupPromise: Promise<void> | null;
 }
 
-function initVideoIntegration(): boolean {
-  const video = findVideoElement();
-  if (!video) return false;
+// Guard bảo đảm inject thủ công không tạo thêm listener hoặc observer.
+if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
+  console.log('[CONTENT] Content script đã được nạp trước đó.');
+} else {
+  (window as any).__VIETDUB_CONTENT_INJECTED__ = true;
 
-  activeVideo = video;
+  let activeVideo: HTMLVideoElement | null = null;
+  let activeVideoUrl = '';
+  let subtitleRenderer: SubtitleRenderer | null = null;
+  let syncController: VideoSyncController | null = null;
+  let firefoxSession: FirefoxSession | null = null;
+  let firefoxStartFlight: Promise<void> | null = null;
 
-  if (!subtitleRenderer) {
-    subtitleRenderer = new SubtitleRenderer();
+  function notifyBackground(message: unknown): void {
+    try {
+      const result = chrome.runtime.sendMessage(message as any);
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        void (result as Promise<unknown>).catch((error) => {
+          console.debug('[CONTENT] background notification skipped', JSON.stringify({ code: 'BACKGROUND_NOT_REACHABLE', message: String(error) }));
+        });
+      }
+    } catch (error) {
+      console.debug('[CONTENT] background notification failed', JSON.stringify({ code: 'BACKGROUND_NOTIFY_FAILED', message: String(error) }));
+    }
   }
-  subtitleRenderer.attachToVideo(video);
 
-  if (!syncController) {
+  function createRuntimeError(code: string, message: string, retryable = false, fatal = true): Error & {
+    code: string;
+    retryable: boolean;
+    fatal: boolean;
+  } {
+    const error = new Error(message) as Error & { code: string; retryable: boolean; fatal: boolean };
+    error.code = code;
+    error.retryable = retryable;
+    error.fatal = fatal;
+    return error;
+  }
+
+  function assertCurrent(session: FirefoxSession): void {
+    if (firefoxSession !== session || session.cancelled) {
+      throw createRuntimeError('SESSION_CANCELLED', 'Phiên khởi tạo đã bị hủy.', false, false);
+    }
+  }
+
+  function findVideoElement(): HTMLVideoElement | null {
+    const youtubeVideo = document.querySelector<HTMLVideoElement>(
+      'video.video-stream.html5-main-video, video.video-stream, video.html5-main-video, #movie_player video, .html5-video-player video'
+    );
+    if (youtubeVideo) return youtubeVideo;
+
+    const videos = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
+    if (videos.length === 0) return null;
+
+    const playing = videos.find((video) => !video.paused && video.currentTime > 0);
+    if (playing) return playing;
+
+    const withSource = videos.find((video) => !!video.src || !!video.srcObject || video.readyState > 0);
+    if (withSource) return withSource;
+
+    return videos.sort((a, b) => {
+      const aArea = (a.clientWidth || a.videoWidth || 1) * (a.clientHeight || a.videoHeight || 1);
+      const bArea = (b.clientWidth || b.videoWidth || 1) * (b.clientHeight || b.videoHeight || 1);
+      return bArea - aArea;
+    })[0];
+  }
+
+  function initVideoIntegration(force = false): boolean {
+    const video = findVideoElement();
+    if (!video) return false;
+
+    const videoChanged = activeVideo !== video || activeVideoUrl !== location.href || force;
+    if (!videoChanged && subtitleRenderer && syncController) return true;
+
+    const previousSession = firefoxSession;
+    if (previousSession && videoChanged) {
+      void stopFirefoxSession(previousSession.sessionId, 'youtube-navigation');
+    }
+
+    if (syncController) {
+      syncController.destroy();
+      syncController = null;
+    }
+
+    activeVideo = video;
+    activeVideoUrl = location.href;
+    subtitleRenderer ||= new SubtitleRenderer();
+    subtitleRenderer.attachToVideo(video);
+    emitDiagnostic('content', 'video_ready', { hasVideo: true, force });
+
     syncController = new VideoSyncController(video, {
       onStateChange: (state) => {
-        chrome.runtime.sendMessage({ type: 'VIDEO_STATE_UPDATE', state }).catch(() => {});
+        notifyBackground({ type: 'VIDEO_STATE_UPDATE', state });
       },
       onSeek: (fromMs, toMs) => {
-        chrome.runtime.sendMessage({ type: 'SEEK_EVENT', fromMs, toMs }).catch(() => {});
-        if (fxWs && fxWs.readyState === WebSocket.OPEN && fxSessionId) {
-          fxCurrentGeneration++;
-          fxWs.send(JSON.stringify({
+        // Chrome chuyển sự kiện tua qua background tới offscreen; Firefox gửi thêm trực tiếp cho WebSocket.
+        notifyBackground({ type: 'SEEK_EVENT', fromMs, toMs });
+        const session = firefoxSession;
+        if (!session || session.video !== video || session.cancelled) return;
+        session.generation += 1;
+        session.playbackEpoch += 1;
+        session.syncController?.stopActiveTTS();
+        if (session.ws?.readyState === WebSocket.OPEN) {
+          const message: ClientMessage = {
             type: 'SEEK_EVENT',
-            sessionId: fxSessionId,
+            sessionId: session.sessionId,
             timestamp: Date.now(),
             fromMs,
             toMs,
-            generation: fxCurrentGeneration
-          }));
+            generation: session.generation
+          };
+          try {
+            session.ws.send(JSON.stringify(message));
+          } catch (error) {
+            void failFirefoxSession(session, createRuntimeError('SEEK_SEND_FAILED', String(error), true, true));
+          }
         }
       },
       onPause: () => {
-        if (fxAudioMixer) {
-          syncController?.stopActiveTTS();
-        }
+        const session = firefoxSession;
+        if (session && !session.cancelled) session.playbackEpoch += 1;
+        syncController?.stopActiveTTS();
       },
       onResume: () => {}
     });
+
+    console.log('[CONTENT] Đã gắn controller cho video hiện tại.');
+    return true;
   }
 
-  return true;
-}
-
-// Listen for messages from background/popup
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  switch (msg.type) {
-    case 'CHECK_VIDEO':
-      const video = findVideoElement();
-      sendResponse({
-        hasVideo: !!video,
-        videoTitle: document.title,
-        currentTime: video?.currentTime || 0,
-        paused: video?.paused ?? true
-      });
-      return false;
-
-    case 'SUBTITLE_EVENT':
-      if (subtitleRenderer && msg.text) {
-        subtitleRenderer.showSubtitle(msg.segmentId, msg.text, (msg.endMs - msg.startMs) || 4000);
+  chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
+    switch (msg.type) {
+      case 'CONTENT_PING':
+      case 'CHECK_VIDEO': {
+        const video = findVideoElement();
+        if (video) initVideoIntegration();
+        sendResponse({
+          success: true,
+          ready: true,
+          hasVideo: !!video,
+          videoTitle: document.title,
+          currentTime: video?.currentTime || 0,
+          paused: video?.paused ?? true
+        });
+        return false;
       }
-      return false;
 
-    // Firefox Direct Audio Capture Handling
-    case 'FIREFOX_START_CAPTURE':
-      handleFirefoxStartCapture(msg.sessionId, msg.mode, msg.mixerConfig)
-        .then(() => sendResponse({ success: true }))
-        .catch(err => sendResponse({ success: false, error: err.message }));
-      return true;
-
-    case 'FIREFOX_STOP_CAPTURE':
-      handleFirefoxStopCapture();
-      sendResponse({ success: true });
-      return false;
-
-    case 'FIREFOX_UPDATE_MIXER':
-      if (fxAudioMixer) {
-        if (msg.config.originalVolume !== undefined) fxAudioMixer.setOriginalVolume(msg.config.originalVolume);
-        if (msg.config.originalMuted !== undefined) fxAudioMixer.setOriginalMuted(msg.config.originalMuted);
-        if (msg.config.ttsVolume !== undefined) fxAudioMixer.setTTSVolume(msg.config.ttsVolume);
-      }
-      sendResponse({ success: true });
-      return false;
-
-    case 'FIREFOX_CHANGE_MODE':
-      if (fxWs && fxWs.readyState === WebSocket.OPEN && fxSessionId) {
-        fxWs.send(JSON.stringify({
-          type: 'MODE_CHANGE',
-          sessionId: fxSessionId,
-          timestamp: Date.now(),
-          mode: msg.mode
-        }));
-      }
-      sendResponse({ success: true });
-      return false;
-  }
-});
-
-async function handleFirefoxStartCapture(
-  sessionId: string,
-  mode: OperationMode,
-  mixerConfig?: Partial<AudioMixerConfig>,
-  wsUrl = 'ws://localhost:8080'
-): Promise<void> {
-  const video = findVideoElement();
-  if (!video) throw new Error('Không tìm thấy phần tử video trên trang');
-
-  initVideoIntegration();
-  fxSessionId = sessionId;
-
-  fxAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  let sourceNode: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
-
-  if (video.captureStream || (video as any).mozCaptureStream) {
-    const stream = (video.captureStream || (video as any).mozCaptureStream).call(video);
-    sourceNode = fxAudioCtx.createMediaStreamSource(stream);
-  } else {
-    sourceNode = fxAudioCtx.createMediaElementSource(video);
-  }
-
-  fxAudioMixer = new AudioMixer(fxAudioCtx, sourceNode);
-  if (mixerConfig) {
-    if (mixerConfig.originalVolume !== undefined) fxAudioMixer.setOriginalVolume(mixerConfig.originalVolume);
-    if (mixerConfig.originalMuted !== undefined) fxAudioMixer.setOriginalMuted(mixerConfig.originalMuted);
-    if (mixerConfig.ttsVolume !== undefined) fxAudioMixer.setTTSVolume(mixerConfig.ttsVolume);
-  }
-
-  fxWs = new WebSocket(wsUrl);
-  fxWs.onopen = () => {
-    const startMsg: ClientMessage = {
-      type: 'SESSION_START',
-      sessionId,
-      timestamp: Date.now(),
-      mode,
-      audioSampleRate: 16000
-    };
-    fxWs?.send(JSON.stringify(startMsg));
-  };
-
-  fxWs.onmessage = async (event) => {
-    try {
-      const serverMsg = JSON.parse(event.data) as ServerMessage;
-      if (serverMsg.type === 'SUBTITLE_EVENT' && subtitleRenderer) {
-        subtitleRenderer.showSubtitle(serverMsg.segmentId, serverMsg.text, 4000);
-      }
-      if (serverMsg.type === 'TTS_CHUNK') {
-        if (serverMsg.generation === fxCurrentGeneration && fxAudioCtx && fxAudioMixer) {
-          const binary = atob(serverMsg.audioBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const buffer = await fxAudioCtx.decodeAudioData(bytes.buffer);
-          const source = fxAudioMixer.playTTSBuffer(buffer);
-          syncController?.setActiveTTSSource(source);
+      case 'SUBTITLE_EVENT':
+        emitDiagnostic('content', 'subtitle_event_received', {
+          sessionRef: diagnosticSessionRef(msg.sessionId),
+          hasText: Boolean(msg.text),
+          textLength: typeof msg.text === 'string' ? msg.text.length : 0
+        });
+        if (subtitleRenderer && msg.text) {
+          const displayed = subtitleRenderer.showSubtitle(
+            msg.segmentId,
+            msg.text,
+            resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs),
+            msg.generation ?? 0
+          );
+          emitDiagnostic('content', 'subtitle_event_rendered', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            displayed
+          });
         }
-      }
-    } catch (err) {
-      console.error('[Firefox Content] WS message error:', err);
+        sendResponse({ success: true });
+        return false;
+
+      case 'FIREFOX_START_CAPTURE':
+        startFirefoxSession(msg.sessionId, msg.mode, msg.mixerConfig, msg.wsUrl)
+          .then(() => sendResponse({ success: true }))
+          .catch((error) => sendResponse({
+            success: false,
+            code: error?.code || 'FIREFOX_START_FAILED',
+            retryable: error?.retryable === true,
+            error: error?.message || String(error)
+          }));
+        return true;
+
+      case 'FIREFOX_STOP_CAPTURE':
+        stopFirefoxSession(msg.sessionId, msg.reason || 'user')
+          .then(() => sendResponse({ success: true }))
+          .catch((error) => sendResponse({ success: false, code: 'FIREFOX_STOP_FAILED', error: String(error) }));
+        return true;
+
+      case 'FIREFOX_UPDATE_MIXER':
+        updateFirefoxMixer(msg.config || {}, msg.sessionId);
+        sendResponse({ success: true });
+        return false;
+
+      case 'FIREFOX_CHANGE_MODE':
+        changeFirefoxMode(msg.mode, msg.sessionId);
+        sendResponse({ success: true });
+        return false;
+
+      default:
+        return false;
     }
-  };
+  });
 
-  fxPcmProcessor = new PCMProcessor(
-    fxAudioCtx,
-    fxAudioMixer.getSTTTapNode(),
-    (pcmBase64, timestampMs) => {
-      if (fxWs && fxWs.readyState === WebSocket.OPEN) {
-        const chunkMsg: ClientMessage = {
-          type: 'AUDIO_CHUNK',
-          sessionId,
-          timestamp: Date.now(),
-          sequence: 0,
-          pcmBase64,
-          timestampMs
-        };
-        fxWs.send(JSON.stringify(chunkMsg));
-      }
-    }
-  );
-}
+  async function startFirefoxSession(
+    sessionId: string,
+    mode: OperationMode,
+    mixerConfig?: Partial<AudioMixerConfig>,
+    wsUrl = 'ws://localhost:8080'
+  ): Promise<void> {
+    if (!sessionId) throw createRuntimeError('INVALID_START_REQUEST', 'Thiếu sessionId.');
+    emitDiagnostic('firefox_capture', 'start_requested', { sessionRef: diagnosticSessionRef(sessionId), mode });
+    if (firefoxSession?.sessionId === sessionId && firefoxStartFlight) return firefoxStartFlight;
+    if (firefoxSession) await stopFirefoxSession(firefoxSession.sessionId, 'replaced-by-new-start');
 
-function handleFirefoxStopCapture(): void {
-  if (fxPcmProcessor) {
-    fxPcmProcessor.stop();
-    fxPcmProcessor = null;
-  }
-  if (fxAudioMixer) {
-    fxAudioMixer.disconnect();
-    fxAudioMixer = null;
-  }
-  if (fxAudioCtx) {
-    fxAudioCtx.close();
-    fxAudioCtx = null;
-  }
-  if (fxWs) {
-    if (fxWs.readyState === WebSocket.OPEN && fxSessionId) {
-      fxWs.send(JSON.stringify({
-        type: 'SESSION_STOP',
-        sessionId: fxSessionId,
-        timestamp: Date.now()
-      }));
-    }
-    fxWs.close();
-    fxWs = null;
-  }
-  fxSessionId = null;
-}
-
-// Automatically detect video on load, SPA navigation or DOM mutations
-window.addEventListener('DOMContentLoaded', () => initVideoIntegration());
-window.addEventListener('load', () => initVideoIntegration());
-window.addEventListener('yt-navigate-finish', () => initVideoIntegration());
-
-const observer = new MutationObserver(() => {
-  if (!activeVideo || !document.contains(activeVideo)) {
+    const video = findVideoElement();
+    if (!video) throw createRuntimeError('VIDEO_NOT_FOUND', 'Chưa tìm thấy phần tử video trên trang hiện tại.', false, true);
     initVideoIntegration();
+
+    const session: FirefoxSession = {
+      sessionId,
+      mode,
+      wsUrl,
+      video,
+      syncController,
+      audioCtx: null,
+      captureStream: null,
+      audioMixer: null,
+      pcmProcessor: null,
+      ws: null,
+      generation: 1,
+      sequence: 0,
+      cancelled: false,
+      ready: false,
+      playbackEpoch: 1,
+      failureNotified: false,
+      cleanupPromise: null
+    };
+    firefoxSession = session;
+
+    const flight = runFirefoxStart(session, mixerConfig);
+    firefoxStartFlight = flight;
+    flight.then(
+      () => {
+        if (firefoxStartFlight === flight) firefoxStartFlight = null;
+      },
+      () => {
+        if (firefoxStartFlight === flight) firefoxStartFlight = null;
+      }
+    );
+    return flight;
   }
-});
-if (document.body) {
-  observer.observe(document.body, { childList: true, subtree: true });
+
+  async function runFirefoxStart(session: FirefoxSession, mixerConfig?: Partial<AudioMixerConfig>): Promise<void> {
+    try {
+      session.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (session.audioCtx.state === 'suspended') await session.audioCtx.resume();
+      assertCurrent(session);
+      emitDiagnostic('firefox_capture', 'audio_context_ready', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        state: session.audioCtx.state,
+        sampleRate: session.audioCtx.sampleRate
+      });
+
+      const source = createFirefoxAudioSource(session);
+      session.audioMixer = new AudioMixer(session.audioCtx, source.node, {
+        sourceMode: source.mode,
+        // Giữ lại trạng thái native của video cho cả nhánh fallback để cleanup có thể khôi phục.
+        videoElement: session.video,
+        initialConfig: {
+          originalVolume: Number.isFinite(mixerConfig?.originalVolume) ? mixerConfig!.originalVolume : DEFAULT_ORIGINAL_VOLUME,
+          originalMuted: mixerConfig?.originalMuted === true,
+          ttsVolume: Number.isFinite(mixerConfig?.ttsVolume) ? mixerConfig!.ttsVolume : DEFAULT_TTS_VOLUME
+        }
+      });
+      emitDiagnostic('firefox_capture', 'audio_graph_ready', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        sourceMode: source.mode
+      });
+
+      await connectFirefoxWebSocket(session);
+      assertCurrent(session);
+
+      // Chỉ bắt đầu PCM sau khi backend đã xác nhận SESSION_READY.
+      session.pcmProcessor = new PCMProcessor(
+        session.audioCtx,
+        session.audioMixer.getSTTTapNode(),
+        (pcmBase64, timestampMs) => {
+          if (firefoxSession !== session || session.cancelled || session.ws?.readyState !== WebSocket.OPEN) return;
+          const message: ClientMessage = {
+            type: 'AUDIO_CHUNK',
+            sessionId: session.sessionId,
+            timestamp: Date.now(),
+            sequence: session.sequence++,
+            pcmBase64,
+            videoTimeMs: timestampMs
+          };
+          try {
+            session.ws?.send(JSON.stringify(message));
+          } catch (error) {
+            void failFirefoxSession(session, createRuntimeError('AUDIO_SEND_FAILED', String(error), true, true));
+          }
+        },
+        16000,
+        4096,
+        session.sessionId,
+        () => Math.max(0, Math.round(session.video.currentTime * 1000))
+      );
+      assertCurrent(session);
+      session.ready = true;
+      notifyBackground({ type: 'SESSION_RUNTIME', sessionId: session.sessionId, state: 'ACTIVE' });
+    } catch (error) {
+      await cleanupFirefoxSession(session, 'start-failed');
+      throw error;
+    }
+  }
+
+  function createFirefoxAudioSource(session: FirefoxSession): {
+    node: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
+    mode: AudioSourceMode;
+  } {
+    if (!session.audioCtx) throw createRuntimeError('AUDIO_CONTEXT_MISSING', 'AudioContext chưa được khởi tạo.');
+
+    const mediaVideo = session.video as HTMLVideoElement & {
+      captureStream?: () => MediaStream;
+      mozCaptureStream?: () => MediaStream;
+    };
+    const captureMethod = mediaVideo.captureStream || mediaVideo.mozCaptureStream;
+
+    // Ưu tiên captureStream để giữ đường phát native của video, tránh double audio và dễ khôi phục volume.
+    if (captureMethod) {
+      try {
+        session.captureStream = captureMethod.call(session.video);
+        if (session.captureStream.getAudioTracks().length > 0) {
+          emitDiagnostic('firefox_capture', 'source_ready', {
+            sessionRef: diagnosticSessionRef(session.sessionId),
+            sourceMode: 'capture-stream',
+            audioTracks: session.captureStream.getAudioTracks().length
+          });
+          return {
+            node: session.audioCtx.createMediaStreamSource(session.captureStream),
+            mode: 'capture-stream'
+          };
+        }
+        for (const track of session.captureStream.getTracks()) track.stop();
+        session.captureStream = null;
+      } catch (captureError) {
+        emitDiagnostic('firefox_capture', 'capture_stream_failed', {
+          sessionRef: diagnosticSessionRef(session.sessionId),
+          errorLength: String(captureError).length
+        });
+        session.captureStream = null;
+      }
+    }
+
+    // Fallback cuối cùng cho Firefox cũ: MediaElementSource vẫn cần được đo RMS thực tế qua log PCM.
+    try {
+      emitDiagnostic('firefox_capture', 'source_ready', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        sourceMode: 'media-element'
+      });
+      return { node: session.audioCtx.createMediaElementSource(session.video), mode: 'media-element' };
+    } catch (mediaElementError) {
+      throw createRuntimeError(
+        'AUDIO_CAPTURE_UNSUPPORTED',
+        `Firefox không hỗ trợ capture âm thanh video: ${String(mediaElementError)}`,
+        false,
+        true
+      );
+    }
+  }
+
+  async function connectFirefoxWebSocket(session: FirefoxSession): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(createRuntimeError('WS_CONNECTION_TIMEOUT', 'Hết thời gian chờ phản hồi từ máy chủ AI.', true, true));
+      }, 7000);
+
+      try {
+        session.ws = new WebSocket(session.wsUrl);
+      } catch (error) {
+        clearTimeout(timeout);
+        reject(createRuntimeError('WS_CONNECTION_FAILED', `Không thể kết nối máy chủ WebSocket: ${String(error)}`, true, true));
+        return;
+      }
+
+      const socket = session.ws;
+      socket.onopen = () => {
+        if (firefoxSession !== session || session.cancelled) return;
+        const message: ClientMessage = {
+          type: 'SESSION_START',
+          sessionId: session.sessionId,
+          timestamp: Date.now(),
+          mode: session.mode,
+          audioSampleRate: 16000,
+          videoUrl: location.href,
+          videoTitle: document.title
+        };
+        try {
+          socket.send(JSON.stringify(message));
+          emitDiagnostic('firefox_ws', 'session_start_sent', { sessionRef: diagnosticSessionRef(session.sessionId) });
+        } catch (error) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            reject(createRuntimeError('WS_SEND_FAILED', String(error), true, true));
+          }
+        }
+      };
+
+      socket.onerror = (event) => {
+        const error = createRuntimeError('WS_CONNECTION_FAILED', 'Không thể kết nối máy chủ xử lý thuyết minh.', true, true);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        } else if (firefoxSession === session && !session.cancelled) {
+          void failFirefoxSession(session, error);
+        }
+        console.error('[CONTENT] WebSocket error', JSON.stringify({ code: error.code, message: String(event) }));
+      };
+
+      socket.onclose = (event) => {
+        const error = createRuntimeError('WS_DISCONNECTED', 'Máy chủ WebSocket đã ngắt kết nối.', true, true);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        } else if (firefoxSession === session && !session.cancelled) {
+          void failFirefoxSession(session, error);
+        }
+        console.log('[CONTENT] WebSocket closed', JSON.stringify({ code: event.code, reason: event.reason }));
+      };
+
+      socket.onmessage = (event) => {
+        if (firefoxSession !== session || session.cancelled) return;
+        try {
+          const message = JSON.parse(String(event.data)) as ServerMessage;
+          if (message.sessionId !== session.sessionId) return;
+          if (message.type === 'SESSION_READY' && !settled) {
+            settled = true;
+            clearTimeout(timeout);
+            session.ready = true;
+            emitDiagnostic('firefox_ws', 'session_ready_received', { sessionRef: diagnosticSessionRef(session.sessionId) });
+            resolve();
+          }
+          emitDiagnostic('firefox_ws', 'server_event_received', {
+            sessionRef: diagnosticSessionRef(session.sessionId),
+            type: message.type,
+            generation: 'generation' in message ? message.generation : undefined
+          });
+          void handleFirefoxServerMessage(session, message);
+        } catch (error) {
+          console.error('[CONTENT] WebSocket message parse failed', JSON.stringify({ code: 'WS_MESSAGE_INVALID', message: String(error) }));
+        }
+      };
+    });
+  }
+
+  async function handleFirefoxServerMessage(session: FirefoxSession, message: ServerMessage): Promise<void> {
+    if (firefoxSession !== session || session.cancelled) return;
+    if (message.type === 'LATENCY_METRIC') notifyBackground(message);
+    if (message.type === 'ERROR') {
+      notifyBackground(message);
+      if (message.fatal || session.ready) {
+        await failFirefoxSession(session, createRuntimeError(message.code, message.message, false, message.fatal));
+      }
+      return;
+    }
+    if (message.type === 'SUBTITLE_EVENT') {
+      emitDiagnostic('firefox_ws', 'subtitle_event_received', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        hasRenderer: Boolean(subtitleRenderer),
+        hasText: Boolean(message.text),
+        textLength: message.text.length,
+        action: message.action
+      });
+    }
+    if (message.type === 'SUBTITLE_EVENT' && subtitleRenderer && message.action === 'show') {
+      const displayed = subtitleRenderer.showSubtitle(
+        message.segmentId,
+        message.text,
+        resolveSubtitleDisplayDurationMs(message.startMs, message.endMs),
+        message.generation
+      );
+      emitDiagnostic('firefox_ws', 'subtitle_event_rendered', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        displayed,
+        textLength: message.text.length
+      });
+    }
+    if (message.type === 'TTS_CHUNK' && message.generation === session.generation && session.audioCtx && session.audioMixer) {
+      const playbackEpochAtDecodeStart = session.playbackEpoch;
+      try {
+        const binary = atob(message.audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
+        if (firefoxSession === session && !session.cancelled && message.generation === session.generation && playbackEpochAtDecodeStart === session.playbackEpoch && session.audioMixer) {
+          const source = session.audioMixer.playTTSBuffer(audioBuffer);
+          session.syncController?.setActiveTTSSource(source);
+          emitDiagnostic('firefox_tts', 'decoded_and_played', {
+            sessionRef: diagnosticSessionRef(session.sessionId),
+            generation: message.generation,
+            durationMs: Math.round(audioBuffer.duration * 1000)
+          });
+        }
+      } catch (error) {
+        emitDiagnostic('firefox_tts', 'decoder_or_playback_error', {
+          sessionRef: diagnosticSessionRef(session.sessionId),
+          generation: message.generation
+        });
+        console.error('[CONTENT] TTS playback failed', JSON.stringify({ code: 'TTS_PLAY_FAILED', message: String(error) }));
+      }
+    }
+  }
+
+  function updateFirefoxMixer(config: Partial<AudioMixerConfig>, sessionId?: string): void {
+    const session = firefoxSession;
+    if (!session || (sessionId && session.sessionId !== sessionId) || !session.audioMixer) return;
+    if (config.originalVolume !== undefined) session.audioMixer.setOriginalVolume(config.originalVolume);
+    if (config.originalMuted !== undefined) session.audioMixer.setOriginalMuted(config.originalMuted);
+    if (config.ttsVolume !== undefined) session.audioMixer.setTTSVolume(config.ttsVolume);
+  }
+
+  function changeFirefoxMode(mode: OperationMode, sessionId?: string): void {
+    const session = firefoxSession;
+    if (!session || (sessionId && session.sessionId !== sessionId)) return;
+    session.mode = mode;
+    if (session.ws?.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'MODE_CHANGE',
+        sessionId: session.sessionId,
+        timestamp: Date.now(),
+        mode
+      } satisfies ClientMessage));
+    }
+  }
+
+  async function failFirefoxSession(
+    session: FirefoxSession,
+    error: Error & { code?: string; retryable?: boolean; fatal?: boolean }
+  ): Promise<void> {
+    if (session.failureNotified || session.cancelled) return;
+    session.failureNotified = true;
+    notifyBackground({
+      type: 'SESSION_RUNTIME',
+      sessionId: session.sessionId,
+      state: 'ERROR',
+      error: {
+        code: error.code || 'RUNTIME_ERROR',
+        message: error.message,
+        retryable: error.retryable === true,
+        fatal: error.fatal !== false
+      }
+    });
+    await stopFirefoxSession(session.sessionId, 'runtime-failure');
+  }
+
+  async function stopFirefoxSession(sessionId?: string, reason = 'user'): Promise<void> {
+    const session = firefoxSession;
+    if (!session || (sessionId && session.sessionId !== sessionId)) return;
+    firefoxSession = null;
+    session.cancelled = true;
+    session.playbackEpoch += 1;
+    await cleanupFirefoxSession(session, reason);
+  }
+
+  async function cleanupFirefoxSession(session: FirefoxSession, reason: string): Promise<void> {
+    if (session.cleanupPromise) return session.cleanupPromise;
+    session.cleanupPromise = (async () => {
+      emitDiagnostic('firefox_capture', 'cleanup_started', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        reasonLength: reason.length
+      });
+      if (session.pcmProcessor) {
+        session.pcmProcessor.stop();
+        session.pcmProcessor = null;
+      }
+      if (session.audioMixer) {
+        session.audioMixer.disconnect();
+        session.audioMixer = null;
+      }
+      if (session.captureStream) {
+        for (const track of session.captureStream.getTracks()) track.stop();
+        session.captureStream = null;
+      }
+      if (session.audioCtx) {
+        try {
+          await session.audioCtx.close();
+        } catch (error) {
+          console.error('[CONTENT] AudioContext close failed', JSON.stringify({ code: 'AUDIO_CONTEXT_CLOSE_FAILED', message: String(error), reason }));
+        }
+        session.audioCtx = null;
+      }
+      if (session.ws) {
+        const socket = session.ws;
+        if (socket.readyState === WebSocket.OPEN) {
+          try {
+            socket.send(JSON.stringify({
+              type: 'SESSION_STOP',
+              sessionId: session.sessionId,
+              timestamp: Date.now(),
+              reason
+            } satisfies ClientMessage));
+          } catch (error) {
+            console.warn('[CONTENT] SESSION_STOP send failed', JSON.stringify({ code: 'SESSION_STOP_SEND_FAILED', message: String(error) }));
+          }
+        }
+        try {
+          socket.close();
+        } catch (error) {
+          console.warn('[CONTENT] WebSocket close failed', JSON.stringify({ code: 'WS_CLOSE_FAILED', message: String(error) }));
+        }
+        session.ws = null;
+      }
+      session.ready = false;
+      session.syncController?.stopActiveTTS();
+      if (session.video === activeVideo) subtitleRenderer?.hideSubtitle();
+      emitDiagnostic('firefox_capture', 'cleanup_finished', { sessionRef: diagnosticSessionRef(session.sessionId) });
+    })();
+    return session.cleanupPromise;
+  }
+
+  window.addEventListener('DOMContentLoaded', () => initVideoIntegration());
+  window.addEventListener('load', () => initVideoIntegration());
+  window.addEventListener('yt-navigate-finish', () => initVideoIntegration(true));
+  window.addEventListener('beforeunload', () => {
+    if (firefoxSession) void stopFirefoxSession(firefoxSession.sessionId, 'document-unload');
+  });
+
+  // Một observer duy nhất để nhận biết YouTube thay thế node video trong SPA.
+  const observer = new MutationObserver(() => {
+    if (!activeVideo || !document.contains(activeVideo)) initVideoIntegration();
+  });
+  if (document.body) observer.observe(document.body, { childList: true, subtree: true });
 }

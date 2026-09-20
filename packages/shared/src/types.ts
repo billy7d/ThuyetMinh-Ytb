@@ -6,6 +6,16 @@ export interface AudioMixerConfig {
   ttsVolume: number; // 0 to 100
 }
 
+/** Trạng thái phiên được background dùng làm nguồn sự thật duy nhất. */
+export type SessionState =
+  | 'IDLE'
+  | 'INITIALIZING'
+  | 'CONNECTING'
+  | 'READY'
+  | 'ACTIVE'
+  | 'STOPPING'
+  | 'ERROR';
+
 export interface VideoPlaybackState {
   currentTime: number; // in seconds
   duration: number;
