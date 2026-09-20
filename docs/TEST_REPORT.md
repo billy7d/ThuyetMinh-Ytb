@@ -14,6 +14,7 @@ Ngày cập nhật: 2026-09-21
 - Chrome/Firefox extension artifact validators: PASS.
 - Current Chrome artifact E2E: BLOCKED before tests because the macOS harness cannot expose the unpacked MV3 service worker; an earlier 5/5 local HTML5 fixture run on the pre-merge base is not final acceptance evidence.
 - Firefox smoke E2E: BLOCKED vì Playwright Firefox executable không có trong môi trường.
+- `npm run benchmark`: command PASS for 30 samples, explicitly `FIXTURE_ONLY_NOT_PRODUCTION_EVIDENCE`; no live quality score is claimed.
 - `npm audit --omit=dev`: 0 production vulnerabilities. Full audit còn 2 moderate trong Vitest/@vitest/mocker; bản sửa là breaking Vitest 5 và chưa tự động áp dụng.
 - Tracked-source secret scan và `git diff --check`: PASS.
 

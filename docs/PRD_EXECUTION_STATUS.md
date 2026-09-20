@@ -24,7 +24,7 @@ LATENCY_P50_P95: NOT MEASURED live; current STT event is only a bounded wall-clo
 TRANSLATION_QUALITY: NOT MEASURED live; fixture output is not production evidence
 API_TEST_COST: 0 USD — no live cloud request was made
 SECURITY: loopback bind, origin/session/frame checks and no-cloud default implemented; production audit 0 vulnerabilities; full audit has 2 moderate Vitest dev advisories with a breaking fix
-TEST_RESULTS: npm run typecheck PASS; npm run build PASS including Chrome/Firefox artifact validators; npm test PASS (16 files, 53 tests); current Chrome artifact E2E BLOCKED before tests because MV3 service worker is unavailable in the macOS harness; Firefox E2E BLOCKED by missing Playwright Firefox; health smoke PASS with safe 503; tracked-source secret scan PASS; git diff --check PASS; npm audit --omit=dev PASS
+TEST_RESULTS: npm run typecheck PASS; npm run build PASS including Chrome/Firefox artifact validators; npm test PASS (16 files, 53 tests); npm run benchmark PASS as 30-sample fixture-only output; current Chrome artifact E2E BLOCKED before tests because MV3 service worker is unavailable in the macOS harness; Firefox E2E BLOCKED by missing Playwright Firefox; health smoke PASS with safe 503; tracked-source secret scan PASS; git diff --check PASS; npm audit --omit=dev PASS
 CI_EXACT_HEAD: not verified from this environment
 EVIDENCE_PATHS: docs/LOCAL_RUNTIME.md, docs/MODEL_LICENSE_REPORT.md, docs/TEST_REPORT.md, docs/BROWSER_ACCEPTANCE_CHECKLIST.md, docs/audit/P0_REVIEW_FIX_REPORT.md, packages/tests/unit/local-runtime.test.ts, packages/tests/unit/provider-contract.test.ts
 MERGE_READY: NO
