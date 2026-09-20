@@ -1,8 +1,10 @@
 # VietDub AI — Real-time Vietnamese Dubbing Extension
 
-> **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) thuyết minh tiếng Việt và tạo phụ đề video tiếng Anh theo thời gian thực.**
+> **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) cho pipeline thuyết minh tiếng Việt và phụ đề video tiếng Anh theo thời gian thực.**
 
-VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với giọng thuyết minh tiếng Việt tự nhiên, ngắt nghỉ chuẩn xác và phụ đề đồng bộ, không cần tải video về máy hay tạo video mới.
+> **Trạng thái kỹ thuật:** backend production mặc định dùng ba worker AI local/offline với wiring fail-closed; không có local model/worker thì trả `503` và không fallback cloud. Browser acceptance, quality và hardware evidence hiện vẫn `BLOCKED` trong môi trường này. Xem [PRD execution status](docs/PRD_EXECUTION_STATUS.md).
+
+VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với phụ đề đồng bộ và đường truyền audio thời gian thực, không cần tải video về máy hay tạo video mới.
 
 ---
 
@@ -28,10 +30,10 @@ VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh tr�
    - **Context-aware Translation local:** Worker dịch `en → vi` offline, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ trong phạm vi model.
    - **Vietnamese TTS local:** Worker phát audio WAV thật, kiểm tra metadata và hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng.
 
-5. **Trạng thái kiểm chứng:**
-   - Chrome/Firefox artifacts đã build được; browser acceptance production vẫn cần chạy trên cả hai trình duyệt.
-   - Các số liệu latency/quality cũ từ fixture đã bị loại khỏi evidence; chưa báo cáo p50/p95 live.
-   - Xem [TEST_REPORT.md](docs/TEST_REPORT.md), [BROWSER_ACCEPTANCE_CHECKLIST.md](docs/BROWSER_ACCEPTANCE_CHECKLIST.md) và [PROVIDER_SETUP.md](docs/PROVIDER_SETUP.md) trước khi nghiệm thu.
+5. **Đo lường & Kiểm chứng Thực tế:**
+   - Feasibility/media spike lịch sử đã chạy trên Google Chrome (152+) và Mozilla Firefox (155+); đây không phải bằng chứng runtime extension hiện tại.
+   - Benchmark fixture 30 mẫu chỉ kiểm tra harness; không có số liệu latency/quality production cho đến khi operator chạy provider thật.
+   - Ma trận runtime và các gate còn thiếu được cập nhật trong [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
 
 ---
 
@@ -223,6 +225,8 @@ npm run test:e2e -w @vietdub/tests
 npm run benchmark
 ```
 
+> E2E runtime hiện ghi nhận rõ `BLOCKED` khi môi trường không cung cấp Chrome action invocation hoặc Firefox temporary-install runner; test không dùng mock để biến blocker thành `PASS`. Xem [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
+
 ---
 
 ## 📊 Báo cáo Kỹ thuật Tham khảo
@@ -235,6 +239,8 @@ npm run benchmark
 - [Dự toán chi phí vận hành](docs/COST_REPORT.md)
 - [Báo cáo bảo mật & quyền riêng tư](docs/SECURITY_REPORT.md)
 - [Báo cáo tổng hợp kiểm thử](docs/TEST_REPORT.md)
+- [Cấu hình provider production](docs/PROVIDER_SETUP.md)
+- [Trạng thái thực thi PRD](docs/PRD_EXECUTION_STATUS.md)
 - [Các giới hạn đã biết](docs/KNOWN_LIMITATIONS.md)
 
 ---

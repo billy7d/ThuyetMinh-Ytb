@@ -1,3 +1,5 @@
+import { calculateFloatPcmStats, diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
+
 export interface PCMChunkHandler {
   (pcmBase64: string, timestampMs: number): void;
 }
@@ -6,12 +8,18 @@ export class PCMProcessor {
   private audioCtx: AudioContext;
   private inputNode: AudioNode;
   private processorNode: ScriptProcessorNode | null = null;
+  private silentGainNode: GainNode | null = null;
   private onChunk: PCMChunkHandler;
   private targetSampleRate: number;
   private bufferSize: number;
-  private readonly getTimestampMs: () => number;
-  private readonly silentGain: GainNode;
+  private readonly getVideoTimeMs?: () => number;
   private sequence = 0;
+
+  private accumulatedSamples: Float32Array[] = [];
+  private accumulatedLength: number = 0;
+  private targetChunkSamples: number; // 4000 samples = 250ms at 16kHz
+  private emittedSamples = 0;
+  private sessionId?: string;
 
   constructor(
     audioCtx: AudioContext,
@@ -19,38 +27,95 @@ export class PCMProcessor {
     onChunk: PCMChunkHandler,
     targetSampleRate = 16000,
     bufferSize = 4096,
-    getTimestampMs: () => number = () => Math.round(this.audioCtx.currentTime * 1000)
+    sessionId?: string,
+    getVideoTimeMs?: () => number
   ) {
     this.audioCtx = audioCtx;
     this.inputNode = inputNode;
     this.onChunk = onChunk;
     this.targetSampleRate = targetSampleRate;
     this.bufferSize = bufferSize;
-    this.getTimestampMs = getTimestampMs;
-    this.silentGain = this.audioCtx.createGain();
+    this.sessionId = sessionId;
+    this.getVideoTimeMs = getVideoTimeMs;
+    // 250ms chunk = 0.25 * targetSampleRate (e.g. 4000 samples) -> 4 chunks/sec
+    this.targetChunkSamples = Math.round(targetSampleRate * 0.25);
 
     this.initProcessor();
   }
 
   private initProcessor(): void {
-    // Standard ScriptProcessorNode for maximum browser compatibility across Chrome/Firefox
+    // Dùng ScriptProcessorNode để giữ tương thích với cả Chrome và Firefox hiện tại.
     this.processorNode = this.audioCtx.createScriptProcessor(this.bufferSize, 1, 1);
 
     this.processorNode.onaudioprocess = (e) => {
       const inputData = e.inputBuffer.getChannelData(0);
       const resampled = this.downsample(inputData, this.audioCtx.sampleRate, this.targetSampleRate);
-      const pcm16 = this.floatTo16BitPCM(resampled);
-      const base64 = this.arrayBufferToBase64(pcm16.buffer);
-      const timestampMs = this.getTimestampMs();
 
-      this.onChunk(base64, timestampMs);
+      this.accumulatedSamples.push(resampled);
+      this.accumulatedLength += resampled.length;
+
+      // Khi đủ 250 ms thì ghép mẫu và phát đúng một chunk.
+      while (this.accumulatedLength >= this.targetChunkSamples) {
+        const chunk = new Float32Array(this.targetChunkSamples);
+        let offset = 0;
+
+        while (offset < this.targetChunkSamples && this.accumulatedSamples.length > 0) {
+          const first = this.accumulatedSamples[0];
+          const needed = this.targetChunkSamples - offset;
+
+          if (first.length <= needed) {
+            chunk.set(first, offset);
+            offset += first.length;
+            this.accumulatedSamples.shift();
+          } else {
+            chunk.set(first.subarray(0, needed), offset);
+            this.accumulatedSamples[0] = first.subarray(needed);
+            offset += needed;
+          }
+        }
+
+        this.accumulatedLength -= this.targetChunkSamples;
+
+        const pcm16 = this.floatTo16BitPCM(chunk);
+        const base64 = this.arrayBufferToBase64(pcm16.buffer);
+        // Timestamp tính theo số mẫu đã phát ra để nhiều chunk trong một callback vẫn tăng đều.
+        const audioTimelineTimestampMs = Math.round((this.emittedSamples / this.targetSampleRate) * 1000);
+        this.emittedSamples += chunk.length;
+        let timestampMs = audioTimelineTimestampMs;
+        if (this.getVideoTimeMs) {
+          try {
+            const videoTimeMs = this.getVideoTimeMs();
+            if (Number.isFinite(videoTimeMs)) timestampMs = Math.max(0, Math.round(videoTimeMs));
+          } catch {
+            // Keep the local PCM timeline if the video element is being replaced.
+          }
+        }
+        const stats = calculateFloatPcmStats(chunk);
+        emitDiagnostic('pcm', 'chunk_emitted', {
+          sessionRef: diagnosticSessionRef(this.sessionId),
+          sampleCount: stats.sampleCount,
+          byteLength: pcm16.byteLength,
+          rms: Math.round(stats.rms * 10000) / 10000,
+          peak: Math.round(stats.peak * 10000) / 10000,
+          nonZeroSamples: stats.nonZeroSamples,
+          hasSignal: stats.rms >= 0.015,
+          timestampMs,
+          audioTimelineTimestampMs
+        });
+        try {
+          this.onChunk(base64, timestampMs);
+        } catch (error) {
+          console.error('[PCMProcessor] chunk handler failed', JSON.stringify({ code: 'PCM_CHUNK_HANDLER_FAILED', message: String(error) }));
+        }
+      }
     };
 
     this.inputNode.connect(this.processorNode);
-    // Connect to destination via silent node to keep processor running
-    this.silentGain.gain.value = 0;
-    this.processorNode.connect(this.silentGain);
-    this.silentGain.connect(this.audioCtx.destination);
+    // Nối qua gain im lặng để ScriptProcessor tiếp tục chạy mà không phát thêm âm thanh.
+    this.silentGainNode = this.audioCtx.createGain();
+    this.silentGainNode.gain.value = 0;
+    this.processorNode.connect(this.silentGainNode);
+    this.silentGainNode.connect(this.audioCtx.destination);
   }
 
   private downsample(buffer: Float32Array, inputSampleRate: number, outputSampleRate: number): Float32Array {
@@ -97,10 +162,23 @@ export class PCMProcessor {
 
   stop(): void {
     if (this.processorNode) {
-      this.processorNode.disconnect();
-      this.processorNode.onaudioprocess = null;
+      const processorNode = this.processorNode;
+      try {
+        // Gỡ cả chiều input để không giữ processor trong đồ thị Web Audio sau khi dừng.
+        this.inputNode.disconnect(processorNode);
+      } catch (error) {
+        console.warn('[PCMProcessor] input disconnect failed', JSON.stringify({ code: 'PCM_INPUT_DISCONNECT_FAILED', message: String(error) }));
+      }
+      processorNode.disconnect();
+      processorNode.onaudioprocess = null;
       this.processorNode = null;
     }
-    this.silentGain.disconnect();
+    if (this.silentGainNode) {
+      this.silentGainNode.disconnect();
+      this.silentGainNode = null;
+    }
+    this.accumulatedSamples = [];
+    this.accumulatedLength = 0;
+    this.emittedSamples = 0;
   }
 }

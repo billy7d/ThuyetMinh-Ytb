@@ -1,6 +1,10 @@
 # Latency Report Status
 
-Ngày cập nhật: 2026-09-20
+> **Phạm vi quan trọng:** Đây là benchmark offline trên pipeline hiện tại (MockSTT/Translation/TTS và dữ liệu chuẩn hóa), không phải đo runtime extension hoặc AI production. Không dùng các số liệu `PASS` này để đóng browser release gate; xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md).
+
+**Ngày đo kiểm:** 2026-09-17T06:22:37.913Z  
+**Môi trường:** Node.js v24.18.0, Windows 11 Desktop  
+**Số mẫu kiểm thử:** 30 đoạn câu tiếng Anh chuẩn hóa  
 
 Các số liệu p50/p90/p95 cũ (318/359/368 ms) đã được gỡ khỏi evidence vì chúng là số liệu mô phỏng/fixture, không phải live local STT + translation + Vietnamese TTS.
 

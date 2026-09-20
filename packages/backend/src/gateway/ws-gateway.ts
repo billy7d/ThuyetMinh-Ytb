@@ -4,7 +4,10 @@ import {
   ServerMessage,
   SessionReadyMessage,
   SessionMetricsMessage,
-  DEFAULT_MODE
+  DEFAULT_MODE,
+  calculatePcm16Stats,
+  diagnosticSessionRef,
+  emitDiagnostic
 } from '@vietdub/shared';
 import { RealtimePipeline } from '../pipeline/realtime-pipeline.js';
 import { createProductionProviderFactory, ProductionProviderFactory } from '../provider-factory.js';
@@ -16,7 +19,6 @@ interface ActiveSession {
   pipeline: RealtimePipeline;
   ws: WebSocket;
 }
-
 export class WebSocketGateway {
   private readonly activeSessions = new Map<string, ActiveSession>();
   private readonly providerFactory: ProductionProviderFactory;
@@ -100,6 +102,13 @@ export class WebSocketGateway {
           return;
         }
         if (existing) this.terminateSession(msg.sessionId, ws);
+        const sessionRef = diagnosticSessionRef(msg.sessionId);
+        emitDiagnostic('gateway', 'session_start_received', {
+          sessionRef,
+          mode: msg.mode || DEFAULT_MODE,
+          audioSampleRate: msg.audioSampleRate,
+          hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
+        });
         if (this.activeSessions.size >= this.maxConcurrentSessions) {
           this.sendError(ws, msg.sessionId, 'CONCURRENT_SESSION_LIMIT', 'Số phiên đang hoạt động đã đạt giới hạn.', true);
           return;
@@ -143,6 +152,11 @@ export class WebSocketGateway {
           }
         };
         this.sendSafe(ws, ready);
+        emitDiagnostic('gateway', 'session_ready_emitted', {
+          sessionRef,
+          audioSampleRate: ready.sessionConfig.audioSampleRate,
+          chunkDurationMs: ready.sessionConfig.chunkDurationMs
+        });
         break;
       }
 
@@ -150,7 +164,24 @@ export class WebSocketGateway {
         const session = this.activeSessions.get(msg.sessionId);
         if (session?.ws === ws) {
           const pcmBuffer = Buffer.from(msg.pcmBase64, 'base64');
+          const stats = calculatePcm16Stats(pcmBuffer);
+          emitDiagnostic('gateway', 'audio_chunk_received', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            sequence: msg.sequence,
+            videoTimeMs: msg.videoTimeMs,
+            pcmBytes: pcmBuffer.length,
+            sampleCount: stats.sampleCount,
+            rms: Math.round(stats.rms * 10000) / 10000,
+            peak: Math.round(stats.peak * 10000) / 10000,
+            nonZeroSamples: stats.nonZeroSamples
+          });
           session.pipeline.handleAudioChunk(pcmBuffer, msg.videoTimeMs);
+        } else {
+          emitDiagnostic('gateway', 'audio_chunk_ignored', {
+            sessionRef: diagnosticSessionRef(msg.sessionId),
+            sequence: msg.sequence,
+            hasSession: false
+          });
         }
         break;
       }
@@ -181,6 +212,10 @@ export class WebSocketGateway {
           timestamp: Date.now(),
           metrics: session.pipeline.getCostTracker().getMetrics()
         };
+        emitDiagnostic('gateway', 'session_stop_received', {
+          sessionRef: diagnosticSessionRef(msg.sessionId),
+          reasonLength: msg.reason?.length || 0
+        });
         this.sendSafe(ws, metrics);
         this.terminateSession(msg.sessionId, ws);
         break;

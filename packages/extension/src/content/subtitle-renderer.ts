@@ -1,3 +1,19 @@
+import { emitDiagnostic } from '@vietdub/shared';
+
+export const MIN_SUBTITLE_DISPLAY_DURATION_MS = 1500;
+
+export function resolveSubtitleDisplayDurationMs(
+  startMs: number,
+  endMs: number,
+  fallbackMs = 4000
+): number {
+  const segmentDurationMs = endMs - startMs;
+  const durationMs = Number.isFinite(segmentDurationMs) && segmentDurationMs > 0
+    ? segmentDurationMs
+    : fallbackMs;
+  return Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs);
+}
+
 export interface SubtitleConfig {
   fontSizePx: number;
   visible: boolean;
@@ -26,7 +42,6 @@ export class SubtitleRenderer {
 
   private createOverlay(): void {
     if (!this.targetVideo) return;
-
     this.containerEl = document.createElement('div');
     this.containerEl.id = 'vietdub-subtitle-container';
     this.containerEl.style.cssText = `
@@ -78,13 +93,17 @@ export class SubtitleRenderer {
     this.containerEl.style.bottom = fullscreenElement ? '8%' : '40px';
   }
 
-  showSubtitle(
-    segmentId: string,
-    text: string,
-    durationMs = 4000,
-    generation = 0
-  ): void {
-    if (!this.textEl || !this.config.visible || generation < this.currentGeneration) return;
+  showSubtitle(segmentId: string, text: string, durationMs = 4000, generation = 0): boolean {
+    if (!this.textEl || !this.config.visible || generation < this.currentGeneration) {
+      emitDiagnostic('subtitle_renderer', 'display_skipped', {
+        hasTextElement: Boolean(this.textEl),
+        visible: this.config.visible,
+        generation,
+        currentGeneration: this.currentGeneration,
+        textLength: text.length
+      });
+      return false;
+    }
     this.currentGeneration = generation;
     this.currentSegmentId = segmentId;
     this.textEl.textContent = text;
@@ -92,8 +111,14 @@ export class SubtitleRenderer {
     if (this.hideTimeout) clearTimeout(this.hideTimeout);
     this.hideTimeout = setTimeout(
       () => this.hideSubtitle(segmentId),
-      Math.max(700, Math.min(10000, durationMs))
+      Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, Math.min(10000, durationMs))
     );
+    emitDiagnostic('subtitle_renderer', 'displayed', {
+      textLength: text.length,
+      durationMs: Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs),
+      generation
+    });
+    return true;
   }
 
   invalidateGeneration(generation: number): void {

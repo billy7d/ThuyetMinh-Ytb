@@ -2,9 +2,12 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import 'dotenv/config';
 import { WebSocketGateway } from './gateway/ws-gateway.js';
-import { ProviderFactoryStatus } from './provider-factory.js';
+import { ProductionProviderFactory, ProviderFactoryStatus } from './provider-factory.js';
 
-export function createServer(port = 8080): { server: http.Server; gateway: WebSocketGateway } {
+export function createServer(
+  port = 8080,
+  options: { providerFactory?: ProductionProviderFactory } = {}
+): { server: http.Server; gateway: WebSocketGateway } {
   let gateway: WebSocketGateway;
   const server = http.createServer((req, res) => {
     if (req.url === '/health') {
@@ -42,7 +45,7 @@ export function createServer(port = 8080): { server: http.Server; gateway: WebSo
       done(false, 403, 'Origin is not allowed for the loopback AI backend');
     }
   });
-  gateway = new WebSocketGateway(wss);
+  gateway = new WebSocketGateway(wss, options);
 
   return { server, gateway };
 }

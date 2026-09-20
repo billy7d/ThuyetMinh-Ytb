@@ -7,7 +7,6 @@ export interface TranslationOptions {
   contextManager?: ContextManager;
   speakerTone?: 'natural' | 'formal' | 'casual';
 }
-
 export interface TranslationResult {
   sourceText: string;
   translatedText: string;

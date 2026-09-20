@@ -41,4 +41,14 @@ describe('CostTracker & Budget Guard', () => {
     expect(projection.totalCostUsd).toBeGreaterThan(0);
     expect(projection.breakdownPercentage.stt).toBeGreaterThan(0);
   });
+
+  it('should enforce rate limit of 10 chunks per second', () => {
+    const tracker = new CostTracker('rate_limit_test', { rateLimitChunksPerSecond: 10 });
+    // 10 chunks within the same second should succeed
+    for (let i = 0; i < 10; i++) {
+      expect(tracker.recordAudioChunk(0.25)).toBe(true);
+    }
+    // 11th chunk within the same second must throw rate limit error
+    expect(() => tracker.recordAudioChunk(0.25)).toThrow(/Rate limit exceeded/);
+  });
 });

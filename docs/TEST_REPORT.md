@@ -4,16 +4,18 @@ Ngày cập nhật: 2026-09-21
 
 ## Trạng thái tổng thể
 
-`LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED` — runtime mặc định đã chuyển sang worker local fail-closed, manifest/checksum/license gate, downloader có consent và zero-cost enforcement. Chưa thể công bố P0 PASS vì môi trường này không có model/worker local, Chrome/Firefox runtime hoặc phần cứng/evidence live.
+`BLOCKED — LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED` — runtime mặc định đã chuyển sang worker local fail-closed, manifest/checksum/license gate, downloader có consent và zero-cost enforcement. Chưa thể công bố P0 PASS vì môi trường này không có model/worker local, Firefox runtime hoặc phần cứng/evidence live.
 
 ## Đã kiểm tra cục bộ
 
 - TypeScript typecheck: PASS.
 - Production build cho shared, backend, Chrome extension, Firefox extension và test package: PASS.
-- Unit/integration/provider/local-runtime contract tests: 7 test files, 27 tests PASS.
-- Chrome smoke E2E dùng local HTML5 fixture: 5 tests PASS (rerun outside sandbox); đây chưa phải YouTube/local-model acceptance.
+- Unit/integration/provider/local-runtime/P0 reliability contract tests: 16 test files, 53 tests PASS.
+- Chrome/Firefox extension artifact validators: PASS.
+- Current Chrome artifact E2E: BLOCKED before tests because the macOS harness cannot expose the unpacked MV3 service worker; an earlier 5/5 local HTML5 fixture run on the pre-merge base is not final acceptance evidence.
 - Firefox smoke E2E: BLOCKED vì Playwright Firefox executable không có trong môi trường.
 - `npm audit --omit=dev`: 0 production vulnerabilities. Full audit còn 2 moderate trong Vitest/@vitest/mocker; bản sửa là breaking Vitest 5 và chưa tự động áp dụng.
+- Tracked-source secret scan và `git diff --check`: PASS.
 
 ## Chưa được phép gọi là PASS
 

@@ -21,6 +21,7 @@ export class VideoSyncController {
   }> = [];
   private activeTTSSource: AudioBufferSourceNode | null = null;
   private currentGeneration: number = 1;
+  private destroyed = false;
 
   // Listeners stored for cleanup
   private onTimeUpdateBound: () => void;
@@ -136,8 +137,14 @@ export class VideoSyncController {
     if (this.activeTTSSource) {
       try {
         this.activeTTSSource.stop();
+      } catch (error) {
+        console.warn('[VideoSync] TTS source stop failed', JSON.stringify({ code: 'TTS_SOURCE_STOP_FAILED', message: String(error) }));
+      }
+      try {
         this.activeTTSSource.disconnect();
-      } catch (e) {}
+      } catch (error) {
+        console.warn('[VideoSync] TTS source disconnect failed', JSON.stringify({ code: 'TTS_SOURCE_DISCONNECT_FAILED', message: String(error) }));
+      }
       this.activeTTSSource = null;
     }
   }
@@ -151,6 +158,8 @@ export class VideoSyncController {
   }
 
   destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.stopActiveTTS();
     this.clearTTSQueue();
     this.video.removeEventListener('timeupdate', this.onTimeUpdateBound);

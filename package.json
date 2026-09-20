@@ -7,10 +7,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/extension && npm run build -w @vietdub/tests",
-    "typecheck": "npm run typecheck -w @vietdub/extension && npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/tests",
-    "build:chrome": "npm run build:chrome -w @vietdub/extension",
-    "build:firefox": "npm run build:firefox -w @vietdub/extension",
+    "build": "npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/extension && npm run build -w @vietdub/tests && node scripts/validate-extension-build.mjs --target all",
+    "typecheck": "npm run build -w @vietdub/shared && npm run typecheck -w @vietdub/extension && npm run build -w @vietdub/backend && npm run build -w @vietdub/tests",
+    "validate:build": "node scripts/validate-extension-build.mjs --target all",
+    "build:chrome": "npm run build:chrome -w @vietdub/extension && node scripts/validate-extension-build.mjs --target chrome",
+    "build:firefox": "npm run build:firefox -w @vietdub/extension && node scripts/validate-extension-build.mjs --target firefox",
     "build:backend": "npm run build -w @vietdub/backend",
     "test": "npm run test -w @vietdub/tests",
     "test:unit": "npm run test:unit -w @vietdub/tests",
@@ -19,7 +20,8 @@
     "test:e2e:chrome": "npm run test:e2e:chrome -w @vietdub/tests",
     "test:e2e:firefox": "npm run test:e2e:firefox -w @vietdub/tests",
     "benchmark": "npm run benchmark -w @vietdub/tests",
-    "start:backend": "npm run start -w @vietdub/backend"
+    "start:backend": "npm run start -w @vietdub/backend",
+    "dev:server": "npm run start -w @vietdub/backend"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

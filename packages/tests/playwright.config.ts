@@ -7,6 +7,7 @@ export default defineConfig({
     timeout: 5000
   },
   fullyParallel: false,
+  workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     trace: 'on-first-retry',
@@ -14,7 +15,27 @@ export default defineConfig({
     video: 'retain-on-failure'
   },
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
-    { name: 'firefox', use: { browserName: 'firefox' } }
+    {
+      name: 'chromium',
+      testMatch: /extension-chrome\.spec\.ts/
+    },
+    {
+      name: 'firefox',
+      testMatch: /extension-firefox\.spec\.ts/,
+      use: {
+        browserName: 'firefox',
+        launchOptions: {
+          firefoxUserPrefs: {
+            'media.navigator.permission.disabled': true,
+            'media.autoplay.default': 0,
+            'media.volume_scale': '1.0'
+          }
+        }
+      }
+    },
+    {
+      name: 'bundle-smoke',
+      testMatch: /extension-bundle-smoke\.spec\.ts/
+    }
   ]
 });
