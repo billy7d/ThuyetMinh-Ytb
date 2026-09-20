@@ -4,12 +4,17 @@ export interface BudgetConfig {
   maxCostPerSessionUsd: number;
   maxSessionMinutes: number;
   rateLimitChunksPerSecond: number;
+  /** Local inference is compute-only and must report zero API cost. */
+  costMode: 'local' | 'cloud';
 }
 
 export const DEFAULT_BUDGET_CONFIG: BudgetConfig = {
   maxCostPerSessionUsd: 2.0, // Hard stop if session exceeds $2.00
   maxSessionMinutes: 30, // Default test/session ceiling from the PRD safety budget
-  rateLimitChunksPerSecond: 10
+  rateLimitChunksPerSecond: 10,
+  // Preserve the historical fixture pricing unless the production factory
+  // explicitly selects the zero-cost local runtime.
+  costMode: 'cloud'
 };
 
 export class CostTracker {
@@ -60,10 +65,10 @@ export class CostTracker {
     const elapsedSeconds = (Date.now() - this.startTime) / 1000;
     const elapsedHours = elapsedSeconds / 3600;
 
-    const sttCost = this.sttSeconds * COST_RATES.STT_PER_SECOND;
-    const transCost = this.translatedCharacters * COST_RATES.TRANSLATION_PER_CHAR;
-    const ttsCost = this.ttsCharacters * COST_RATES.TTS_PER_CHAR;
-    const infraCost = elapsedHours * COST_RATES.INFRASTRUCTURE_PER_HOUR;
+    const sttCost = this.config.costMode === 'local' ? 0 : this.sttSeconds * COST_RATES.STT_PER_SECOND;
+    const transCost = this.config.costMode === 'local' ? 0 : this.translatedCharacters * COST_RATES.TRANSLATION_PER_CHAR;
+    const ttsCost = this.config.costMode === 'local' ? 0 : this.ttsCharacters * COST_RATES.TTS_PER_CHAR;
+    const infraCost = this.config.costMode === 'local' ? 0 : elapsedHours * COST_RATES.INFRASTRUCTURE_PER_HOUR;
 
     const estimatedCostUsd = sttCost + transCost + ttsCost + infraCost;
 

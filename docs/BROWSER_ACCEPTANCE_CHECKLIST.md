@@ -1,6 +1,6 @@
 # Browser Acceptance Checklist
 
-Run this checklist only with live provider credentials and a clean browser profile. Record browser version, extension build hash, backend commit, provider model names and timestamps. Never record API keys.
+Run this checklist only with a verified local manifest/workers and a clean browser profile. Record browser version, extension build hash, backend commit, model revisions and timestamps. Never record API keys or raw audio/transcript data.
 
 ## Chrome and Firefox
 

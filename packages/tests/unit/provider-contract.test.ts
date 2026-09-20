@@ -13,15 +13,39 @@ afterEach(() => {
 });
 
 describe('production provider contracts', () => {
-  it('fails closed when production credentials are missing', () => {
-    const factory = createProductionProviderFactory({});
-    expect(factory.missingConfiguration).toEqual([
-      'DEEPGRAM_API_KEY',
-      'GEMINI_API_KEY',
-      'GEMINI_MODEL',
-      'GOOGLE_CLOUD_TTS_API_KEY or GOOGLE_CLOUD_TTS_ACCESS_TOKEN'
-    ]);
-    expect(() => factory.create()).toThrow(/Production providers are not configured/);
+  it('defaults to local mode and fails closed when the manifest/workers are missing', () => {
+    const factory = createProductionProviderFactory({}, '/tmp/vietdub-test-no-models');
+    expect(factory.mode).toBe('local');
+    expect(factory.missingConfiguration).toContain('LOCAL_MODEL_MANIFEST=/tmp/vietdub-test-no-models/models/manifest.json');
+    expect(factory.missingConfiguration).toContain('LOCAL_STT_WORKER_COMMAND');
+    expect(factory.missingConfiguration).not.toContain('DEEPGRAM_API_KEY');
+    expect(() => factory.create()).toThrow(/Local AI is not ready/);
+  });
+
+  it('requires an explicit opt-in before cloud adapters can be constructed', () => {
+    const missingOptIn = createProductionProviderFactory({
+      AI_MODE: 'cloud',
+      DEEPGRAM_API_KEY: 'stt',
+      GEMINI_API_KEY: 'translation',
+      GEMINI_MODEL: 'model',
+      GOOGLE_CLOUD_TTS_API_KEY: 'tts'
+    });
+    expect(missingOptIn.missingConfiguration).toEqual(['CLOUD_PROVIDERS_ENABLED=true', 'PAID_API_ALLOWED=true']);
+    expect(() => missingOptIn.create()).toThrow(/Explicit cloud providers/);
+
+    const explicitlyEnabled = createProductionProviderFactory({
+      AI_MODE: 'cloud',
+      CLOUD_PROVIDERS_ENABLED: 'true',
+      PAID_API_ALLOWED: 'true',
+      DEEPGRAM_API_KEY: 'stt',
+      GEMINI_API_KEY: 'translation',
+      GEMINI_MODEL: 'model',
+      GOOGLE_CLOUD_TTS_API_KEY: 'tts'
+    });
+    const dependencies = explicitlyEnabled.create();
+    expect(dependencies.sttProvider.name).toBe('DeepgramStreamingSTT');
+    expect(dependencies.translationEngine.getProviderName()).toBe('GeminiTranslation');
+    expect(dependencies.ttsProvider.name).toBe('GoogleCloudTTS');
   });
 
   it('sends transcript as untrusted data to Gemini and extracts plain text', async () => {

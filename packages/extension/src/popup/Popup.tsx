@@ -12,6 +12,7 @@ export const Popup: React.FC = () => {
   const [ttsVolume, setTtsVolume] = useState<number>(DEFAULT_TTS_VOLUME);
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [backendStatus, setBackendStatus] = useState<string>('Đang kiểm tra backend local...');
 
   const checkVideoInTab = (tabId: number, isKnownVideo: boolean, attempt = 1) => {
     chrome.tabs.sendMessage(tabId, { type: 'CHECK_VIDEO' }, (res) => {
@@ -45,6 +46,18 @@ export const Popup: React.FC = () => {
   };
 
   useEffect(() => {
+    fetch('http://127.0.0.1:8080/health')
+      .then(async response => {
+        const payload = await response.json().catch(() => ({}));
+        const providerStatus = payload.providers || payload;
+        if (response.ok && providerStatus.mode === 'local' && providerStatus.configured) {
+          setBackendStatus('Backend local sẵn sàng');
+        } else {
+          setBackendStatus('Backend local chưa sẵn sàng — kiểm tra model/worker');
+        }
+      })
+      .catch(() => setBackendStatus('Chưa kết nối backend local'));
+
     // 1. Get active tab info
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs.length > 0 && tabs[0].id) {
@@ -175,8 +188,9 @@ export const Popup: React.FC = () => {
       </div>
       <div style={styles.subHeader}>Thuyết minh tiếng Việt theo thời gian thực</div>
       <div style={styles.privacyNotice}>
-        Âm thanh chỉ được gửi đến STT và bản chép lời đến dịch vụ dịch sau khi bạn bấm Bắt đầu. Dừng phiên sẽ ngắt truyền dữ liệu.
+        AI mặc định chạy offline trên máy của bạn sau khi model local được cài đặt. Không cần API key; dừng phiên sẽ ngắt truyền dữ liệu.
       </div>
+      <div style={styles.backendStatus}>{backendStatus}</div>
 
       {/* Video Detection Notice */}
       {!hasVideo && (
@@ -366,6 +380,12 @@ const styles: Record<string, any> = {
     border: '1px solid #3f3f46',
     borderRadius: 6,
     padding: '7px 8px',
+    marginBottom: 12
+  },
+  backendStatus: {
+    fontSize: 11,
+    lineHeight: 1.3,
+    color: '#a1a1aa',
     marginBottom: 12
   },
   alertWarning: {

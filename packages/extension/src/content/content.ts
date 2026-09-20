@@ -16,6 +16,7 @@ let fxWs: WebSocket | null = null;
 let fxSessionId: string | null = null;
 let fxCurrentGeneration: number = 1;
 let fxSequence = 0;
+let fxPlaybackEpoch = 1;
 let fxRestoreState: { video: HTMLVideoElement; muted: boolean; volume: number } | null = null;
 let contentGeneration = 1;
 
@@ -88,6 +89,7 @@ function initVideoIntegration(): boolean {
         }
       },
       onPause: () => {
+        fxPlaybackEpoch++;
         fxAudioMixer?.stopTTS();
       },
       onResume: () => {}
@@ -173,6 +175,7 @@ async function handleFirefoxStartCapture(
   if (fxWs || fxAudioCtx || fxAudioMixer) handleFirefoxStopCapture();
   fxSessionId = sessionId;
   fxCurrentGeneration = 1;
+  fxPlaybackEpoch++;
   contentGeneration = 1;
   fxSequence = 0;
   fxRestoreState = { video, muted: video.muted, volume: video.volume };
@@ -233,8 +236,11 @@ async function handleFirefoxStartCapture(
         );
       }
       if (serverMsg.type === 'TTS_CHUNK') {
+        const sessionAtDecodeStart = fxSessionId;
+        const generationAtDecodeStart = fxCurrentGeneration;
+        const playbackEpochAtDecodeStart = fxPlaybackEpoch;
         if (
-          serverMsg.generation === fxCurrentGeneration &&
+          serverMsg.generation === generationAtDecodeStart &&
           fxAudioCtx &&
           fxAudioMixer &&
           !video.paused &&
@@ -245,7 +251,17 @@ async function handleFirefoxStartCapture(
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           const buffer = await fxAudioCtx.decodeAudioData(bytes.buffer);
-          fxAudioMixer.playTTSBuffer(buffer);
+          if (
+            sessionAtDecodeStart &&
+            sessionAtDecodeStart === fxSessionId &&
+            generationAtDecodeStart === fxCurrentGeneration &&
+            playbackEpochAtDecodeStart === fxPlaybackEpoch &&
+            fxAudioCtx &&
+            fxAudioMixer &&
+            !video.paused
+          ) {
+            fxAudioMixer.playTTSBuffer(buffer);
+          }
         }
       }
     } catch (err) {
@@ -278,6 +294,7 @@ async function handleFirefoxStartCapture(
 
 function handleFirefoxStopCapture(): void {
   const sessionId = fxSessionId;
+  fxPlaybackEpoch++;
   fxSessionId = null;
   if (fxWs && fxWs.readyState === WebSocket.OPEN && sessionId) {
     fxWs.send(JSON.stringify({

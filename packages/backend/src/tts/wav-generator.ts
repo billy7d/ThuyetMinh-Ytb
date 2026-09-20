@@ -1,7 +1,7 @@
 /**
  * Helper to generate a valid RIFF WAV audio buffer with realistic acoustic harmonics.
- * Test-only helper for reliable audio fixtures. Production TTS uses the
- * Google Cloud adapter and never falls back to synthetic audio.
+ * Test-only helper for reliable audio fixtures. Production TTS uses a local
+ * worker and never falls back to synthetic audio.
  */
 export function generateSyntheticWavBuffer(
   durationSeconds: number,

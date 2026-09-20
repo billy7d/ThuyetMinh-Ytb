@@ -23,10 +23,10 @@ VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh tr�
    - Tự động neo theo phần tử video (hỗ trợ cả chế độ toàn màn hình Fullscreen).
    - Tương phản cao, tự động xuống dòng không tràn khung hình.
 
-4. **Pipeline AI Chất lượng Cao:**
-   - **Streaming STT:** Tích hợp Voice Activity Detection (VAD) xác định chính xác ngắt câu.
-   - **Context-aware Translation:** Dịch theo nghĩa toàn câu với văn phong nói tự nhiên của người Việt, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ chuyên ngành.
-   - **Vietnamese TTS:** Giọng đọc tự nhiên, phản hồi nhanh và cơ chế hủy (`cancelGeneration`) tức thì khi người dùng tua video hoặc tạm dừng.
+4. **Pipeline AI cục bộ, không phí API:**
+   - **Streaming STT local:** Worker chạy trên máy người dùng, có Voice Activity Detection (VAD) và bounded queue.
+   - **Context-aware Translation local:** Worker dịch `en → vi` offline, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ trong phạm vi model.
+   - **Vietnamese TTS local:** Worker phát audio WAV thật, kiểm tra metadata và hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng.
 
 5. **Trạng thái kiểm chứng:**
    - Chrome/Firefox artifacts đã build được; browser acceptance production vẫn cần chạy trên cả hai trình duyệt.
@@ -68,6 +68,7 @@ vietdub-ai/
 ### 1. Yêu cầu Hệ thống
 - **Node.js:** Phiên bản >= 20.x (Khuyến nghị Node.js v24 LTS).
 - **Trình duyệt:** Google Chrome (>= 116+) hoặc Mozilla Firefox (>= 109+).
+- **Local AI runtime:** cài ba worker STT/dịch/TTS tương thích JSONL và model weights đã được kiểm SHA-256 theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md). Không có worker/model thì backend giữ trạng thái `503`, không fallback sang cloud.
 
 ### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
 Mở Terminal tại thư mục dự án và chạy:
@@ -88,14 +89,26 @@ Sau khi hoàn tất:
 
 ## 📖 Hướng dẫn Khởi chạy & Sử dụng Chi tiết trên Trình duyệt
 
-### BƯỚC 1: Khởi động Realtime AI Backend
+### BƯỚC 1: Cài local models và khởi động Realtime AI Backend
 
 Trước khi bật extension trên trình duyệt, khởi động server WebSocket xử lý AI:
 
 ```bash
+# Tạo cấu hình local từ mẫu và điền đường dẫn worker/model manifest.
+cp .env.example .env
+# Xem giao thức worker, consent, checksum và setup Windows/macOS:
+# docs/LOCAL_RUNTIME.md
 npm run start:backend
 ```
-> Khi Terminal xuất hiện thông báo:
+> Backend chỉ báo ready sau khi `models/manifest.json` hợp lệ, cả ba model có checksum/license đã xác minh và cả ba worker local trả `{"event":"ready"}`. Không nhập API key cho chế độ mặc định.
+
+Kiểm tra readiness:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Khi Terminal xuất hiện thông báo:
 > `[VietDub Backend] WebSocket AI Gateway listening on port 8080`
 > tức là Backend đã sẵn sàng nhận luồng âm thanh.
 

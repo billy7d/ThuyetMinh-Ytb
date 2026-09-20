@@ -32,7 +32,8 @@ const DEFAULT_CONFIG: TranslationEngineConfig = {
 
 /**
  * Sentence assembler and provider boundary. Every caller must inject a
- * provider; production wiring injects Gemini and tests inject a fixture.
+ * provider; production wiring injects the local worker and tests inject a
+ * fixture. Cloud adapters are opt-in diagnostics only.
  */
 export class TranslationEngine {
   private readonly contextManager: ContextManager;
@@ -41,6 +42,7 @@ export class TranslationEngine {
   private readonly config: TranslationEngineConfig;
   private pendingBuffer = '';
   private pendingStartMs = 0;
+  private resetVersion = 0;
 
   constructor(
     provider: TranslationProvider,
@@ -52,7 +54,7 @@ export class TranslationEngine {
       ...DEFAULT_CONFIG,
       ...config,
       // The deterministic fixture intentionally returns partially translated
-      // text for generic assertions; production Gemini validation stays on.
+      // text for generic assertions; production local-worker validation stays on.
       validateVietnamese: config.validateVietnamese ?? provider.name !== 'DeterministicFixtureTranslation'
     };
     this.contextManager = contextManager || new ContextManager(this.config.maxContextItems);
@@ -100,6 +102,7 @@ export class TranslationEngine {
 
     const fullSourceText = candidateText;
     const contextStartMs = this.pendingStartMs || startMs;
+    const requestResetVersion = this.resetVersion;
     this.pendingBuffer = '';
     this.pendingStartMs = 0;
 
@@ -111,6 +114,14 @@ export class TranslationEngine {
       terminology: this.contextManager.getTerminology(),
       speakerTone: options.speakerTone || 'natural'
     });
+    if (requestResetVersion !== this.resetVersion) {
+      return {
+        sourceText: fullSourceText,
+        translatedText: '',
+        buffered: true,
+        latencyMs: Date.now() - startedAt
+      };
+    }
     const translatedText = this.validateTranslation(providerResult.translatedText, fullSourceText);
     this.contextManager.addConfirmed(fullSourceText, translatedText, endMs);
 
@@ -153,8 +164,10 @@ export class TranslationEngine {
   }
 
   reset(): void {
+    this.resetVersion++;
     this.pendingBuffer = '';
     this.pendingStartMs = 0;
+    this.provider.cancelPending?.();
     this.contextManager.reset();
   }
 }

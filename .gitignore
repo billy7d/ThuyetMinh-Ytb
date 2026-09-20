@@ -10,3 +10,6 @@ Thumbs.db
 .playwright/
 playwright-report/
 test-results/
+# Local model weights/manifests are operator-owned and must not enter Git.
+models/*
+!models/manifest.example.json

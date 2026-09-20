@@ -9,6 +9,9 @@ import {
 import { RealtimePipeline } from '../pipeline/realtime-pipeline.js';
 import { createProductionProviderFactory, ProductionProviderFactory } from '../provider-factory.js';
 
+const MAX_SESSION_ID_LENGTH = 128;
+const MAX_PCM_FRAME_BYTES = 192 * 1024;
+
 interface ActiveSession {
   pipeline: RealtimePipeline;
   ws: WebSocket;
@@ -29,10 +32,17 @@ export class WebSocketGateway {
     this.providerFactory = options.providerFactory || createProductionProviderFactory();
     this.maxConcurrentSessions = options.maxConcurrentSessions || 4;
     this.setupConnectionHandler();
+    void this.providerFactory.warmup?.().catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[VietDub] Local runtime warmup unavailable: ${message.slice(0, 240)}`);
+    });
   }
 
-  getProviderStatus(): { configured: boolean; missingConfiguration: string[] } {
+  getProviderStatus(): ReturnType<ProductionProviderFactory['getStatus']> {
+    const status = this.providerFactory.getStatus?.();
+    if (status) return status;
     return {
+      mode: this.providerFactory.mode,
       configured: this.providerFactory.missingConfiguration.length === 0,
       missingConfiguration: [...this.providerFactory.missingConfiguration]
     };
@@ -40,18 +50,29 @@ export class WebSocketGateway {
 
   private setupConnectionHandler(): void {
     this.wss.on('connection', (ws: WebSocket) => {
-      let currentSessionId: string | null = null;
+      let ownedSessionId: string | null = null;
 
       ws.on('message', (rawData: Buffer | string) => {
         try {
           const msg = JSON.parse(rawData.toString()) as ClientMessage;
-          currentSessionId = msg.sessionId;
+          const validationError = validateClientMessage(msg);
+          if (validationError) {
+            this.sendError(ws, typeof msg.sessionId === 'string' ? msg.sessionId : 'unknown', 'INVALID_MESSAGE', validationError, false);
+            return;
+          }
+          if (msg.type !== 'SESSION_START' && (!ownedSessionId || msg.sessionId !== ownedSessionId)) {
+            this.sendError(ws, msg.sessionId, 'SESSION_OWNERSHIP_ERROR', 'Phiên không thuộc kết nối này.', false);
+            return;
+          }
           this.handleClientMessage(ws, msg);
+          if (msg.type === 'SESSION_START' && this.activeSessions.get(msg.sessionId)?.ws === ws) {
+            ownedSessionId = msg.sessionId;
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Invalid message';
           this.sendSafe(ws, {
             type: 'ERROR',
-            sessionId: currentSessionId || 'unknown',
+            sessionId: ownedSessionId || 'unknown',
             timestamp: Date.now(),
             code: 'INVALID_MESSAGE',
             message,
@@ -61,11 +82,11 @@ export class WebSocketGateway {
       });
 
       ws.on('close', () => {
-        if (currentSessionId) this.terminateSession(currentSessionId, ws);
+        if (ownedSessionId) this.terminateSession(ownedSessionId, ws);
       });
 
       ws.on('error', () => {
-        if (currentSessionId) this.terminateSession(currentSessionId, ws);
+        if (ownedSessionId) this.terminateSession(ownedSessionId, ws);
       });
     });
   }
@@ -73,6 +94,12 @@ export class WebSocketGateway {
   private handleClientMessage(ws: WebSocket, msg: ClientMessage): void {
     switch (msg.type) {
       case 'SESSION_START': {
+        const existing = this.activeSessions.get(msg.sessionId);
+        if (existing && existing.ws !== ws) {
+          this.sendError(ws, msg.sessionId, 'SESSION_OWNERSHIP_ERROR', 'Session ID đang được sử dụng bởi kết nối khác.', true);
+          return;
+        }
+        if (existing) this.terminateSession(msg.sessionId, ws);
         if (this.activeSessions.size >= this.maxConcurrentSessions) {
           this.sendError(ws, msg.sessionId, 'CONCURRENT_SESSION_LIMIT', 'Số phiên đang hoạt động đã đạt giới hạn.', true);
           return;
@@ -82,7 +109,6 @@ export class WebSocketGateway {
           return;
         }
 
-        this.terminateSession(msg.sessionId);
         let dependencies;
         try {
           dependencies = this.providerFactory.create();
@@ -183,5 +209,48 @@ export class WebSocketGateway {
       this.activeSessions.delete(sessionId);
     }
     this.wss.close();
+    void this.providerFactory.close?.();
   }
+}
+
+function validateClientMessage(msg: ClientMessage): string | null {
+  if (!msg || typeof msg !== 'object') return 'Message phải là một object JSON.';
+  if (![
+    'SESSION_START',
+    'AUDIO_CHUNK',
+    'SEEK_EVENT',
+    'MODE_CHANGE',
+    'VIDEO_STATE_UPDATE',
+    'SESSION_STOP'
+  ].includes(msg.type)) return 'type không được hỗ trợ.';
+  if (!isSafeSessionId(msg.sessionId)) return 'sessionId không hợp lệ.';
+  if (!Number.isFinite(msg.timestamp)) return 'timestamp không hợp lệ.';
+
+  if (msg.type === 'SESSION_START') {
+    if (!['subtitle_only', 'dubbing_only', 'dubbing_and_subtitle'].includes(msg.mode)) return 'mode không hợp lệ.';
+    if (msg.audioSampleRate !== 16_000) return 'Backend yêu cầu PCM mono 16 kHz.';
+  }
+  if (msg.type === 'AUDIO_CHUNK') {
+    if (!Number.isSafeInteger(msg.sequence) || msg.sequence < 0) return 'sequence không hợp lệ.';
+    if (!Number.isFinite(msg.videoTimeMs) || msg.videoTimeMs < 0) return 'videoTimeMs không hợp lệ.';
+    if (typeof msg.pcmBase64 !== 'string' || msg.pcmBase64.length === 0) return 'pcmBase64 bị thiếu.';
+    if (msg.pcmBase64.length > MAX_PCM_FRAME_BYTES * 2) return 'Khung PCM vượt giới hạn.';
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(msg.pcmBase64)) return 'pcmBase64 không hợp lệ.';
+    const pcmBuffer = Buffer.from(msg.pcmBase64, 'base64');
+    if (pcmBuffer.length === 0 || pcmBuffer.length > MAX_PCM_FRAME_BYTES || pcmBuffer.length % 2 !== 0) {
+      return 'Khung PCM phải là 16-bit và không vượt quá giới hạn.';
+    }
+  }
+  if (msg.type === 'SEEK_EVENT') {
+    if (![msg.fromMs, msg.toMs, msg.generation].every(Number.isFinite)) return 'Thông tin seek không hợp lệ.';
+    if (msg.fromMs < 0 || msg.toMs < 0 || msg.generation < 0) return 'Thông tin seek không hợp lệ.';
+  }
+  if (msg.type === 'MODE_CHANGE' && !['subtitle_only', 'dubbing_only', 'dubbing_and_subtitle'].includes(msg.mode)) {
+    return 'mode không hợp lệ.';
+  }
+  return null;
+}
+
+function isSafeSessionId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SESSION_ID_LENGTH && /^[A-Za-z0-9._:-]+$/.test(value);
 }

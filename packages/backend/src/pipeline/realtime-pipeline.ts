@@ -19,10 +19,14 @@ export interface PipelineCallbacks {
 }
 
 export class RealtimePipeline {
+  private static readonly MAX_PENDING_FINALS = 8;
   private generation = 1;
   private segmentCounter = 0;
   private sttStreamToken = 0;
   private readonly processedFinalKeys = new Set<string>();
+  private readonly finalQueue: Array<{ result: STTResult; streamToken: number }> = [];
+  private readonly audioEndWallClockByVideoMs = new Map<number, number>();
+  private drainingFinalQueue = false;
   private sttSession: STTStreamSession | null = null;
   private isActive = false;
   private mode: OperationMode;
@@ -52,6 +56,12 @@ export class RealtimePipeline {
     try {
       const durationSec = pcmData.length / 2 / 16000;
       this.costTracker.recordAudioChunk(durationSec);
+      const audioEndVideoMs = Math.round(videoTimeMs + durationSec * 1000);
+      this.audioEndWallClockByVideoMs.set(audioEndVideoMs, Date.now());
+      if (this.audioEndWallClockByVideoMs.size > 256) {
+        const first = this.audioEndWallClockByVideoMs.keys().next().value as number | undefined;
+        if (first !== undefined) this.audioEndWallClockByVideoMs.delete(first);
+      }
       this.sttSession.sendAudioChunk(pcmData, videoTimeMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -70,17 +80,56 @@ export class RealtimePipeline {
       },
       onFinal: result => {
         if (!this.isActive || token !== this.sttStreamToken) return;
-        void this.handleFinalTranscript(result, token).catch(error => {
-          if (this.isActive && token === this.sttStreamToken) {
-            this.handleError('PIPELINE_ERROR', error instanceof Error ? error.message : String(error), false);
-          }
-        });
+        this.enqueueFinalTranscript(result, token);
       },
       onError: error => {
         if (!this.isActive || token !== this.sttStreamToken) return;
         this.handleError('STT_ERROR', error.message, false);
       }
     });
+  }
+
+  private enqueueFinalTranscript(result: STTResult, streamToken: number): void {
+    const sourceText = result.text.trim();
+    if (!sourceText) return;
+    const dedupeKey = result.segmentId || `${result.startMs}:${result.endMs}:${sourceText}`;
+    if (this.processedFinalKeys.has(dedupeKey)) return;
+    this.processedFinalKeys.add(dedupeKey);
+    if (this.processedFinalKeys.size > 500) {
+      const first = this.processedFinalKeys.values().next().value as string | undefined;
+      if (first) this.processedFinalKeys.delete(first);
+    }
+    if (this.finalQueue.length >= RealtimePipeline.MAX_PENDING_FINALS) {
+      this.handleError(
+        'PIPELINE_BACKPRESSURE',
+        `Bộ xử lý đang bận; đã bỏ qua câu chờ thứ ${RealtimePipeline.MAX_PENDING_FINALS + 1}.`,
+        false
+      );
+      return;
+    }
+    this.finalQueue.push({ result, streamToken });
+    void this.drainFinalQueue();
+  }
+
+  private async drainFinalQueue(): Promise<void> {
+    if (this.drainingFinalQueue) return;
+    this.drainingFinalQueue = true;
+    try {
+      while (this.isActive && this.finalQueue.length > 0) {
+        const item = this.finalQueue.shift();
+        if (!item) continue;
+        try {
+          await this.handleFinalTranscript(item.result, item.streamToken);
+        } catch (error) {
+          if (this.isActive && item.streamToken === this.sttStreamToken) {
+            this.handleError('PIPELINE_ERROR', error instanceof Error ? error.message : String(error), false);
+          }
+        }
+      }
+    } finally {
+      this.drainingFinalQueue = false;
+      if (this.isActive && this.finalQueue.length > 0) void this.drainFinalQueue();
+    }
   }
 
   private handleInterimTranscript(result: STTResult): void {
@@ -102,21 +151,10 @@ export class RealtimePipeline {
     const sourceText = result.text.trim();
     if (!sourceText) return;
     const currentGeneration = this.generation;
-    const dedupeKey = result.segmentId || `${result.startMs}:${result.endMs}:${sourceText}`;
-    if (this.processedFinalKeys.has(dedupeKey)) return;
-    this.processedFinalKeys.add(dedupeKey);
-    if (this.processedFinalKeys.size > 500) {
-      const first = this.processedFinalKeys.values().next().value as string | undefined;
-      if (first) this.processedFinalKeys.delete(first);
-    }
 
     const segmentId = `seg_${++this.segmentCounter}`;
-    // STTResult does not yet carry a monotonic timestamp for the last audio
-    // frame sent to the provider. Do not manufacture a latency number from
-    // wall-clock values; live latency reporting must be instrumented at the
-    // provider boundary before it is presented as evidence.
     const pipelineStartedAt = Date.now();
-    const sttLatencyMs = 0;
+    const sttLatencyMs = this.estimateSttLatency(result);
 
     const transFinalMsg: TranscriptFinalMessage = {
       type: 'TRANSCRIPT_FINAL',
@@ -217,9 +255,11 @@ export class RealtimePipeline {
     const previousGeneration = this.generation;
     this.generation++;
     this.processedFinalKeys.clear();
+    this.audioEndWallClockByVideoMs.clear();
     this.ttsEngine.cancelGeneration(previousGeneration);
     this.translationEngine.reset();
     this.sttStreamToken++;
+    this.finalQueue.length = 0;
     this.sttSession?.endStream();
     this.sttSession = null;
     this.openSttStream();
@@ -257,14 +297,33 @@ export class RealtimePipeline {
     this.callbacks.sendMessage(errorMsg);
   }
 
+  private estimateSttLatency(result: STTResult): number {
+    if (!result.receivedAtMs) return 0;
+    const exact = this.audioEndWallClockByVideoMs.get(Math.round(result.endMs));
+    if (exact !== undefined) return Math.max(0, result.receivedAtMs - exact);
+
+    let nearestWallClock: number | undefined;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const [videoEndMs, wallClockMs] of this.audioEndWallClockByVideoMs) {
+      const distance = Math.abs(videoEndMs - result.endMs);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestWallClock = wallClockMs;
+      }
+    }
+    return nearestWallClock === undefined ? 0 : Math.max(0, result.receivedAtMs - nearestWallClock);
+  }
+
   stop(): void {
     if (!this.isActive) return;
     this.isActive = false;
     this.generation++;
     this.sttStreamToken++;
+    this.finalQueue.length = 0;
     this.ttsEngine.cancelGeneration(this.generation - 1);
     this.translationEngine.reset();
     this.processedFinalKeys.clear();
+    this.audioEndWallClockByVideoMs.clear();
     this.sttSession?.endStream();
     this.sttSession = null;
   }

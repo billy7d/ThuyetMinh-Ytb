@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "REPLACE_WITH_UTC_TIMESTAMP",
+  "models": {
+    "stt": {
+      "component": "stt",
+      "modelId": "whisper.cpp/base.en",
+      "revision": "REPLACE_WITH_PINNED_REVISION",
+      "upstreamUrl": "https://github.com/ggml-org/whisper.cpp",
+      "relativePath": "stt/base.en",
+      "artifacts": [
+        {
+          "relativePath": "model.bin",
+          "sizeBytes": 1,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "license": {
+        "model": "UNVERIFIED",
+        "code": "UNVERIFIED",
+        "tokenizer": "UNVERIFIED",
+        "distribution": "unknown",
+        "commercialUse": "unknown",
+        "notes": "Replace this template only after checking upstream code, weights and tokenizer terms."
+      }
+    },
+    "translation": {
+      "component": "translation",
+      "modelId": "Helsinki-NLP/opus-mt-en-vi",
+      "revision": "REPLACE_WITH_PINNED_REVISION",
+      "upstreamUrl": "https://huggingface.co/Helsinki-NLP/opus-mt-en-vi",
+      "relativePath": "translation/opus-mt-en-vi",
+      "artifacts": [
+        {
+          "relativePath": "model.safetensors",
+          "sizeBytes": 1,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "license": {
+        "model": "UNVERIFIED",
+        "code": "UNVERIFIED",
+        "tokenizer": "UNVERIFIED",
+        "distribution": "unknown",
+        "commercialUse": "unknown",
+        "notes": "Verify every file and the model card license before distribution."
+      }
+    },
+    "tts": {
+      "component": "tts",
+      "modelId": "pnnbao-ump/VieNeu-TTS",
+      "revision": "REPLACE_WITH_PINNED_REVISION",
+      "upstreamUrl": "https://huggingface.co/pnnbao-ump/VieNeu-TTS",
+      "relativePath": "tts/vieneu",
+      "artifacts": [
+        {
+          "relativePath": "model.bin",
+          "sizeBytes": 1,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "license": {
+        "model": "UNVERIFIED",
+        "code": "UNVERIFIED",
+        "tokenizer": "UNVERIFIED",
+        "codec": "UNVERIFIED",
+        "voice": "UNVERIFIED",
+        "distribution": "unknown",
+        "commercialUse": "unknown",
+        "notes": "The official model page identifies Apache-2.0 for this model, but codec, tokenizer, voice assets and the exact pinned revision still require independent verification before distribution."
+      }
+    }
+  }
+}

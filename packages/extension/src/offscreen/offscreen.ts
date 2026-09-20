@@ -18,6 +18,7 @@ let currentGeneration = 1;
 let sequence = 0;
 let latestVideoState: VideoPlaybackState | null = null;
 let videoStateAudioTime = 0;
+let playbackEpoch = 1;
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
@@ -61,6 +62,7 @@ async function startCapture(
   currentSessionId = sessionId;
   currentGeneration = 1;
   sequence = 0;
+  playbackEpoch++;
   latestVideoState = null;
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -98,33 +100,8 @@ async function startCapture(
     }
   };
 
-  ws.onerror = () => {
-    if (currentSessionId) {
-      chrome.runtime.sendMessage({
-        target: 'background',
-        type: 'ERROR',
-        sessionId: currentSessionId,
-        timestamp: Date.now(),
-        code: 'BACKEND_CONNECTION_ERROR',
-        message: 'Không thể kết nối đến máy chủ AI.',
-        fatal: true
-      }).catch(() => {});
-    }
-  };
-
-  ws.onclose = () => {
-    if (currentSessionId) {
-      chrome.runtime.sendMessage({
-        target: 'background',
-        type: 'ERROR',
-        sessionId: currentSessionId,
-        timestamp: Date.now(),
-        code: 'BACKEND_DISCONNECTED',
-        message: 'Máy chủ AI đã ngắt kết nối; audio capture đã dừng.',
-        fatal: true
-      }).catch(() => {});
-    }
-  };
+  ws.onerror = () => handleBackendFailure('BACKEND_CONNECTION_ERROR', 'Không thể kết nối đến máy chủ AI.');
+  ws.onclose = () => handleBackendFailure('BACKEND_DISCONNECTED', 'Máy chủ AI đã ngắt kết nối; audio capture đã dừng.');
 
   pcmProcessor = new PCMProcessor(
     audioCtx,
@@ -162,18 +139,20 @@ function handleServerMessage(msg: ServerMessage): void {
     msg.endMs >= getVideoTimeMs() - 6000 &&
     audioMixer.getTTSBacklogMs() < 8000
   ) {
-    void playTTSChunk(msg.audioBase64);
+    void playTTSChunk(msg.audioBase64, msg.generation, playbackEpoch);
   }
 }
 
-async function playTTSChunk(audioBase64: string): Promise<void> {
+async function playTTSChunk(audioBase64: string, generation: number, epoch: number): Promise<void> {
   if (!audioCtx || !audioMixer) return;
   try {
     const binary = atob(audioBase64);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
     const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer);
-    if (currentSessionId) audioMixer.playTTSBuffer(audioBuffer);
+    if (currentSessionId && generation === currentGeneration && epoch === playbackEpoch && !latestVideoState?.paused) {
+      audioMixer.playTTSBuffer(audioBuffer);
+    }
   } catch (error) {
     console.error('[Offscreen] TTS play error:', error);
   }
@@ -189,7 +168,10 @@ function updateMixer(config: Partial<AudioMixerConfig>): void {
 function handleVideoStateUpdate(state: VideoPlaybackState): void {
   latestVideoState = state;
   videoStateAudioTime = audioCtx?.currentTime || 0;
-  if (state.paused) audioMixer?.stopTTS();
+  if (state.paused) {
+    playbackEpoch++;
+    audioMixer?.stopTTS();
+  }
 }
 
 function getVideoTimeMs(): number {
@@ -223,8 +205,12 @@ function handleModeChange(mode: OperationMode): void {
 
 function stopCapture(): void {
   const sessionId = currentSessionId;
-  if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
-    ws.send(JSON.stringify({ type: 'SESSION_STOP', sessionId, timestamp: Date.now() } satisfies ClientMessage));
+  const socket = ws;
+  currentSessionId = null;
+  latestVideoState = null;
+  playbackEpoch++;
+  if (socket && socket.readyState === WebSocket.OPEN && sessionId) {
+    socket.send(JSON.stringify({ type: 'SESSION_STOP', sessionId, timestamp: Date.now() } satisfies ClientMessage));
   }
   pcmProcessor?.stop();
   pcmProcessor = null;
@@ -236,11 +222,24 @@ function stopCapture(): void {
     void audioCtx.close();
     audioCtx = null;
   }
-  if (ws) {
-    try { ws.close(1000, 'session stopped'); } catch {}
-    ws = null;
+  if (socket) {
+    try { socket.close(1000, 'session stopped'); } catch {}
+    if (ws === socket) ws = null;
   }
-  currentSessionId = null;
-  latestVideoState = null;
   currentGeneration++;
+}
+
+function handleBackendFailure(code: string, message: string): void {
+  const sessionId = currentSessionId;
+  if (!sessionId) return;
+  chrome.runtime.sendMessage({
+    target: 'background',
+    type: 'ERROR',
+    sessionId,
+    timestamp: Date.now(),
+    code,
+    message,
+    fatal: true
+  }).catch(() => {});
+  stopCapture();
 }

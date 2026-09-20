@@ -10,7 +10,7 @@ Các bảng PASS trước đây dựa trên môi trường Windows và synthetic
 - Firefox dùng content-side capture path với native audio mute/restore guard.
 - Audio gốc và TTS đi qua các gain/queue độc lập; audio gốc vẫn được gửi STT khi người dùng đặt volume về 0.
 - Seek, video replacement, tab close, Stop và provider errors đều có cleanup/generation invalidation path.
-- Deepgram, Gemini và Google Cloud TTS là provider thật; mock/fixture chỉ còn trong test package.
+- Local worker adapters là runtime production; các adapter Deepgram/Gemini/Google Cloud còn lại chỉ dành cho explicit diagnostics; mock/fixture chỉ còn trong test package.
 
 ## Chưa xác minh
 

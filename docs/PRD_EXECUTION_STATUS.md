@@ -1,32 +1,33 @@
 # PRD Execution Status
 
-Ngày cập nhật: 2026-09-20
+Ngày cập nhật: 2026-09-21
 
-STATUS: BLOCKED / IMPLEMENTED, NOT VERIFIED
+STATUS: BLOCKED / LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED
 BRANCH: codex/vietdub-production-pipeline
-HEAD_SHA: b71cb17c265a05dac3e98bbd0076f34b84b7e22f
-PR_URL: https://github.com/billy7d/ThuyetMinh-Ytb/pull/1 — existing Draft PR, not updated automatically because it is based on a separate 16-commit reliability branch
-P0_ACCEPTANCE: BLOCKED — provider credentials are absent and Firefox runtime is absent
-REAL_STT: IMPLEMENTED, NOT LIVE VERIFIED — Deepgram live WebSocket adapter with nova-3 default, interim/final aggregation, dedupe, bounded reconnect and buffer limits
-REAL_TRANSLATION: IMPLEMENTED, NOT LIVE VERIFIED — Gemini generateContent adapter with context, terminology, delimited untrusted transcript and fail-closed output validation
-REAL_VIETNAMESE_TTS: IMPLEMENTED, NOT LIVE VERIFIED — Google Cloud Text-to-Speech vi-VN LINEAR16 adapter with parsed WAV metadata and generation cancellation
-CHROME_BROWSER_E2E: SMOKE PASS 5/5 on local HTML5 fixture; not YouTube/provider-live acceptance
+HEAD_SHA: pending final commit
+PR_URL: https://github.com/billy7d/ThuyetMinh-Ytb/pull/1 — PR state/mergeability could not be queried because `gh` is not installed in this environment
+P0_ACCEPTANCE: BLOCKED — no local model/worker runtime, Firefox executable missing and no live hardware evidence
+AI_DEFAULT_MODE: local; cloud adapters require AI_MODE=cloud, CLOUD_PROVIDERS_ENABLED=true and PAID_API_ALLOWED=true
+ZERO_COST_ENFORCEMENT: PASS in code/tests — local CostTracker reports 0 external API cost and the default factory never constructs cloud adapters
+LOCAL_STT: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL worker boundary; whisper.cpp is the documented candidate
+LOCAL_TRANSLATION: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL en→vi worker boundary; OPUS-MT candidate and license evidence recorded
+LOCAL_VIETNAMESE_TTS: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL WAV boundary with parsed metadata; VieNeu candidate retained pending exact rights/revision
+MODEL_MANAGER: IMPLEMENTED, NOT READY — manifest schema, SHA-256/size/license verification and explicit-consent downloader are present; example manifest is intentionally unverified
+CHROME_BROWSER_E2E: SMOKE PASS 5/5 on local HTML5 fixture outside sandbox; not local-model/YouTube acceptance
 FIREFOX_BROWSER_E2E: BLOCKED — Playwright Firefox executable is not installed in this environment
-SUBTITLE_VISIBLE: NOT VERIFIED on real browser/provider session
-VIETNAMESE_VOICE_AUDIBLE: NOT VERIFIED on real browser/provider session
-AUDIO_RESTORATION: NOT VERIFIED on real browser/provider session
-SESSION_LIFECYCLE: IMPLEMENTED; unit/integration coverage exists, real tab-close/navigation/seek acceptance remains pending
-LATENCY_P50_P95: NOT MEASURED live; old fixture numbers are invalidated and STT live timing remains unreported
-TRANSLATION_QUALITY: NOT MEASURED live; 30-sample command is explicitly fixture-only and produces no production score
-API_TEST_COST: 0 USD — no live provider API request was made
-SECURITY: no hardcoded provider keys found; production audit reports 0 vulnerabilities; full audit reports 2 moderate Vitest dev-dependency advisories requiring a breaking upgrade
-TEST_RESULTS: npm run typecheck PASS; npm run build PASS; npm test PASS (6 files, 21 tests); npm run benchmark PASS as FIXTURE_ONLY_NOT_PRODUCTION_EVIDENCE; npm run test:e2e:chrome PASS (5 tests); Firefox E2E BLOCKED by missing runtime; git diff --check PASS
-CI_EXACT_HEAD: workflow added at .github/workflows/quality.yml; remote CI result not verified from this environment
-EVIDENCE_PATHS: docs/TEST_REPORT.md, docs/PROVIDER_SETUP.md, docs/BROWSER_ACCEPTANCE_CHECKLIST.md, docs/BROWSER_COMPATIBILITY.md, packages/tests/unit/provider-contract.test.ts, packages/tests/integration/pipeline.test.ts
-FILES_CHANGED: 55 files across the two commits below
-COMMITS_PUSHED: e2c8174 feat: wire production realtime AI providers; b71cb17 docs: record PRD execution status -> origin/codex/vietdub-production-pipeline
+SUBTITLE_VISIBLE: NOT VERIFIED on real local-model browser session
+VIETNAMESE_VOICE_AUDIBLE: NOT VERIFIED on real local-model browser session
+AUDIO_RESTORATION: UNIT/LIFECYCLE CODE PRESENT, NOT VERIFIED by Chrome and Firefox operator actions
+SESSION_LIFECYCLE: IMPLEMENTED with bounded final queue, generation cancellation and backend-disconnect cleanup; real tab-close/navigation acceptance pending
+LATENCY_P50_P95: NOT MEASURED live; current STT event is only a bounded wall-clock diagnostic, provider-boundary evidence is required
+TRANSLATION_QUALITY: NOT MEASURED live; fixture output is not production evidence
+API_TEST_COST: 0 USD — no live cloud request was made
+SECURITY: loopback bind, origin/session/frame checks and no-cloud default implemented; production audit 0 vulnerabilities; full audit has 2 moderate Vitest dev advisories with a breaking fix
+TEST_RESULTS: npm run typecheck PASS; npm run build PASS; npm test PASS (7 files, 27 tests); Chrome smoke PASS 5/5; Firefox E2E BLOCKED by missing Playwright Firefox; Chrome/Firefox build PASS; health smoke PASS with safe 503; tracked-source secret scan PASS; git diff --check PASS; npm audit --omit=dev PASS
+CI_EXACT_HEAD: not verified from this environment
+EVIDENCE_PATHS: docs/LOCAL_RUNTIME.md, docs/MODEL_LICENSE_REPORT.md, docs/TEST_REPORT.md, docs/BROWSER_ACCEPTANCE_CHECKLIST.md, packages/tests/unit/local-runtime.test.ts, packages/tests/unit/provider-contract.test.ts
 MERGE_READY: NO
 MERGED: NO
 MERGE_SHA: N/A
 MAIN_SHA: aa0d620c150e89807b8d97f96ffa86c1fe89fb9a
-REMAINING_BLOCKERS: configure Deepgram/Gemini/Google Cloud TTS credentials on a backend host; run live provider smoke and 30-minute soak within budget; install/run Firefox; execute the full Chrome+Firefox YouTube/HTML5 acceptance checklist; capture sanitized latency and translation-quality evidence; resolve or explicitly accept the two moderate Vitest dev dependency advisories; decide whether to transplant this commit onto the existing Draft PR #1 branch.
+REMAINING_BLOCKERS: install/verify local workers and models; fill exact manifest revisions/checksums/licenses; run STT 3-video, translation 30-sample and TTS 20-sentence evidence; run Chrome+Firefox YouTube/HTML5 3-mode acceptance; run 30-minute soak; measure p50/p95/RTF/CPU/RAM; obtain CI exact-head status; review the two moderate Vitest advisories; inspect/update Draft PR #1 with final commit

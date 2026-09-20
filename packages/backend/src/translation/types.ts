@@ -17,4 +17,5 @@ export interface TranslationProviderResult {
 export interface TranslationProvider {
   name: string;
   translate(request: TranslationRequest): Promise<TranslationProviderResult>;
+  cancelPending?(): void;
 }
