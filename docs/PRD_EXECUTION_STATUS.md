@@ -32,5 +32,5 @@ MERGED: NO
 MERGE_SHA: N/A
 MAIN_SHA: aa0d620c150e89807b8d97f96ffa86c1fe89fb9a
 PR_DESCRIPTION_UPDATED: NO — `gh` is not installed; branch was pushed but PR title/body/state and mergeability could not be queried or edited
-COMMITS_PUSHED: 0c608f3 to `fix/firefox-extension-reliability-p0` fast-forward; follow-up report commit is pending
+COMMITS_PUSHED: 0c608f3 implementation merge and a07e22a report history are pushed to `fix/firefox-extension-reliability-p0` fast-forward; current branch head is the same report history
 REMAINING_BLOCKERS: install/verify local workers and models; fill exact manifest revisions/checksums/licenses; run STT 3-video, translation 30-sample and TTS 20-sentence evidence; run Chrome+Firefox YouTube/HTML5 3-mode acceptance; run 30-minute soak; measure p50/p95/RTF/CPU/RAM; obtain CI exact-head status; review the two moderate Vitest advisories; update PR #1 body/state (gh is unavailable)
