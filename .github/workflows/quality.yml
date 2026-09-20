@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - fix/firefox-extension-reliability-p0
+      - main
   workflow_dispatch:
 
 permissions:

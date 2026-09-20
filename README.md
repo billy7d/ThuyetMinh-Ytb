@@ -2,7 +2,7 @@
 
 > **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) cho pipeline thuyết minh tiếng Việt và phụ đề video tiếng Anh theo thời gian thực.**
 
-> **Trạng thái kỹ thuật:** backend production mặc định dùng ba worker AI local/offline với wiring fail-closed; không có local model/worker thì trả `503` và không fallback cloud. Browser acceptance, quality và hardware evidence hiện vẫn `BLOCKED` trong môi trường này. Xem [PRD execution status](docs/PRD_EXECUTION_STATUS.md).
+> **VietDub Local AI Foundation — Source Integrated, Inference Setup Pending.** Source foundation đã được tích hợp để clone trực tiếp từ `main`; backend mặc định local/offline và fail-closed. Chưa có model weights hoặc inference workers thật trong repository, nên backend trả `503` khi chưa cấu hình và không fallback cloud. Xem [hướng dẫn bàn giao máy đích](docs/TARGET_MACHINE_SETUP.md) và [PRD execution status](docs/PRD_EXECUTION_STATUS.md).
 
 VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với phụ đề đồng bộ và đường truyền audio thời gian thực, không cần tải video về máy hay tạo video mới.
 
@@ -68,16 +68,17 @@ vietdub-ai/
 ## 🚀 Hướng dẫn Cài đặt & Chuẩn bị Môi trường
 
 ### 1. Yêu cầu Hệ thống
-- **Node.js:** Phiên bản >= 20.x (Khuyến nghị Node.js v24 LTS).
-- **Trình duyệt:** Google Chrome (>= 116+) hoặc Mozilla Firefox (>= 109+).
+- **Node.js:** Phiên bản >= 20.x (CI source integration dùng Node.js v24.18.0).
+- **Trình duyệt:** Google Chrome hoặc Mozilla Firefox để nghiệm thu live; artifact build không cần model weights.
 - **Local AI runtime:** cài ba worker STT/dịch/TTS tương thích JSONL và model weights đã được kiểm SHA-256 theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md). Không có worker/model thì backend giữ trạng thái `503`, không fallback sang cloud.
+- Kiểm tra chi tiết CPU/GPU/RAM/disk, Python, browser và các bước clean-clone trong [TARGET_MACHINE_SETUP.md](docs/TARGET_MACHINE_SETUP.md).
 
 ### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
 Mở Terminal tại thư mục dự án và chạy:
 
 ```bash
-# Cài đặt tất cả dependencies
-npm install
+# Cài đặt đúng dependency tree đã khóa
+npm ci
 
 # Biên dịch toàn bộ các packages
 npm run build
@@ -112,7 +113,7 @@ curl http://127.0.0.1:8080/health
 
 Khi Terminal xuất hiện thông báo:
 > `[VietDub Backend] WebSocket AI Gateway listening on port 8080`
-> tức là Backend đã sẵn sàng nhận luồng âm thanh.
+> tức là Backend đã sẵn sàng nhận luồng âm thanh **chỉ sau khi** manifest và cả ba worker local đã sẵn sàng. Khi chưa cài inference runtime, HTTP `503` là trạng thái fail-closed mong đợi.
 
 ---
 
