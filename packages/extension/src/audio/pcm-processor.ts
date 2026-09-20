@@ -12,6 +12,9 @@ export class PCMProcessor {
   private onChunk: PCMChunkHandler;
   private targetSampleRate: number;
   private bufferSize: number;
+  private readonly getTimestampMs: () => number;
+  private readonly silentGain: GainNode;
+  private sequence = 0;
 
   private accumulatedSamples: Float32Array[] = [];
   private accumulatedLength: number = 0;

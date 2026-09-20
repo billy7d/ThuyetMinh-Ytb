@@ -1,6 +1,6 @@
-# Các Giới hạn Kỹ thuật Đã Phát hiện (Known Limitations) — VietDub AI
+# Known Limitations
 
-Báo cáo chi tiết các giới hạn nền tảng và phạm vi hoạt động của VietDub AI phiên bản 1.0 theo yêu cầu của PRD.
+Ngày cập nhật: 2026-09-20
 
 > **Đính chính 2026-09-17:** Bảng feasibility/media bên dưới là bằng chứng lịch sử của trang kiểm thử, không xác nhận extension runtime hiện tại. Chrome còn thiếu action invocation thật; Firefox extension E2E còn thiếu temporary-install runner. Xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md).
 

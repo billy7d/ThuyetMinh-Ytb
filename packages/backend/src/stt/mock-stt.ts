@@ -74,7 +74,15 @@ export class MockSTTProvider implements STTProvider {
           const sentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
           const words = sentence.split(' ');
           const interimWords = words.slice(0, Math.max(1, Math.floor(words.length / 2))).join(' ');
-          callbacks.onInterim(interimWords, speechStartMs, timestampMs);
+          callbacks.onInterim({
+            segmentId: `mock_${this.currentIndex}`,
+            text: interimWords,
+            startMs: speechStartMs,
+            endMs: timestampMs,
+            isFinal: false,
+            confidence: 1,
+            receivedAtMs: Date.now()
+          });
         }
 
         // When VAD detects speech end (silence boundary)

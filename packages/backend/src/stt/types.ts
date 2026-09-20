@@ -1,14 +1,18 @@
 export interface STTResult {
+  /** Provider-stable key for a finalized audio range when available. */
+  segmentId?: string;
   text: string;
   startMs: number;
   endMs: number;
   isFinal: boolean;
   confidence: number;
+  /** Wall-clock time at which the backend received this provider result. */
+  receivedAtMs?: number;
 }
 
 export interface STTStreamCallbacks {
-  onInterim: (text: string, startMs: number, endMs: number) => void;
-  onFinal: (text: string, startMs: number, endMs: number) => void;
+  onInterim: (result: STTResult) => void;
+  onFinal: (result: STTResult) => void;
   onError: (error: Error) => void;
 }
 

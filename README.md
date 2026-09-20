@@ -72,7 +72,7 @@ vietdub-ai/
 - **Trình duyệt:** Google Chrome (>= 116+) hoặc Mozilla Firefox (>= 109+).
 
 ### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
-Mở Terminal tại thư mục dự án `E:\ThuyetMinh-Ytb` và chạy:
+Mở Terminal tại thư mục dự án và chạy:
 
 ```bash
 # Cài đặt tất cả dependencies

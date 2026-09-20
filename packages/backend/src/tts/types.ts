@@ -12,8 +12,10 @@ export interface TTSResponse {
   segmentId: string;
   generation: number;
   audioBase64: string;
+  mimeType: 'audio/wav' | 'audio/mpeg' | 'audio/ogg' | 'audio/pcm';
   durationMs: number;
   sampleRate: number;
+  channels: number;
   cancelled: boolean;
 }
 

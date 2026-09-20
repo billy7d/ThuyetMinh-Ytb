@@ -104,13 +104,11 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
           sendResponse({ success: false, code, retryable: error?.retryable === true, error: error?.message || String(error) });
         });
       return true;
-
     case 'STOP_CAPTURE':
       stopCapture(msg.sessionId, msg.reason || 'user')
         .then(() => sendResponse({ success: true }))
         .catch((error) => sendResponse({ success: false, code: 'OFFSCREEN_STOP_FAILED', error: String(error) }));
       return true;
-
     case 'UPDATE_MIXER':
       updateMixer(msg.config || {});
       sendResponse({ success: true });

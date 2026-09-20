@@ -10,17 +10,35 @@ import {
   emitDiagnostic
 } from '@vietdub/shared';
 import { RealtimePipeline } from '../pipeline/realtime-pipeline.js';
-import { MockSTTProvider } from '../stt/mock-stt.js';
-import { TranslationEngine } from '../translation/translation-engine.js';
-import { VietnameseTTSEngine } from '../tts/tts-engine.js';
+import { createProductionProviderFactory, ProductionProviderFactory } from '../provider-factory.js';
+
+interface ActiveSession {
+  pipeline: RealtimePipeline;
+  ws: WebSocket;
+}
 
 export class WebSocketGateway {
-  private wss: WebSocketServer;
-  private activeSessions = new Map<string, { pipeline: RealtimePipeline; ws: WebSocket }>();
+  private readonly activeSessions = new Map<string, ActiveSession>();
+  private readonly providerFactory: ProductionProviderFactory;
+  private readonly maxConcurrentSessions: number;
 
-  constructor(wss: WebSocketServer) {
-    this.wss = wss;
+  constructor(
+    private readonly wss: WebSocketServer,
+    options: {
+      providerFactory?: ProductionProviderFactory;
+      maxConcurrentSessions?: number;
+    } = {}
+  ) {
+    this.providerFactory = options.providerFactory || createProductionProviderFactory();
+    this.maxConcurrentSessions = options.maxConcurrentSessions || 4;
     this.setupConnectionHandler();
+  }
+
+  getProviderStatus(): { configured: boolean; missingConfiguration: string[] } {
+    return {
+      configured: this.providerFactory.missingConfiguration.length === 0,
+      missingConfiguration: [...this.providerFactory.missingConfiguration]
+    };
   }
 
   private setupConnectionHandler(): void {
@@ -32,30 +50,25 @@ export class WebSocketGateway {
           const msg = JSON.parse(rawData.toString()) as ClientMessage;
           currentSessionId = msg.sessionId;
           this.handleClientMessage(ws, msg);
-        } catch (err: any) {
-          console.error('[WSGateway] Message parse error:', err);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Invalid message';
           this.sendSafe(ws, {
             type: 'ERROR',
             sessionId: currentSessionId || 'unknown',
             timestamp: Date.now(),
-            code: 'INVALID_JSON',
-            message: err.message,
+            code: 'INVALID_MESSAGE',
+            message,
             fatal: false
           });
         }
       });
 
       ws.on('close', () => {
-        if (currentSessionId) {
-          this.terminateSession(currentSessionId);
-        }
+        if (currentSessionId) this.terminateSession(currentSessionId, ws);
       });
 
-      ws.on('error', (err) => {
-        console.error('[WSGateway] Socket error:', err);
-        if (currentSessionId) {
-          this.terminateSession(currentSessionId);
-        }
+      ws.on('error', () => {
+        if (currentSessionId) this.terminateSession(currentSessionId, ws);
       });
     });
   }
@@ -74,34 +87,38 @@ export class WebSocketGateway {
           hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
         });
 
-        // Clean up any existing session with this ID
-        this.terminateSession(sessionId);
-
-        const sttProvider = new MockSTTProvider();
-        const translationEngine = new TranslationEngine();
-        const ttsEngine = new VietnameseTTSEngine();
+        this.terminateSession(msg.sessionId);
+        let dependencies;
+        try {
+          dependencies = this.providerFactory.create();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Production provider configuration is missing';
+          this.sendError(ws, msg.sessionId, 'PROVIDER_NOT_CONFIGURED', message, true);
+          return;
+        }
 
         const pipeline = new RealtimePipeline(
-          sessionId,
-          mode,
-          sttProvider,
-          translationEngine,
-          ttsEngine,
-          {
-            sendMessage: (serverMsg) => this.sendSafe(ws, serverMsg)
-          }
+          msg.sessionId,
+          msg.mode || DEFAULT_MODE,
+          dependencies.sttProvider,
+          dependencies.translationEngine,
+          dependencies.ttsProvider,
+          { sendMessage: serverMsg => this.sendSafe(ws, serverMsg) },
+          dependencies.budgetConfig
         );
-
-        this.activeSessions.set(sessionId, { pipeline, ws });
+        this.activeSessions.set(msg.sessionId, { pipeline, ws });
         pipeline.start();
-
-        const readyMsg: SessionReadyMessage = {
+        const providers = pipeline.getProviderNames();
+        const ready: SessionReadyMessage = {
           type: 'SESSION_READY',
-          sessionId,
+          sessionId: msg.sessionId,
           timestamp: Date.now(),
           sessionConfig: {
-            audioSampleRate: msg.audioSampleRate || 16000,
-            chunkDurationMs: 250
+            audioSampleRate: msg.audioSampleRate,
+            chunkDurationMs: 250,
+            sttProvider: providers.stt,
+            translationProvider: providers.translation,
+            ttsProvider: providers.tts
           }
         };
         this.sendSafe(ws, readyMsg);
@@ -115,7 +132,7 @@ export class WebSocketGateway {
 
       case 'AUDIO_CHUNK': {
         const session = this.activeSessions.get(msg.sessionId);
-        if (session) {
+        if (session?.ws === ws) {
           const pcmBuffer = Buffer.from(msg.pcmBase64, 'base64');
           const stats = calculatePcm16Stats(pcmBuffer);
           emitDiagnostic('gateway', 'audio_chunk_received', {
@@ -141,19 +158,20 @@ export class WebSocketGateway {
 
       case 'SEEK_EVENT': {
         const session = this.activeSessions.get(msg.sessionId);
-        if (session) {
-          session.pipeline.handleSeek(msg.fromMs, msg.toMs);
-        }
+        if (session?.ws === ws) session.pipeline.handleSeek(msg.fromMs, msg.toMs);
         break;
       }
 
       case 'MODE_CHANGE': {
         const session = this.activeSessions.get(msg.sessionId);
-        if (session) {
-          session.pipeline.setMode(msg.mode);
-        }
+        if (session?.ws === ws) session.pipeline.setMode(msg.mode);
         break;
       }
+
+      case 'VIDEO_STATE_UPDATE':
+        // State is deliberately not persisted as transcript data. The browser
+        // uses it to keep playback/audio queues synchronized locally.
+        break;
 
       case 'SESSION_STOP': {
         const session = this.activeSessions.get(msg.sessionId);
@@ -177,23 +195,25 @@ export class WebSocketGateway {
     }
   }
 
-  private sendSafe(ws: WebSocket, msg: ServerMessage): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
+  private sendError(ws: WebSocket, sessionId: string, code: string, message: string, fatal: boolean): void {
+    this.sendSafe(ws, { type: 'ERROR', sessionId, timestamp: Date.now(), code, message, fatal });
   }
 
-  terminateSession(sessionId: string): void {
+  private sendSafe(ws: WebSocket, msg: ServerMessage): void {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  terminateSession(sessionId: string, expectedWs?: WebSocket): void {
     const session = this.activeSessions.get(sessionId);
-    if (session) {
-      session.pipeline.stop();
-      this.activeSessions.delete(sessionId);
-    }
+    if (!session || (expectedWs && session.ws !== expectedWs)) return;
+    session.pipeline.stop();
+    this.activeSessions.delete(sessionId);
   }
 
   close(): void {
-    for (const [id] of this.activeSessions) {
-      this.terminateSession(id);
+    for (const [sessionId, session] of this.activeSessions) {
+      session.pipeline.stop();
+      this.activeSessions.delete(sessionId);
     }
     this.wss.close();
   }

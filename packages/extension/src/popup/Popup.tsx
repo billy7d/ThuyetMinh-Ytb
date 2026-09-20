@@ -251,6 +251,9 @@ export const Popup: React.FC = () => {
         </div>
       </div>
       <div style={styles.subHeader}>Thuyết minh tiếng Việt theo thời gian thực</div>
+      <div style={styles.privacyNotice}>
+        Âm thanh chỉ được gửi đến STT và bản chép lời đến dịch vụ dịch sau khi bạn bấm Bắt đầu. Dừng phiên sẽ ngắt truyền dữ liệu.
+      </div>
 
       {/* Video Detection Notice */}
       {!hasVideo && (
@@ -494,6 +497,15 @@ const styles: Record<string, any> = {
     color: '#71717a',
     marginTop: 4,
     marginBottom: 14
+  },
+  privacyNotice: {
+    fontSize: 10,
+    lineHeight: 1.4,
+    color: '#a1a1aa',
+    border: '1px solid #3f3f46',
+    borderRadius: 6,
+    padding: '7px 8px',
+    marginBottom: 12
   },
   alertWarning: {
     backgroundColor: '#422006',

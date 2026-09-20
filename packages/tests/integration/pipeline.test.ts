@@ -2,17 +2,19 @@ import { describe, it, expect } from 'vitest';
 import {
   RealtimePipeline,
   MockSTTProvider,
+  DeterministicTranslationProvider,
   TranslationEngine,
   VietnameseTTSEngine
 } from '@vietdub/backend';
 import { ServerMessage } from '@vietdub/shared';
+import { FixtureTTSProvider } from '../src/fixtures/providers.js';
 
 describe('RealtimePipeline End-to-End Flow', () => {
   it('should process audio chunks and produce transcript, translation, subtitle, and TTS chunks', async () => {
     const receivedMessages: ServerMessage[] = [];
     const sttProvider = new MockSTTProvider(["Let's break it down."]);
-    const translationEngine = new TranslationEngine();
-    const ttsEngine = new VietnameseTTSEngine();
+    const translationEngine = new TranslationEngine(new DeterministicTranslationProvider());
+    const ttsEngine = new VietnameseTTSEngine(new FixtureTTSProvider());
 
     const pipeline = new RealtimePipeline(
       'sess_test_1',
@@ -68,8 +70,8 @@ describe('RealtimePipeline End-to-End Flow', () => {
   it('should suppress TTS in subtitle_only mode while retaining subtitle events', async () => {
     const receivedMessages: ServerMessage[] = [];
     const sttProvider = new MockSTTProvider(["That's not the whole story."]);
-    const translationEngine = new TranslationEngine();
-    const ttsEngine = new VietnameseTTSEngine();
+    const translationEngine = new TranslationEngine(new DeterministicTranslationProvider());
+    const ttsEngine = new VietnameseTTSEngine(new FixtureTTSProvider());
 
     const pipeline = new RealtimePipeline(
       'sess_test_2',

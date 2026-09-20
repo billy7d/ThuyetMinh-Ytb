@@ -1,4 +1,4 @@
-# Báo cáo đo lường độ trễ (Latency Profile Report) — VietDub AI
+# Latency Report Status
 
 > **Phạm vi quan trọng:** Đây là benchmark offline trên pipeline hiện tại (MockSTT/Translation/TTS và dữ liệu chuẩn hóa), không phải đo runtime extension hoặc AI production. Không dùng các số liệu `PASS` này để đóng browser release gate; xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md).
 
@@ -6,36 +6,14 @@
 **Môi trường:** Node.js v24.18.0, Windows 11 Desktop  
 **Số mẫu kiểm thử:** 30 đoạn câu tiếng Anh chuẩn hóa  
 
----
+Các số liệu p50/p90/p95 cũ (318/359/368 ms) đã được gỡ khỏi evidence vì chúng là số liệu mô phỏng/fixture, không phải live Deepgram + Gemini + Google Cloud TTS.
 
-## 1. Kết quả so sánh với Mục tiêu PRD
+## Trạng thái hiện tại
 
-| Chỉ tiêu kỹ thuật | Mục tiêu PRD | Kết quả đo thực tế | Trạng thái |
-| :--- | :---: | :---: | :---: |
-| **Độ trễ p50** (Từ khi dứt câu gốc đến khi phát thuyết minh) | ≤ 3000 ms | **318 ms** | **ĐẠT (PASS)** |
-| **Độ trễ p90** | ≤ 5000 ms | **359 ms** | **ĐẠT (PASS)** |
-| **Độ trễ p95** | ≤ 6000 ms | **368 ms** | **ĐẠT (PASS)** |
-| **Độ lệch phụ đề so với thuyết minh** | ≤ 300 ms | **~15 ms** | **ĐẠT (PASS)** |
-| **Phát trùng lặp đoạn thuyết minh** | 0 lần | **0 lần** | **ĐẠT (PASS)** |
-| **Âm thanh tiếp tục sau khi nhấn Stop** | Tuyệt đối không | **Đã ngắt tức thì** | **ĐẠT (PASS)** |
+- Pipeline đã phát event latency theo từng segment và có các guard chống trễ vô hạn, duplicate và stale generation.
+- STT latency chưa được báo cáo là số đo thật: provider result hiện chưa mang monotonic timestamp của audio frame cuối được gửi đi, nên metric STT được đặt 0 để tránh tạo số liệu giả.
+- Chưa có p50/p95 live, chưa chạy soak 30 phút và chưa chứng minh ngưỡng 3 giây trên browser thật.
 
----
+## Evidence cần bổ sung
 
-## 2. Phân tích độ trễ theo từng công đoạn (Pipeline Breakdown)
-
-| Công đoạn xử lý | Thành phần đảm nhiệm | Thời gian trung bình | Tỷ lệ đóng góp | Ghi chú kỹ thuật |
-| :--- | :--- | :---: | :---: | :--- |
-| **1. Audio Capture & VAD** | PCM Processor (16kHz Mono) | ~250 ms | ~28% | Trích xuất Audio chunk 250ms & phát hiện ranh giới câu bằng VAD. |
-| **2. Streaming STT** | Speech-to-Text Recognizer | ~310 ms | ~35% | Nhận diện tiếng Anh và chốt final transcript khi gặp khoảng lặng. |
-| **3. Context Translation** | Translation Engine (7 Rules) | ~15 ms | ~2% | Tra cứu ngữ cảnh, thuật ngữ nhất quán và hoàn thiện ngữ nghĩa. |
-| **4. Vietnamese TTS** | Neural TTS Synthesizer | ~290 ms | ~33% | Sinh chunk audio giọng đọc tiếng Việt kèm kiểm tra generation ID. |
-| **5. Buffer & Playback** | Web Audio Destination | ~20 ms | ~2% | Giải mã và đưa vào AudioBufferSourceNode ra loa. |
-| **TỔNG CỘNG (p50)** | **End-to-End Pipeline** | **318 ms** | **100%** | **Thấp hơn ngưỡng 3000 ms của PRD.** |
-
----
-
-## 3. Quản lý độ trễ trong các tình huống đặc biệt
-
-- **Khi người dùng Seek (Tua video):** VideoSyncController lập tức tăng generation ID, hủy bỏ (cancel) toàn bộ chunk TTS đang sinh dở và làm trống hàng đợi âm thanh cũ trong 0ms.
-- **Khi video Pause:** Âm thanh thuyết minh dừng ngay lập tức cùng khung hình video, không phát tràn sang thời gian tạm dừng.
-- **Đối với Livestream:** Cơ chế bỏ qua các segment đã vượt quá ngưỡng trễ tối đa (frame dropping) để ngăn tích lũy độ trễ dài hạn.
+Bổ sung timestamp monotonic tại provider boundary (audio send, STT final, Gemini response, TTS response, audio play), chạy tối thiểu dataset PRD trên provider thật và lưu p50/p95 cùng điều kiện chạy. Không đổi trạng thái sang PASS trước khi có evidence Chrome và Firefox.

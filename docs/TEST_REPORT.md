@@ -4,16 +4,11 @@
 
 > **Phạm vi benchmark:** các số liệu dịch/độ trễ bên dưới là offline benchmark trên pipeline mock, không chứng minh chất lượng AI production hoặc runtime extension.
 
-**Ngày hoàn thành:** 17/09/2026  
-**Môi trường thực thi:**  
-- Hệ điều hành: Windows 11 (NT 10.0)  
-- Node.js: v24.18.0, npm: 11.16.0  
-- Google Chrome: v152.0.7977.78 (Desktop thật)  
-- Mozilla Firefox: v155.0 (Desktop thật)  
+Ngày cập nhật: 2026-09-20
 
----
+## Trạng thái tổng thể
 
-## 1. Tóm tắt Kết quả Thực thi
+`IMPLEMENTED, NOT VERIFIED` — mã nguồn đã có ranh giới provider thật cho Deepgram STT, Gemini translation và Google Cloud TTS; chưa thể công bố P0 PASS vì môi trường hiện không có credential provider và không có Firefox cài sẵn để chạy browser acceptance thật.
 
 | Phân loại Kiểm thử | Framework | Số lượng Test Cases | Passed | Failed | Trạng thái |
 | :--- | :--- | :---: | :---: | :---: | :---: |
@@ -25,15 +20,20 @@
 | **Translation & Latency Benchmark** | 30 mẫu kiểm thử chuẩn hóa | 30 mẫu | 30 | 0 | **PASS (100%)** |
 | **TỔNG CỘNG SNAPSHOT CŨ** | — | **64 tests & checks** | **Không dùng** | **—** | **LỊCH SỬ** |
 
----
+- TypeScript typecheck: PASS.
+- Production build cho shared, backend, Chrome extension, Firefox extension và test package: PASS.
+- Unit/integration/provider contract tests: 6 test files, 21 tests PASS.
+- Chrome smoke E2E dùng local HTML5 fixture: 5 tests PASS; đây chưa phải YouTube/provider-live acceptance.
+- Firefox smoke E2E: BLOCKED vì Playwright Firefox executable không có trong môi trường.
+- `npm audit --omit=dev`: 0 production vulnerabilities. Full audit còn 2 moderate trong Vitest dev dependency; bản sửa đề xuất là breaking change và chưa tự động áp dụng.
 
-## 2. Chi tiết Kết quả từng Bộ Kiểm thử
+## Chưa được phép gọi là PASS
 
-### 2.1. P0 Feasibility Spike (Kiểm chứng Âm thanh Thực tế)
-- **Chrome Capture:** Tín hiệu RMS đạt `0.1333` ở 100% âm lượng; khi tắt âm thanh gốc về 0%, tín hiệu STT tap vẫn đạt `0.1558` (> 0).
-- **Firefox Capture:** Tín hiệu RMS đạt `0.1494` ở 100% âm lượng; khi tắt âm thanh gốc về 0%, tín hiệu STT tap vẫn đạt `0.1524` (> 0).
-- **Nhánh TTS độc lập:** Phát âm thanh độc lập với RMS `0.5704` (Chrome) và `0.5651` (Firefox).
-- **Phục hồi an toàn:** Ngắt kết nối Web Audio và trả lại trạng thái phát video bình thường không gây lỗi.
+- Chưa gọi live Deepgram, Gemini hoặc Google Cloud TTS vì không có credential trong môi trường.
+- Chưa đo latency p50/p95 live và chưa chạy soak 30 phút.
+- Chưa có Chrome acceptance trên YouTube/HTML5 với provider thật.
+- Chưa có Firefox acceptance; máy hiện không có Firefox executable.
+- Chưa xác minh audio restoration bằng thao tác người dùng trên cả hai browser.
 
 ### 2.2. Unit & Integration Tests (Vitest)
 - `unit/vad.test.ts`: Kiểm tra phát hiện khoảng lặng, biên độ giọng nói và kích hoạt sự kiện kết thúc câu dứt điểm. (3/3 pass)
@@ -46,10 +46,6 @@
 - Các kết quả Chrome/Firefox trong snapshot này không chứng minh được action invocation thật, extension temporary-install hoặc lifecycle runtime production.
 - Không dùng `5/5 pass` ở trên làm acceptance hiện tại; xem `docs/audit/P0_REVIEW_FIX_REPORT.md`.
 
-### 2.4. Benchmark Chất lượng Dịch & Độ trễ
-- **Số mẫu:** 30 đoạn câu tiếng Anh bao phủ 8 lĩnh vực.
-- **Điểm chất lượng trung bình:** **4.6 / 5.0** (Vượt mục tiêu PRD ≥ 4.0).
-- **Độ trễ p50:** **318 ms** (Mục tiêu PRD ≤ 3000 ms).
-- **Độ trễ p95:** **368 ms** (Mục tiêu PRD ≤ 6000 ms).
-- **Độ lệch phụ đề:** **~15 ms** (Mục tiêu PRD ≤ 300 ms).
-- **Phát trùng lặp:** **0 lần**.
+## Ghi chú an toàn
+
+Không commit API key. Audio chỉ được gửi tới STT sau Start; backend không lưu transcript/audio theo thiết kế hiện tại. `npm audit` vẫn cần được xử lý riêng trước khi release vì dependency tree còn cảnh báo moderate.

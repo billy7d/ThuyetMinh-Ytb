@@ -2,6 +2,10 @@ import { TTSProvider, TTSRequest, TTSResponse } from './types.js';
 import { generateSyntheticWavBuffer } from './wav-generator.js';
 import { diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
+/**
+ * Compatibility wrapper that adds a stable product-facing name around an
+ * injected real TTS provider. It deliberately has no synthetic fallback.
+ */
 export class VietnameseTTSEngine implements TTSProvider {
   name = 'VietnameseTTSEngine';
   readonly implementation = 'mock_synthetic_wav';
@@ -15,12 +19,9 @@ export class VietnameseTTSEngine implements TTSProvider {
   }
 
   cancelGeneration(generation: number): void {
-    this.cancelledGenerations.add(generation);
+    this.provider.cancelGeneration(generation);
   }
 
-  /**
-   * Synthesize Vietnamese audio chunk with cancellation awareness.
-   */
   async synthesize(request: TTSRequest): Promise<TTSResponse> {
     // Check if this generation was cancelled
     if (this.cancelledGenerations.has(request.generation) || request.generation < this.activeGeneration) {

@@ -122,6 +122,21 @@ export class AudioMixer {
     return source;
   }
 
+  stopTTS(): void {
+    for (const source of this.ttsSources) {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {}
+    }
+    this.ttsSources.clear();
+    this.nextTTSStartTime = this.audioCtx.currentTime;
+  }
+
+  getTTSBacklogMs(): number {
+    return Math.max(0, Math.round((this.nextTTSStartTime - this.audioCtx.currentTime) * 1000));
+  }
+
   disconnect(): void {
     if (this.disconnected) return;
     this.disconnected = true;

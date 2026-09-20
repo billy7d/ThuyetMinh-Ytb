@@ -1,126 +1,41 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { BENCHMARK_DATASET, BenchmarkSample } from './benchmark-dataset.js';
-import { TranslationEngine, VietnameseTTSEngine, CostTracker } from '@vietdub/backend';
+import { BENCHMARK_DATASET } from './benchmark-dataset.js';
+import {
+  DeterministicTranslationProvider,
+  TranslationEngine,
+  VietnameseTTSEngine
+} from '@vietdub/backend';
+import { FixtureTTSProvider } from '../fixtures/providers.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-interface SampleEvaluationResult {
-  sample: BenchmarkSample;
-  translatedText: string;
-  sttMs: number;
-  translationMs: number;
-  ttsMs: number;
-  totalLatencyMs: number;
-  scores: {
-    accuracy: number;        // 1-5: Đúng nội dung
-    entitiesNumbers: number; // 1-5: Giữ nguyên số liệu, tên riêng
-    naturalness: number;     // 1-5: Tự nhiên trong văn nói
-    consistency: number;     // 1-5: Nhất quán thuật ngữ
-    fidelity: number;        // 1-5: Trung thành (không thêm bớt)
-    audibility: number;      // 1-5: Dễ nghe, ngắt nghỉ
-    average: number;
-  };
-}
-
-function evaluateTranslation(
-  sample: BenchmarkSample,
-  translatedText: string
-): SampleEvaluationResult['scores'] {
-  let accuracy = 4.5;
-  let entitiesNumbers = 5.0;
-  let naturalness = 4.5;
-  let consistency = 4.8;
-  let fidelity = 4.8;
-  let audibility = 4.6;
-
-  // Check critical entities preservation
-  for (const entity of sample.criticalEntities) {
-    if (!translatedText.toLowerCase().includes(entity.toLowerCase())) {
-      // Minor deduction if entity was adapted or omitted
-      entitiesNumbers = Math.max(3.0, entitiesNumbers - 0.8);
-      accuracy = Math.max(3.5, accuracy - 0.4);
-    }
-  }
-
-  // Check wordiness / length ratio (Vietnamese is typically 1.1x to 1.3x English)
-  const ratio = translatedText.length / Math.max(1, sample.sourceText.length);
-  if (ratio < 0.5 || ratio > 2.2) {
-    fidelity = Math.max(3.0, fidelity - 1.0);
-  }
-
-  const average = Math.round(((accuracy + entitiesNumbers + naturalness + consistency + fidelity + audibility) / 6) * 10) / 10;
-
-  return {
-    accuracy,
-    entitiesNumbers,
-    naturalness,
-    consistency,
-    fidelity,
-    audibility,
-    average
-  };
-}
-
-async function runBenchmarks() {
-  console.log('====================================================');
-  console.log('>>> RUNNING VIETDUB AI BENCHMARKS & LATENCY PROFILER');
-  console.log(`>>> Total Samples: ${BENCHMARK_DATASET.length}`);
-  console.log('====================================================\n');
-
-  const translationEngine = new TranslationEngine();
-  const ttsEngine = new VietnameseTTSEngine();
-  const results: SampleEvaluationResult[] = [];
-
-  let currentTimeMs = 0;
+/**
+ * This command is intentionally fixture-only. It is useful for checking the
+ * benchmark harness and deterministic translation fixtures, but its timings
+ * and scores must never be presented as live provider or browser evidence.
+ */
+async function runFixtureBenchmark(): Promise<void> {
+  const translationEngine = new TranslationEngine(new DeterministicTranslationProvider());
+  const ttsEngine = new VietnameseTTSEngine(new FixtureTTSProvider());
+  const rows: Array<{ id: string; translationMs: number; ttsMs: number; translatedText: string }> = [];
 
   for (const sample of BENCHMARK_DATASET) {
-    // Simulated speech duration based on word count (~140 words per minute)
-    const words = sample.sourceText.split(/\s+/).length;
-    const speechDurationMs = Math.round((words / 140) * 60 * 1000);
-    const startMs = currentTimeMs;
-    const endMs = startMs + speechDurationMs;
-    currentTimeMs = endMs + 500; // 500ms pause between utterances
+    const translationStart = Date.now();
+    const translation = await translationEngine.translate(sample.sourceText, 0, 1000);
+    const translationMs = Date.now() - translationStart;
+    const translatedText = translation.translatedText || sample.referenceVietnamese;
 
-    // 1. Measure Translation
-    const t0 = Date.now();
-    const transRes = await translationEngine.translate(sample.sourceText, startMs, endMs);
-    const transDurationMs = Date.now() - t0;
-
-    const finalTranslatedText = transRes.translatedText || sample.referenceVietnamese;
-
-    // 2. Measure TTS
-    const t1 = Date.now();
-    const ttsRes = await ttsEngine.synthesize({
+    const ttsStart = Date.now();
+    await ttsEngine.synthesize({
       segmentId: sample.id,
-      text: finalTranslatedText,
+      text: translatedText,
       generation: 1,
-      startMs,
-      endMs
+      startMs: 0,
+      endMs: 1000
     });
-    const ttsDurationMs = Date.now() - t1;
-
-    // STT latency is measured from sentence completion (endMs) to final transcript event (~250-400ms in streaming VAD)
-    const sttLatencyMs = 280 + Math.round(Math.random() * 80);
-    const totalLatencyMs = sttLatencyMs + transDurationMs + ttsDurationMs;
-
-    const scores = evaluateTranslation(sample, finalTranslatedText);
-
-    results.push({
-      sample,
-      translatedText: finalTranslatedText,
-      sttMs: sttLatencyMs,
-      translationMs: transDurationMs,
-      ttsMs: ttsDurationMs,
-      totalLatencyMs,
-      scores
+    rows.push({
+      id: sample.id,
+      translationMs,
+      ttsMs: Date.now() - ttsStart,
+      translatedText
     });
-
-    console.log(`[${sample.id}] [${sample.domain}] Latency: ${totalLatencyMs}ms | Score: ${scores.average}/5.0`);
-    console.log(`   EN: "${sample.sourceText}"`);
-    console.log(`   VI: "${finalTranslatedText}"\n`);
   }
 
   // Compute Latency Percentiles
@@ -297,4 +212,7 @@ Hệ thống đã triển khai sẵn trong mã nguồn backend:
   console.log(`[Docs] Wrote ${path.join(docsDir, 'COST_REPORT.md')}`);
 }
 
-runBenchmarks().catch(console.error);
+runFixtureBenchmark().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -1,4 +1,4 @@
-# Browser Compatibility Matrix — VietDub AI
+# Browser Compatibility Status
 
 > **Đính chính 2026-09-17:** Ma trận này mô tả feasibility/media capability lịch sử, không phải xác nhận runtime extension hiện tại. Chrome capture còn cần action invocation thật; Firefox extension E2E chưa chạy được temporary-install runner. Xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md).
 
