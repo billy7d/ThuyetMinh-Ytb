@@ -4,7 +4,7 @@ Ngày cập nhật: 2026-09-20
 
 STATUS: BLOCKED / IMPLEMENTED, NOT VERIFIED
 BRANCH: codex/vietdub-production-pipeline
-HEAD_SHA: e2c8174749a432b68b244d043131b1374dd6a5e8
+HEAD_SHA: b71cb17c265a05dac3e98bbd0076f34b84b7e22f
 PR_URL: https://github.com/billy7d/ThuyetMinh-Ytb/pull/1 — existing Draft PR, not updated automatically because it is based on a separate 16-commit reliability branch
 P0_ACCEPTANCE: BLOCKED — provider credentials are absent and Firefox runtime is absent
 REAL_STT: IMPLEMENTED, NOT LIVE VERIFIED — Deepgram live WebSocket adapter with nova-3 default, interim/final aggregation, dedupe, bounded reconnect and buffer limits
@@ -23,8 +23,8 @@ SECURITY: no hardcoded provider keys found; production audit reports 0 vulnerabi
 TEST_RESULTS: npm run typecheck PASS; npm run build PASS; npm test PASS (6 files, 21 tests); npm run benchmark PASS as FIXTURE_ONLY_NOT_PRODUCTION_EVIDENCE; npm run test:e2e:chrome PASS (5 tests); Firefox E2E BLOCKED by missing runtime; git diff --check PASS
 CI_EXACT_HEAD: workflow added at .github/workflows/quality.yml; remote CI result not verified from this environment
 EVIDENCE_PATHS: docs/TEST_REPORT.md, docs/PROVIDER_SETUP.md, docs/BROWSER_ACCEPTANCE_CHECKLIST.md, docs/BROWSER_COMPATIBILITY.md, packages/tests/unit/provider-contract.test.ts, packages/tests/integration/pipeline.test.ts
-FILES_CHANGED: 54 files in commit e2c8174
-COMMITS_PUSHED: e2c8174 feat: wire production realtime AI providers -> origin/codex/vietdub-production-pipeline
+FILES_CHANGED: 55 files across the two commits below
+COMMITS_PUSHED: e2c8174 feat: wire production realtime AI providers; b71cb17 docs: record PRD execution status -> origin/codex/vietdub-production-pipeline
 MERGE_READY: NO
 MERGED: NO
 MERGE_SHA: N/A
