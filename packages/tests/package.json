@@ -9,9 +9,9 @@
     "test:integration": "vitest run --dir integration",
     "test:spike": "node dist/spike/run-spike.js",
     "test:e2e": "playwright test",
-    "test:e2e:chrome": "playwright test --project=chromium",
-    "test:e2e:firefox": "playwright test --project=firefox",
-    "benchmark": "tsx benchmarks/run-benchmarks.ts",
+    "test:e2e:chrome": "playwright test src/e2e/extension-chrome.spec.ts --project=chromium",
+    "test:e2e:firefox": "playwright test src/e2e/extension-firefox.spec.ts --project=firefox",
+    "benchmark": "tsx src/benchmarks/run-benchmarks.ts",
     "build": "tsc -b"
   },
   "dependencies": {

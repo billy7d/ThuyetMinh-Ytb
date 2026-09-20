@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { VietnameseTTSEngine, generateSyntheticWavBuffer } from '@vietdub/backend';
+import { FixtureTTSProvider } from '../src/fixtures/providers.js';
 
 describe('VietnameseTTSEngine', () => {
   it('should generate valid WAV audio buffer for Vietnamese text', async () => {
-    const tts = new VietnameseTTSEngine();
+    const tts = new VietnameseTTSEngine(new FixtureTTSProvider());
     const res = await tts.synthesize({
       segmentId: 'seg_1',
       text: 'Chúng ta cùng phân tích kỹ hơn nhé.',
@@ -22,7 +23,7 @@ describe('VietnameseTTSEngine', () => {
   });
 
   it('should cancel generation when user seeks or generation is invalidated', async () => {
-    const tts = new VietnameseTTSEngine();
+    const tts = new VietnameseTTSEngine(new FixtureTTSProvider());
     tts.cancelGeneration(1);
 
     const res = await tts.synthesize({

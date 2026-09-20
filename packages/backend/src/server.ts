@@ -1,12 +1,19 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
+import 'dotenv/config';
 import { WebSocketGateway } from './gateway/ws-gateway.js';
 
 export function createServer(port = 8080): { server: http.Server; gateway: WebSocketGateway } {
+  let gateway: WebSocketGateway;
   const server = http.createServer((req, res) => {
     if (req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', time: new Date().toISOString() }));
+      const providerStatus = gateway?.getProviderStatus() || { configured: false, missingConfiguration: [] };
+      res.writeHead(providerStatus.configured ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: providerStatus.configured ? 'ok' : 'not_configured',
+        providers: providerStatus,
+        time: new Date().toISOString()
+      }));
       return;
     }
     res.writeHead(404);
@@ -14,7 +21,7 @@ export function createServer(port = 8080): { server: http.Server; gateway: WebSo
   });
 
   const wss = new WebSocketServer({ server });
-  const gateway = new WebSocketGateway(wss);
+  gateway = new WebSocketGateway(wss);
 
   return { server, gateway };
 }

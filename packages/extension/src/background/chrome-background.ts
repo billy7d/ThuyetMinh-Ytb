@@ -66,11 +66,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Relay messages from offscreen to content script
     case 'SUBTITLE_EVENT':
     case 'LATENCY_METRIC':
-      if (currentTabId) {
+    case 'ERROR':
+      if (msg.sessionId === currentSessionId && currentTabId !== null) {
         chrome.tabs.sendMessage(currentTabId, msg).catch(() => {});
+      }
+      if (msg.type === 'ERROR' && msg.fatal) {
+        void handleStopSession();
+      }
+      return false;
+
+    case 'VIDEO_STATE_UPDATE':
+      if (currentSessionId && msg.state) {
+        chrome.runtime.sendMessage({ target: 'offscreen', type: 'VIDEO_STATE_UPDATE', state: msg.state }).catch(() => {});
+      }
+      return false;
+
+    case 'SEEK_EVENT':
+      if (currentSessionId && sender.tab?.id === currentTabId) {
+        chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: 'SEEK_EVENT',
+          sessionId: currentSessionId,
+          fromMs: msg.fromMs,
+          toMs: msg.toMs
+        }).catch(() => {});
+      }
+      return false;
+
+    case 'VIDEO_CHANGED':
+      if (sender.tab?.id !== undefined && sender.tab.id === currentTabId) {
+        void handleStopSession();
+      }
+      return false;
+
+    case 'CONTENT_STOP_SESSION':
+      if (sender.tab?.id !== undefined && sender.tab.id === currentTabId) {
+        void handleStopSession();
       }
       return false;
   }
+});
+
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  if (tabId === currentTabId) void handleStopSession();
+});
+
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+  if (tabId === currentTabId && changeInfo.status === 'loading') void handleStopSession();
 });
 
 async function handleStartSession(
@@ -113,7 +155,7 @@ async function handleStartSession(
 }
 
 async function handleStopSession(): Promise<void> {
-  if (!isCapturing) return;
+  if (!isCapturing && !currentSessionId) return;
 
   await chrome.runtime.sendMessage({
     target: 'offscreen',

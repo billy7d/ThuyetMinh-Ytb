@@ -43,6 +43,7 @@ export class VideoSyncController {
     this.onRateChangeBound = () => this.handleRateChange();
 
     this.attachListeners();
+    this.emitState();
   }
 
   private attachListeners(): void {

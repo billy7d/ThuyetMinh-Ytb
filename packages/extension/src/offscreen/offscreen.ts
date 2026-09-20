@@ -4,7 +4,8 @@ import {
   ClientMessage,
   ServerMessage,
   OperationMode,
-  AudioMixerConfig
+  AudioMixerConfig,
+  VideoPlaybackState
 } from '@vietdub/shared';
 
 let audioCtx: AudioContext | null = null;
@@ -13,35 +14,38 @@ let audioMixer: AudioMixer | null = null;
 let pcmProcessor: PCMProcessor | null = null;
 let ws: WebSocket | null = null;
 let currentSessionId: string | null = null;
-let currentGeneration: number = 1;
+let currentGeneration = 1;
+let sequence = 0;
+let latestVideoState: VideoPlaybackState | null = null;
+let videoStateAudioTime = 0;
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
 
   switch (msg.type) {
     case 'START_CAPTURE':
       startCapture(msg.streamId, msg.sessionId, msg.mode, msg.wsUrl)
         .then(() => sendResponse({ success: true }))
-        .catch(err => sendResponse({ success: false, error: err.message }));
+        .catch(error => sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) }));
       return true;
-
     case 'STOP_CAPTURE':
       stopCapture();
       sendResponse({ success: true });
       return true;
-
     case 'UPDATE_MIXER':
       updateMixer(msg.config);
       sendResponse({ success: true });
       return true;
-
     case 'SEEK_EVENT':
       handleSeek(msg.fromMs, msg.toMs);
       sendResponse({ success: true });
       return true;
-
     case 'MODE_CHANGE':
       handleModeChange(msg.mode);
+      sendResponse({ success: true });
+      return true;
+    case 'VIDEO_STATE_UPDATE':
+      handleVideoStateUpdate(msg.state);
       sendResponse({ success: true });
       return true;
   }
@@ -53,9 +57,12 @@ async function startCapture(
   mode: OperationMode,
   wsUrl = 'ws://localhost:8080'
 ): Promise<void> {
+  stopCapture();
   currentSessionId = sessionId;
+  currentGeneration = 1;
+  sequence = 0;
+  latestVideoState = null;
 
-  // 1. Obtain Tab Capture MediaStream using Chrome stream ID
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -66,12 +73,10 @@ async function startCapture(
     video: false
   });
 
-  // 2. Setup AudioContext and AudioMixer
   audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  await audioCtx.resume();
   const sourceNode = audioCtx.createMediaStreamSource(mediaStream);
   audioMixer = new AudioMixer(audioCtx, sourceNode);
-
-  // 3. Connect WebSocket to Backend
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
@@ -85,63 +90,92 @@ async function startCapture(
     ws?.send(JSON.stringify(startMsg));
   };
 
-  ws.onmessage = async (event) => {
+  ws.onmessage = event => {
     try {
-      const serverMsg = JSON.parse(event.data) as ServerMessage;
-      handleServerMessage(serverMsg);
-    } catch (err) {
-      console.error('[Offscreen] WS parse error:', err);
+      handleServerMessage(JSON.parse(event.data) as ServerMessage);
+    } catch (error) {
+      console.error('[Offscreen] WS parse error:', error);
     }
   };
 
-  // 4. Setup PCM Streaming from STT Tap
+  ws.onerror = () => {
+    if (currentSessionId) {
+      chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'ERROR',
+        sessionId: currentSessionId,
+        timestamp: Date.now(),
+        code: 'BACKEND_CONNECTION_ERROR',
+        message: 'Không thể kết nối đến máy chủ AI.',
+        fatal: true
+      }).catch(() => {});
+    }
+  };
+
+  ws.onclose = () => {
+    if (currentSessionId) {
+      chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'ERROR',
+        sessionId: currentSessionId,
+        timestamp: Date.now(),
+        code: 'BACKEND_DISCONNECTED',
+        message: 'Máy chủ AI đã ngắt kết nối; audio capture đã dừng.',
+        fatal: true
+      }).catch(() => {});
+    }
+  };
+
   pcmProcessor = new PCMProcessor(
     audioCtx,
     audioMixer.getSTTTapNode(),
-    (pcmBase64, timestampMs) => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const chunkMsg: ClientMessage = {
-          type: 'AUDIO_CHUNK',
-          sessionId,
-          timestamp: Date.now(),
-          sequence: 0,
-          pcmBase64,
-          timestampMs
-        };
-        ws.send(JSON.stringify(chunkMsg));
-      }
-    }
+    (pcmBase64, videoTimeMs) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !currentSessionId) return;
+      const chunkMsg: ClientMessage = {
+        type: 'AUDIO_CHUNK',
+        sessionId: currentSessionId,
+        timestamp: Date.now(),
+        sequence: sequence++,
+        pcmBase64,
+        videoTimeMs,
+        audioTimeMs: Math.round(audioCtx?.currentTime ? audioCtx.currentTime * 1000 : 0)
+      };
+      ws.send(JSON.stringify(chunkMsg));
+    },
+    16000,
+    4096,
+    getVideoTimeMs
   );
 }
 
 function handleServerMessage(msg: ServerMessage): void {
-  // Relay subtitle and metrics events to background/content
+  if (msg.sessionId !== currentSessionId) return;
   if (msg.type === 'SUBTITLE_EVENT' || msg.type === 'LATENCY_METRIC' || msg.type === 'ERROR') {
-    chrome.runtime.sendMessage({ target: 'background', ...msg });
+    chrome.runtime.sendMessage({ target: 'background', ...msg }).catch(() => {});
   }
-
-  // Play TTS audio
-  if (msg.type === 'TTS_CHUNK') {
-    if (msg.generation === currentGeneration && audioCtx && audioMixer) {
-      playTTSChunk(msg.audioBase64);
-    }
+  if (
+    msg.type === 'TTS_CHUNK' &&
+    msg.generation === currentGeneration &&
+    audioCtx &&
+    audioMixer &&
+    !latestVideoState?.paused &&
+    msg.endMs >= getVideoTimeMs() - 6000 &&
+    audioMixer.getTTSBacklogMs() < 8000
+  ) {
+    void playTTSChunk(msg.audioBase64);
   }
 }
 
 async function playTTSChunk(audioBase64: string): Promise<void> {
   if (!audioCtx || !audioMixer) return;
-
   try {
     const binary = atob(audioBase64);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
     const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer);
-    audioMixer.playTTSBuffer(audioBuffer);
-  } catch (err) {
-    console.error('[Offscreen] TTS play error:', err);
+    if (currentSessionId) audioMixer.playTTSBuffer(audioBuffer);
+  } catch (error) {
+    console.error('[Offscreen] TTS play error:', error);
   }
 }
 
@@ -152,8 +186,22 @@ function updateMixer(config: Partial<AudioMixerConfig>): void {
   if (config.ttsVolume !== undefined) audioMixer.setTTSVolume(config.ttsVolume);
 }
 
+function handleVideoStateUpdate(state: VideoPlaybackState): void {
+  latestVideoState = state;
+  videoStateAudioTime = audioCtx?.currentTime || 0;
+  if (state.paused) audioMixer?.stopTTS();
+}
+
+function getVideoTimeMs(): number {
+  if (!latestVideoState) return Math.round((audioCtx?.currentTime || 0) * 1000);
+  if (latestVideoState.paused) return Math.round(latestVideoState.currentTime * 1000);
+  const audioDeltaMs = ((audioCtx?.currentTime || videoStateAudioTime) - videoStateAudioTime) * 1000;
+  return Math.max(0, Math.round(latestVideoState.currentTime * 1000 + audioDeltaMs * latestVideoState.playbackRate));
+}
+
 function handleSeek(fromMs: number, toMs: number): void {
   currentGeneration++;
+  audioMixer?.stopTTS();
   if (ws && ws.readyState === WebSocket.OPEN && currentSessionId) {
     const seekMsg: ClientMessage = {
       type: 'SEEK_EVENT',
@@ -169,48 +217,30 @@ function handleSeek(fromMs: number, toMs: number): void {
 
 function handleModeChange(mode: OperationMode): void {
   if (ws && ws.readyState === WebSocket.OPEN && currentSessionId) {
-    const modeMsg: ClientMessage = {
-      type: 'MODE_CHANGE',
-      sessionId: currentSessionId,
-      timestamp: Date.now(),
-      mode
-    };
-    ws.send(JSON.stringify(modeMsg));
+    ws.send(JSON.stringify({ type: 'MODE_CHANGE', sessionId: currentSessionId, timestamp: Date.now(), mode } satisfies ClientMessage));
   }
 }
 
 function stopCapture(): void {
-  if (pcmProcessor) {
-    pcmProcessor.stop();
-    pcmProcessor = null;
+  const sessionId = currentSessionId;
+  if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+    ws.send(JSON.stringify({ type: 'SESSION_STOP', sessionId, timestamp: Date.now() } satisfies ClientMessage));
   }
-
-  if (audioMixer) {
-    audioMixer.disconnect();
-    audioMixer = null;
-  }
-
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(t => t.stop());
-    mediaStream = null;
-  }
-
+  pcmProcessor?.stop();
+  pcmProcessor = null;
+  audioMixer?.disconnect();
+  audioMixer = null;
+  mediaStream?.getTracks().forEach(track => track.stop());
+  mediaStream = null;
   if (audioCtx) {
-    audioCtx.close();
+    void audioCtx.close();
     audioCtx = null;
   }
-
   if (ws) {
-    if (ws.readyState === WebSocket.OPEN && currentSessionId) {
-      ws.send(JSON.stringify({
-        type: 'SESSION_STOP',
-        sessionId: currentSessionId,
-        timestamp: Date.now()
-      }));
-    }
-    ws.close();
+    try { ws.close(1000, 'session stopped'); } catch {}
     ws = null;
   }
-
   currentSessionId = null;
+  latestVideoState = null;
+  currentGeneration++;
 }

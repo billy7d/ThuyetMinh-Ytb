@@ -1,1 +1,1 @@
-{"root":["./src/benchmarks/benchmark-dataset.ts","./src/benchmarks/run-benchmarks.ts","./src/e2e/extension-chrome.spec.ts","./src/e2e/extension-firefox.spec.ts","./src/spike/check-browsers.ts","./src/spike/run-spike.ts"],"version":"5.9.3"}
+{"root":["./src/benchmarks/benchmark-dataset.ts","./src/benchmarks/run-benchmarks.ts","./src/e2e/extension-chrome.spec.ts","./src/e2e/extension-firefox.spec.ts","./src/fixtures/providers.ts","./src/spike/check-browsers.ts","./src/spike/run-spike.ts"],"version":"5.9.3"}

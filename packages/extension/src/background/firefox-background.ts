@@ -65,7 +65,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'STOP_SESSION':
-      if (currentTabId) {
+      if (currentTabId !== null) {
         chrome.tabs.sendMessage(currentTabId, { type: 'FIREFOX_STOP_CAPTURE' }).catch(() => {});
       }
       isCapturing = false;
@@ -76,7 +76,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'UPDATE_MIXER_CONFIG':
       currentMixerConfig = { ...currentMixerConfig, ...msg.config };
-      if (currentTabId) {
+      if (currentTabId !== null) {
         chrome.tabs.sendMessage(currentTabId, {
           type: 'FIREFOX_UPDATE_MIXER',
           config: currentMixerConfig
@@ -87,7 +87,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'CHANGE_MODE':
       currentMode = msg.mode;
-      if (currentTabId) {
+      if (currentTabId !== null) {
         chrome.tabs.sendMessage(currentTabId, {
           type: 'FIREFOX_CHANGE_MODE',
           mode: msg.mode

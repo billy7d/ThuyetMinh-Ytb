@@ -9,19 +9,25 @@ export class PCMProcessor {
   private onChunk: PCMChunkHandler;
   private targetSampleRate: number;
   private bufferSize: number;
+  private readonly getTimestampMs: () => number;
+  private readonly silentGain: GainNode;
+  private sequence = 0;
 
   constructor(
     audioCtx: AudioContext,
     inputNode: AudioNode,
     onChunk: PCMChunkHandler,
     targetSampleRate = 16000,
-    bufferSize = 4096
+    bufferSize = 4096,
+    getTimestampMs: () => number = () => Math.round(this.audioCtx.currentTime * 1000)
   ) {
     this.audioCtx = audioCtx;
     this.inputNode = inputNode;
     this.onChunk = onChunk;
     this.targetSampleRate = targetSampleRate;
     this.bufferSize = bufferSize;
+    this.getTimestampMs = getTimestampMs;
+    this.silentGain = this.audioCtx.createGain();
 
     this.initProcessor();
   }
@@ -35,17 +41,16 @@ export class PCMProcessor {
       const resampled = this.downsample(inputData, this.audioCtx.sampleRate, this.targetSampleRate);
       const pcm16 = this.floatTo16BitPCM(resampled);
       const base64 = this.arrayBufferToBase64(pcm16.buffer);
-      const timestampMs = Math.round(this.audioCtx.currentTime * 1000);
+      const timestampMs = this.getTimestampMs();
 
       this.onChunk(base64, timestampMs);
     };
 
     this.inputNode.connect(this.processorNode);
     // Connect to destination via silent node to keep processor running
-    const silentGain = this.audioCtx.createGain();
-    silentGain.gain.value = 0;
-    this.processorNode.connect(silentGain);
-    silentGain.connect(this.audioCtx.destination);
+    this.silentGain.gain.value = 0;
+    this.processorNode.connect(this.silentGain);
+    this.silentGain.connect(this.audioCtx.destination);
   }
 
   private downsample(buffer: Float32Array, inputSampleRate: number, outputSampleRate: number): Float32Array {
@@ -80,7 +85,7 @@ export class PCMProcessor {
     return output;
   }
 
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+  private arrayBufferToBase64(buffer: ArrayBufferLike): string {
     let binary = '';
     const bytes = new Uint8Array(buffer);
     const len = bytes.byteLength;
@@ -96,5 +101,6 @@ export class PCMProcessor {
       this.processorNode.onaudioprocess = null;
       this.processorNode = null;
     }
+    this.silentGain.disconnect();
   }
 }

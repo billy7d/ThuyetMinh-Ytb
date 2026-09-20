@@ -38,7 +38,10 @@ export interface AudioChunkMessage extends BaseMessage {
   type: 'AUDIO_CHUNK';
   sequence: number;
   pcmBase64: string; // 16kHz 16-bit mono PCM base64 encoded
-  timestampMs: number;
+  /** Position on the source video's timeline, not wall-clock time. */
+  videoTimeMs: number;
+  /** Monotonic audio-clock position used to diagnose capture drift. */
+  audioTimeMs?: number;
 }
 
 export interface VideoStateUpdateMessage extends BaseMessage {
@@ -77,6 +80,9 @@ export interface SessionReadyMessage extends BaseMessage {
   sessionConfig: {
     audioSampleRate: number;
     chunkDurationMs: number;
+    sttProvider?: string;
+    translationProvider?: string;
+    ttsProvider?: string;
   };
 }
 
@@ -110,6 +116,9 @@ export interface TTSChunkMessage extends BaseMessage {
   type: 'TTS_CHUNK';
   segmentId: string;
   audioBase64: string; // Audio buffer (WAV / MP3 / PCM)
+  mimeType: 'audio/wav' | 'audio/mpeg' | 'audio/ogg' | 'audio/pcm';
+  sampleRate: number;
+  channels: number;
   durationMs: number;
   generation: number;
   translatedText: string;
@@ -123,6 +132,7 @@ export interface SubtitleEventMessage extends BaseMessage {
   text: string;
   startMs: number;
   endMs: number;
+  generation: number;
   action: 'show' | 'hide';
 }
 

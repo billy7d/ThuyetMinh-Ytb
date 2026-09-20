@@ -8,7 +8,7 @@ export interface BudgetConfig {
 
 export const DEFAULT_BUDGET_CONFIG: BudgetConfig = {
   maxCostPerSessionUsd: 2.0, // Hard stop if session exceeds $2.00
-  maxSessionMinutes: 180, // Max 3 hours continuous session
+  maxSessionMinutes: 30, // Default test/session ceiling from the PRD safety budget
   rateLimitChunksPerSecond: 10
 };
 
@@ -81,6 +81,11 @@ export class CostTracker {
 
   private checkBudget(): void {
     const metrics = this.getMetrics();
+    if (metrics.elapsedSeconds > this.config.maxSessionMinutes * 60) {
+      throw new Error(
+        `[CostTracker] Session duration limit of ${this.config.maxSessionMinutes} minutes exceeded`
+      );
+    }
     if (metrics.estimatedCostUsd > this.config.maxCostPerSessionUsd) {
       throw new Error(
         `[CostTracker] Budget guard triggered! Session cost $${metrics.estimatedCostUsd.toFixed(4)} exceeded limit of $${this.config.maxCostPerSessionUsd.toFixed(2)}`

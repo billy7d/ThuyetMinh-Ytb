@@ -6,6 +6,8 @@ export class AudioMixer {
   private originalGainNode: GainNode;
   private ttsGainNode: GainNode;
   private sttTapNode: GainNode;
+  private ttsSources = new Set<AudioBufferSourceNode>();
+  private nextTTSStartTime = 0;
 
   private config: AudioMixerConfig = {
     originalVolume: DEFAULT_ORIGINAL_VOLUME,
@@ -83,12 +85,35 @@ export class AudioMixer {
     const source = this.audioCtx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.ttsGainNode);
-    source.start();
+    const startAt = Math.max(this.audioCtx.currentTime, this.nextTTSStartTime);
+    source.start(startAt);
+    this.nextTTSStartTime = startAt + audioBuffer.duration;
+    this.ttsSources.add(source);
+    source.onended = () => {
+      this.ttsSources.delete(source);
+      try { source.disconnect(); } catch {}
+    };
     return source;
+  }
+
+  stopTTS(): void {
+    for (const source of this.ttsSources) {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {}
+    }
+    this.ttsSources.clear();
+    this.nextTTSStartTime = this.audioCtx.currentTime;
+  }
+
+  getTTSBacklogMs(): number {
+    return Math.max(0, Math.round((this.nextTTSStartTime - this.audioCtx.currentTime) * 1000));
   }
 
   disconnect(): void {
     try {
+      this.stopTTS();
       this.sourceNode.disconnect();
       this.originalGainNode.disconnect();
       this.ttsGainNode.disconnect();

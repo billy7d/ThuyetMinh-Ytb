@@ -34,8 +34,8 @@ test.describe('Google Chrome Extension E2E Flow', () => {
     // Launch Chrome with extension loaded
     const extChromePath = path.resolve(__dirname, '../../../extension/dist/chrome');
     browserContext = await chromium.launchPersistentContext('', {
-      executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      headless: true,
+      channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || 'chrome',
+      headless: process.env.HEADLESS !== 'false',
       args: [
         `--disable-extensions-except=${extChromePath}`,
         `--load-extension=${extChromePath}`,

@@ -28,10 +28,10 @@ VietDub AI cho phép người dùng xem trực tiếp các video tiếng Anh tr�
    - **Context-aware Translation:** Dịch theo nghĩa toàn câu với văn phong nói tự nhiên của người Việt, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ chuyên ngành.
    - **Vietnamese TTS:** Giọng đọc tự nhiên, phản hồi nhanh và cơ chế hủy (`cancelGeneration`) tức thì khi người dùng tua video hoặc tạm dừng.
 
-5. **Đo lường & Kiểm chứng Thực tế:**
-   - Đạt chuẩn kiểm thử trên trình duyệt Google Chrome (152+) và Mozilla Firefox (155+) thật.
-   - Độ trễ p50 thực tế đạt **~318 ms** (vượt xa mục tiêu PRD ≤ 3,000 ms).
-   - Điểm chất lượng dịch đạt **4.6 / 5.0** trên bộ 30 mẫu benchmark chuẩn hóa.
+5. **Trạng thái kiểm chứng:**
+   - Chrome/Firefox artifacts đã build được; browser acceptance production vẫn cần chạy trên cả hai trình duyệt.
+   - Các số liệu latency/quality cũ từ fixture đã bị loại khỏi evidence; chưa báo cáo p50/p95 live.
+   - Xem [TEST_REPORT.md](docs/TEST_REPORT.md), [BROWSER_ACCEPTANCE_CHECKLIST.md](docs/BROWSER_ACCEPTANCE_CHECKLIST.md) và [PROVIDER_SETUP.md](docs/PROVIDER_SETUP.md) trước khi nghiệm thu.
 
 ---
 
@@ -70,7 +70,7 @@ vietdub-ai/
 - **Trình duyệt:** Google Chrome (>= 116+) hoặc Mozilla Firefox (>= 109+).
 
 ### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
-Mở Terminal tại thư mục dự án `E:\ThuyetMinh-Ytb` và chạy:
+Mở Terminal tại thư mục dự án và chạy:
 
 ```bash
 # Cài đặt tất cả dependencies

@@ -15,6 +15,9 @@ let fxPcmProcessor: PCMProcessor | null = null;
 let fxWs: WebSocket | null = null;
 let fxSessionId: string | null = null;
 let fxCurrentGeneration: number = 1;
+let fxSequence = 0;
+let fxRestoreState: { video: HTMLVideoElement; muted: boolean; volume: number } | null = null;
+let contentGeneration = 1;
 
 function findVideoElement(): HTMLVideoElement | null {
   // 1. YouTube-specific main video selectors
@@ -47,7 +50,16 @@ function initVideoIntegration(): boolean {
   const video = findVideoElement();
   if (!video) return false;
 
+  if (activeVideo && activeVideo !== video) {
+    chrome.runtime.sendMessage({ type: 'VIDEO_CHANGED' }).catch(() => {});
+    handleFirefoxStopCapture();
+    syncController?.destroy();
+    syncController = null;
+    subtitleRenderer?.detach();
+  }
+
   activeVideo = video;
+  contentGeneration = 1;
 
   if (!subtitleRenderer) {
     subtitleRenderer = new SubtitleRenderer();
@@ -60,6 +72,8 @@ function initVideoIntegration(): boolean {
         chrome.runtime.sendMessage({ type: 'VIDEO_STATE_UPDATE', state }).catch(() => {});
       },
       onSeek: (fromMs, toMs) => {
+        contentGeneration++;
+        subtitleRenderer?.invalidateGeneration(contentGeneration);
         chrome.runtime.sendMessage({ type: 'SEEK_EVENT', fromMs, toMs }).catch(() => {});
         if (fxWs && fxWs.readyState === WebSocket.OPEN && fxSessionId) {
           fxCurrentGeneration++;
@@ -74,9 +88,7 @@ function initVideoIntegration(): boolean {
         }
       },
       onPause: () => {
-        if (fxAudioMixer) {
-          syncController?.stopActiveTTS();
-        }
+        fxAudioMixer?.stopTTS();
       },
       onResume: () => {}
     });
@@ -100,8 +112,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'SUBTITLE_EVENT':
       if (subtitleRenderer && msg.text) {
-        subtitleRenderer.showSubtitle(msg.segmentId, msg.text, (msg.endMs - msg.startMs) || 4000);
+        subtitleRenderer.showSubtitle(
+          msg.segmentId,
+          msg.text,
+          (msg.endMs - msg.startMs) || 4000,
+          msg.generation || 0
+        );
       }
+      return false;
+
+    case 'ERROR':
+      if (msg.fatal) subtitleRenderer?.hideSubtitle();
       return false;
 
     // Firefox Direct Audio Capture Handling
@@ -149,17 +170,26 @@ async function handleFirefoxStartCapture(
   if (!video) throw new Error('Không tìm thấy phần tử video trên trang');
 
   initVideoIntegration();
+  if (fxWs || fxAudioCtx || fxAudioMixer) handleFirefoxStopCapture();
   fxSessionId = sessionId;
-
+  fxCurrentGeneration = 1;
+  contentGeneration = 1;
+  fxSequence = 0;
+  fxRestoreState = { video, muted: video.muted, volume: video.volume };
+  // captureStream keeps the media element audible, so mute the native path
+  // while the mixer owns the only speaker path. The original value is restored
+  // on every stop/error/navigation path.
   fxAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
   let sourceNode: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
 
-  if (video.captureStream || (video as any).mozCaptureStream) {
-    const stream = (video.captureStream || (video as any).mozCaptureStream).call(video);
+  const captureStream = (video as any).captureStream || (video as any).mozCaptureStream;
+  if (captureStream) {
+    const stream = captureStream.call(video);
     sourceNode = fxAudioCtx.createMediaStreamSource(stream);
   } else {
     sourceNode = fxAudioCtx.createMediaElementSource(video);
   }
+  video.muted = true;
 
   fxAudioMixer = new AudioMixer(fxAudioCtx, sourceNode);
   if (mixerConfig) {
@@ -180,20 +210,42 @@ async function handleFirefoxStartCapture(
     fxWs?.send(JSON.stringify(startMsg));
   };
 
+  fxWs.onerror = () => {
+    if (fxSessionId === sessionId) handleFirefoxStopCapture();
+  };
+  fxWs.onclose = () => {
+    if (fxSessionId === sessionId) handleFirefoxStopCapture();
+  };
+
   fxWs.onmessage = async (event) => {
     try {
       const serverMsg = JSON.parse(event.data) as ServerMessage;
+      if (serverMsg.type === 'ERROR') {
+        if (serverMsg.fatal) handleFirefoxStopCapture();
+        return;
+      }
       if (serverMsg.type === 'SUBTITLE_EVENT' && subtitleRenderer) {
-        subtitleRenderer.showSubtitle(serverMsg.segmentId, serverMsg.text, 4000);
+        subtitleRenderer.showSubtitle(
+          serverMsg.segmentId,
+          serverMsg.text,
+          (serverMsg.endMs - serverMsg.startMs) || 4000,
+          serverMsg.generation
+        );
       }
       if (serverMsg.type === 'TTS_CHUNK') {
-        if (serverMsg.generation === fxCurrentGeneration && fxAudioCtx && fxAudioMixer) {
+        if (
+          serverMsg.generation === fxCurrentGeneration &&
+          fxAudioCtx &&
+          fxAudioMixer &&
+          !video.paused &&
+          serverMsg.endMs >= Math.round(video.currentTime * 1000) - 6000 &&
+          fxAudioMixer.getTTSBacklogMs() < 8000
+        ) {
           const binary = atob(serverMsg.audioBase64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           const buffer = await fxAudioCtx.decodeAudioData(bytes.buffer);
-          const source = fxAudioMixer.playTTSBuffer(buffer);
-          syncController?.setActiveTTSSource(source);
+          fxAudioMixer.playTTSBuffer(buffer);
         }
       }
     } catch (err) {
@@ -210,22 +262,36 @@ async function handleFirefoxStartCapture(
           type: 'AUDIO_CHUNK',
           sessionId,
           timestamp: Date.now(),
-          sequence: 0,
+          sequence: fxSequence++,
           pcmBase64,
-          timestampMs
+          videoTimeMs: Math.round(video.currentTime * 1000),
+          audioTimeMs: timestampMs
         };
         fxWs.send(JSON.stringify(chunkMsg));
       }
-    }
+    },
+    16000,
+    4096,
+    () => Math.round(video.currentTime * 1000)
   );
 }
 
 function handleFirefoxStopCapture(): void {
+  const sessionId = fxSessionId;
+  fxSessionId = null;
+  if (fxWs && fxWs.readyState === WebSocket.OPEN && sessionId) {
+    fxWs.send(JSON.stringify({
+      type: 'SESSION_STOP',
+      sessionId,
+      timestamp: Date.now()
+    } satisfies ClientMessage));
+  }
   if (fxPcmProcessor) {
     fxPcmProcessor.stop();
     fxPcmProcessor = null;
   }
   if (fxAudioMixer) {
+    fxAudioMixer.stopTTS();
     fxAudioMixer.disconnect();
     fxAudioMixer = null;
   }
@@ -234,17 +300,14 @@ function handleFirefoxStopCapture(): void {
     fxAudioCtx = null;
   }
   if (fxWs) {
-    if (fxWs.readyState === WebSocket.OPEN && fxSessionId) {
-      fxWs.send(JSON.stringify({
-        type: 'SESSION_STOP',
-        sessionId: fxSessionId,
-        timestamp: Date.now()
-      }));
-    }
     fxWs.close();
     fxWs = null;
   }
-  fxSessionId = null;
+  if (fxRestoreState && document.contains(fxRestoreState.video)) {
+    fxRestoreState.video.muted = fxRestoreState.muted;
+    fxRestoreState.video.volume = fxRestoreState.volume;
+  }
+  fxRestoreState = null;
 }
 
 // Automatically detect video on load, SPA navigation or DOM mutations
@@ -253,7 +316,8 @@ window.addEventListener('load', () => initVideoIntegration());
 window.addEventListener('yt-navigate-finish', () => initVideoIntegration());
 
 const observer = new MutationObserver(() => {
-  if (!activeVideo || !document.contains(activeVideo)) {
+  const video = findVideoElement();
+  if (!activeVideo || !document.contains(activeVideo) || (video && video !== activeVideo)) {
     initVideoIntegration();
   }
 });

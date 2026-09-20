@@ -54,14 +54,14 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
 │                 │                                      ▼                │
 │                 │                        ┌───────────────────────────┐  │
 │                 │                        │ Context Translation Engine│  │
-│                 │                        │ (7 Rules, Context Memory, │  │
+│                 │                        │ (Gemini, Context Memory,  │  │
 │                 │                        │  Terminology Dictionary)  │  │
 │                 │                        └─────────────┬─────────────┘  │
 │                 │                                      │                │
 │                 │                                      ▼                │
 │                 │                        ┌───────────────────────────┐  │
 │                 └────────────────────────┤   Vietnamese TTS Engine   │  │
-│                     Audio & Subtitle     │ (Neural Voice + Cancel on │  │
+│                     Audio & Subtitle     │ (Google Cloud + Cancel on │  │
 │                          Events          │  Seek/Pause Generation)   │  │
 │                                          └───────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -80,6 +80,7 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
 - Sử dụng thuật toán tính toán năng lượng RMS trên frame PCM 16kHz Mono.
 - Phát hiện khoảng lặng (silence >= 650ms) để xác định điểm kết thúc câu nói (utterance boundary).
 - Hỗ trợ trả về Interim results để cập nhật giao diện trước khi chốt Final transcript.
+- Production gateway dùng Deepgram live streaming; mock STT chỉ được phép trong unit/integration tests.
 
 ### 2.3. Context-Aware Translation Engine
 - **7 Quy tắc vàng:**
@@ -93,7 +94,7 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
 - **Context Manager:** Duy trì sliding window 5 câu gần nhất kèm bản dịch tiếng Việt để giữ mạch văn thống nhất.
 
 ### 2.4. Vietnamese TTS Engine & Sync Controller
-- Sinh âm thanh tiếng Việt định dạng PCM/WAV rõ ràng, ngắt nghỉ tự nhiên.
+- Production gateway gọi Google Cloud Text-to-Speech và kiểm tra metadata WAV thực tế; synthetic WAV chỉ là test fixture.
 - **Generation Tracking:** Mỗi khi người dùng tua video (seek) hoặc pause, generation ID được tăng lên, lập tức hủy bỏ (cancel) các yêu cầu sinh audio cũ đang chờ và làm sạch hàng đợi phát lại.
 - **Subtitle Overlay:** Tự động gắn lên video container, hỗ trợ toàn màn hình (fullscreen), tương phản cao, tự xuống dòng không che khuất nội dung chính.
 

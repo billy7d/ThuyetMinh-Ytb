@@ -7,7 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/extension && npm run build -w @vietdub/tests",
+    "typecheck": "npm run typecheck -w @vietdub/extension && npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/tests",
     "build:chrome": "npm run build:chrome -w @vietdub/extension",
     "build:firefox": "npm run build:firefox -w @vietdub/extension",
     "build:backend": "npm run build -w @vietdub/backend",

@@ -12,5 +12,9 @@ export default defineConfig({
     trace: 'on-first-retry',
     viewport: { width: 1280, height: 720 },
     video: 'retain-on-failure'
-  }
+  },
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'firefox', use: { browserName: 'firefox' } }
+  ]
 });
