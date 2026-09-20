@@ -4,10 +4,10 @@ Ngày cập nhật: 2026-09-21
 
 STATUS: BLOCKED / LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED
 BRANCH: fix/firefox-extension-reliability-p0 (PR #1 target; local integration branch is codex/vietdub-production-pipeline)
-HEAD_SHA: pending merge commit (record exact pushed SHA after merge)
+HEAD_SHA: 0c608f3253329f111bd73ad5e0f69bae90f2bd16 (implementation merge pushed to PR #1 branch; this report is a follow-up documentation commit)
 PR_URL: https://github.com/billy7d/ThuyetMinh-Ytb/pull/1 — PR state/mergeability could not be queried because `gh` is not installed in this environment
 P0_ACCEPTANCE: BLOCKED — no local model/worker runtime, Firefox executable missing and no live hardware evidence
-P0_AND_PRODUCTION_ANCESTRY: PASS — PR branch is merged with the local-runtime implementation branch; exact merge SHA is recorded after commit
+P0_AND_PRODUCTION_ANCESTRY: PASS — merge commit 0c608f3 has parents a51f7f9 (local runtime) and f98d7ea (PR #1 P0 line)
 AI_DEFAULT_MODE: local; cloud adapters require AI_MODE=cloud, CLOUD_PROVIDERS_ENABLED=true and PAID_API_ALLOWED=true
 ZERO_COST_ENFORCEMENT: PASS in code/tests — local CostTracker reports 0 external API cost and the default factory never constructs cloud adapters
 LOCAL_STT: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL worker boundary; whisper.cpp is the documented candidate
@@ -31,4 +31,6 @@ MERGE_READY: NO
 MERGED: NO
 MERGE_SHA: N/A
 MAIN_SHA: aa0d620c150e89807b8d97f96ffa86c1fe89fb9a
+PR_DESCRIPTION_UPDATED: NO — `gh` is not installed; branch was pushed but PR title/body/state and mergeability could not be queried or edited
+COMMITS_PUSHED: 0c608f3 to `fix/firefox-extension-reliability-p0` fast-forward; follow-up report commit is pending
 REMAINING_BLOCKERS: install/verify local workers and models; fill exact manifest revisions/checksums/licenses; run STT 3-video, translation 30-sample and TTS 20-sentence evidence; run Chrome+Firefox YouTube/HTML5 3-mode acceptance; run 30-minute soak; measure p50/p95/RTF/CPU/RAM; obtain CI exact-head status; review the two moderate Vitest advisories; update PR #1 body/state (gh is unavailable)
