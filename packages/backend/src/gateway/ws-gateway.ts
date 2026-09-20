@@ -16,7 +16,6 @@ interface ActiveSession {
   pipeline: RealtimePipeline;
   ws: WebSocket;
 }
-
 export class WebSocketGateway {
   private readonly activeSessions = new Map<string, ActiveSession>();
   private readonly providerFactory: ProductionProviderFactory;
@@ -76,16 +75,21 @@ export class WebSocketGateway {
   private handleClientMessage(ws: WebSocket, msg: ClientMessage): void {
     switch (msg.type) {
       case 'SESSION_START': {
-        const sessionId = msg.sessionId;
-        const mode = msg.mode || DEFAULT_MODE;
-        const sessionRef = diagnosticSessionRef(sessionId);
-
+        const sessionRef = diagnosticSessionRef(msg.sessionId);
         emitDiagnostic('gateway', 'session_start_received', {
           sessionRef,
-          mode,
+          mode: msg.mode || DEFAULT_MODE,
           audioSampleRate: msg.audioSampleRate,
           hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
         });
+        if (this.activeSessions.size >= this.maxConcurrentSessions) {
+          this.sendError(ws, msg.sessionId, 'CONCURRENT_SESSION_LIMIT', 'Số phiên đang hoạt động đã đạt giới hạn.', true);
+          return;
+        }
+        if (msg.audioSampleRate !== 16000) {
+          this.sendError(ws, msg.sessionId, 'UNSUPPORTED_AUDIO_FORMAT', 'Backend yêu cầu PCM mono 16 kHz.', true);
+          return;
+        }
 
         this.terminateSession(msg.sessionId);
         let dependencies;
@@ -121,11 +125,11 @@ export class WebSocketGateway {
             ttsProvider: providers.tts
           }
         };
-        this.sendSafe(ws, readyMsg);
+        this.sendSafe(ws, ready);
         emitDiagnostic('gateway', 'session_ready_emitted', {
           sessionRef,
-          audioSampleRate: readyMsg.sessionConfig.audioSampleRate,
-          chunkDurationMs: readyMsg.sessionConfig.chunkDurationMs
+          audioSampleRate: ready.sessionConfig.audioSampleRate,
+          chunkDurationMs: ready.sessionConfig.chunkDurationMs
         });
         break;
       }
@@ -138,14 +142,14 @@ export class WebSocketGateway {
           emitDiagnostic('gateway', 'audio_chunk_received', {
             sessionRef: diagnosticSessionRef(msg.sessionId),
             sequence: msg.sequence,
-            timestampMs: msg.timestampMs,
+            videoTimeMs: msg.videoTimeMs,
             pcmBytes: pcmBuffer.length,
             sampleCount: stats.sampleCount,
             rms: Math.round(stats.rms * 10000) / 10000,
             peak: Math.round(stats.peak * 10000) / 10000,
             nonZeroSamples: stats.nonZeroSamples
           });
-          session.pipeline.handleAudioChunk(pcmBuffer, msg.timestampMs);
+          session.pipeline.handleAudioChunk(pcmBuffer, msg.videoTimeMs);
         } else {
           emitDiagnostic('gateway', 'audio_chunk_ignored', {
             sessionRef: diagnosticSessionRef(msg.sessionId),
@@ -175,21 +179,19 @@ export class WebSocketGateway {
 
       case 'SESSION_STOP': {
         const session = this.activeSessions.get(msg.sessionId);
-        if (session) {
-          emitDiagnostic('gateway', 'session_stop_received', {
-            sessionRef: diagnosticSessionRef(msg.sessionId),
-            reasonLength: msg.reason?.length || 0
-          });
-          const metrics = session.pipeline.getCostTracker().getMetrics();
-          const metricsMsg: SessionMetricsMessage = {
-            type: 'SESSION_METRICS',
-            sessionId: msg.sessionId,
-            timestamp: Date.now(),
-            metrics
-          };
-          this.sendSafe(ws, metricsMsg);
-          this.terminateSession(msg.sessionId);
-        }
+        if (session?.ws !== ws) break;
+        const metrics: SessionMetricsMessage = {
+          type: 'SESSION_METRICS',
+          sessionId: msg.sessionId,
+          timestamp: Date.now(),
+          metrics: session.pipeline.getCostTracker().getMetrics()
+        };
+        emitDiagnostic('gateway', 'session_stop_received', {
+          sessionRef: diagnosticSessionRef(msg.sessionId),
+          reasonLength: msg.reason?.length || 0
+        });
+        this.sendSafe(ws, metrics);
+        this.terminateSession(msg.sessionId, ws);
         break;
       }
     }

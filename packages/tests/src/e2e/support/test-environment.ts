@@ -179,7 +179,10 @@ export async function startBackend(): Promise<RunningBackend> {
   const healthUrl = `http://127.0.0.1:${port}/health`;
   const backendProcess = spawn(
     process.execPath,
-    [path.join(repositoryRoot, 'packages', 'backend', 'dist', 'server.js')],
+    [
+      path.join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+      path.join(repositoryRoot, 'packages', 'tests', 'src', 'e2e', 'support', 'fixture-backend.ts')
+    ],
     {
       cwd: repositoryRoot,
       env: { ...process.env, PORT: String(port) },
@@ -307,24 +310,30 @@ export function resolveChromiumExecutable(): string | undefined {
   const configuredPath = process.env.VIETDUB_CHROMIUM_EXECUTABLE;
   if (configuredPath && fs.existsSync(configuredPath)) return configuredPath;
 
-  const expectedPlaywrightPath = path.join(
-    os.homedir(),
-    'AppData',
-    'Local',
-    'ms-playwright',
-    'chromium-1243',
-    'chrome-win64',
-    'chrome.exe'
-  );
-  if (fs.existsSync(expectedPlaywrightPath)) return expectedPlaywrightPath;
+  const systemCandidates = process.platform === 'darwin'
+    ? [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+      ]
+    : process.platform === 'win32'
+      ? [path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe')]
+      : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge'];
+  const systemChrome = systemCandidates.find((candidate) => fs.existsSync(candidate));
+  if (systemChrome) return systemChrome;
 
-  const systemChrome = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe');
-  if (fs.existsSync(systemChrome)) return systemChrome;
+  const playwrightRoot = process.platform === 'win32'
+    ? path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright')
+    : path.join(os.homedir(), '.cache', 'ms-playwright');
+  if (!fs.existsSync(playwrightRoot)) return undefined;
 
-  const playwrightRoot = path.dirname(path.dirname(path.dirname(expectedPlaywrightPath)));
   return fs.readdirSync(playwrightRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^chromium-\d+$/.test(entry.name))
-    .map((entry) => path.join(playwrightRoot, entry.name, 'chrome-win64', 'chrome.exe'))
+    .map((entry) => process.platform === 'darwin'
+      ? path.join(playwrightRoot, entry.name, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
+      : process.platform === 'win32'
+        ? path.join(playwrightRoot, entry.name, 'chrome-win64', 'chrome.exe')
+        : path.join(playwrightRoot, entry.name, 'chrome-linux', 'chrome'))
     .find((candidate) => fs.existsSync(candidate));
 }
 

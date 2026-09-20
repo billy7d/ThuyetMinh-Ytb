@@ -1,6 +1,6 @@
+import { diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 import { STTProvider, STTStreamCallbacks, STTStreamSession } from './types.js';
 import { SimpleVAD } from './vad.js';
-import { diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
 export class MockSTTProvider implements STTProvider {
   name = 'MockSTTProvider';
@@ -38,7 +38,15 @@ export class MockSTTProvider implements STTProvider {
         textLength: finalSentence.length,
         reason
       });
-      callbacks.onFinal(finalSentence, startMs, endMs);
+      callbacks.onFinal({
+        segmentId: `mock_${this.currentIndex}`,
+        text: finalSentence,
+        startMs,
+        endMs,
+        isFinal: true,
+        confidence: 1,
+        receivedAtMs: Date.now()
+      });
       interimSent = false;
       hasActiveSpeech = false;
       speechStartMs = 0;
@@ -68,14 +76,14 @@ export class MockSTTProvider implements STTProvider {
           interimSent = false;
         }
 
-        // Simulate interim transcript after 300ms of speech
+        // Simulate interim transcript after 300ms of speech.
         if (vadResult.isVoice && !interimSent && timestampMs - speechStartMs > 300) {
           interimSent = true;
           const sentence = this.predefinedSentences[this.currentIndex % this.predefinedSentences.length];
           const words = sentence.split(' ');
           const interimWords = words.slice(0, Math.max(1, Math.floor(words.length / 2))).join(' ');
           callbacks.onInterim({
-            segmentId: `mock_${this.currentIndex}`,
+            segmentId: `mock_${this.currentIndex}_interim`,
             text: interimWords,
             startMs: speechStartMs,
             endMs: timestampMs,
@@ -85,7 +93,6 @@ export class MockSTTProvider implements STTProvider {
           });
         }
 
-        // When VAD detects speech end (silence boundary)
         if (vadResult.speechEnded) {
           emitFinalSentence(vadResult.startMs, vadResult.endMs, 'vad_silence');
           return;

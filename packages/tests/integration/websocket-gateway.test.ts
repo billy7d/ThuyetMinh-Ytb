@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { createServer } from '@vietdub/backend';
 import { ServerMessage } from '@vietdub/shared';
+import { createFixtureProviderFactory } from '../src/fixtures/provider-factory.js';
 
 function makeVoicePcm(): Buffer {
   const buffer = Buffer.alloc(3200);
@@ -24,7 +25,7 @@ async function waitForMessage(messages: ServerMessage[], type: ServerMessage['ty
 
 describe('WebSocket gateway runtime pipeline', () => {
   it('nhận SESSION_START/AUDIO_CHUNK thật và phát đủ subtitle/TTS mock events', async () => {
-    const { server, gateway } = createServer(0);
+    const { server, gateway } = createServer(0, { providerFactory: createFixtureProviderFactory(["Let's break it down."]) });
     const messages: ServerMessage[] = [];
     const sessionId = 'gateway_runtime_regression';
     let socket: WebSocket | null = null;
@@ -66,7 +67,7 @@ describe('WebSocket gateway runtime pipeline', () => {
           timestamp: Date.now(),
           sequence,
           pcmBase64: pcm.toString('base64'),
-          timestampMs
+          videoTimeMs: timestampMs
         }));
       });
 

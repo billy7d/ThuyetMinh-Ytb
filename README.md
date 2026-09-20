@@ -2,7 +2,7 @@
 
 > **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) cho pipeline thuyết minh tiếng Việt và phụ đề video tiếng Anh theo thời gian thực.**
 
-> **Trạng thái kỹ thuật:** backend hiện dùng MockSTT/Translation/TTS theo phạm vi PRD; các số liệu benchmark và browser gate được phân biệt rõ trong [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
+> **Trạng thái kỹ thuật:** backend production dùng Deepgram STT, Gemini translation và Google Cloud TTS với wiring fail-closed; mock/fixture chỉ được inject trong test. Live provider và browser acceptance hiện vẫn `BLOCKED` trong môi trường này. Xem [PRD execution status](docs/PRD_EXECUTION_STATUS.md).
 
 VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với phụ đề đồng bộ và đường truyền audio thời gian thực, không cần tải video về máy hay tạo video mới.
 
@@ -28,11 +28,11 @@ VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên t
 4. **Pipeline AI Chất lượng Cao:**
    - **Streaming STT:** Tích hợp Voice Activity Detection (VAD) xác định chính xác ngắt câu.
    - **Context-aware Translation:** Dịch theo nghĩa toàn câu với văn phong nói tự nhiên của người Việt, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ chuyên ngành.
-   - **Vietnamese TTS:** Pipeline có cơ chế hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng; backend hiện dùng engine mô phỏng, chưa phải giọng production.
+   - **Vietnamese TTS:** Backend gọi Google Cloud TTS `vi-VN` và parse metadata WAV thật; pipeline có cơ chế hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng.
 
 5. **Đo lường & Kiểm chứng Thực tế:**
    - Feasibility/media spike lịch sử đã chạy trên Google Chrome (152+) và Mozilla Firefox (155+); đây không phải bằng chứng runtime extension hiện tại.
-   - Độ trễ p50 **~318 ms** và điểm chất lượng dịch **4.6 / 5.0** là các số liệu benchmark lịch sử, không phải tiêu chí release hiện tại.
+   - Benchmark fixture 30 mẫu chỉ kiểm tra harness; không có số liệu latency/quality production cho đến khi operator chạy provider thật.
    - Ma trận runtime và các gate còn thiếu được cập nhật trong [P0 Review Fix Report](docs/audit/P0_REVIEW_FIX_REPORT.md).
 
 ---
@@ -226,6 +226,8 @@ npm run benchmark
 - [Dự toán chi phí vận hành](docs/COST_REPORT.md)
 - [Báo cáo bảo mật & quyền riêng tư](docs/SECURITY_REPORT.md)
 - [Báo cáo tổng hợp kiểm thử](docs/TEST_REPORT.md)
+- [Cấu hình provider production](docs/PROVIDER_SETUP.md)
+- [Trạng thái thực thi PRD](docs/PRD_EXECUTION_STATUS.md)
 - [Các giới hạn đã biết](docs/KNOWN_LIMITATIONS.md)
 
 ---

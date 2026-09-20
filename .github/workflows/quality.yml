@@ -216,3 +216,70 @@ jobs:
         run: npm ci
       - name: Run artifact-only bundle smoke
         run: npm run test:e2e -w @vietdub/tests -- --project=bundle-smoke
+
+  full-test:
+    name: full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Clean dependency installation
+        run: npm ci
+      - name: Run complete test inventory
+        run: npm test
+
+  dependency-audit:
+    name: production dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Clean dependency installation
+        run: npm ci
+      - name: Audit production dependency tree
+        run: npm audit --omit=dev
+      - name: Fail on high or critical advisories
+        run: npm audit --audit-level=high
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check whitespace errors
+        run: git diff --check HEAD^ HEAD
+      - name: Scan tracked source for provider key material
+        shell: bash
+        run: |
+          matches="$(git grep -n -I -E '(AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9]{20,}|gcp-[A-Za-z0-9_-]{20,}|DEEPGRAM_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]+|GEMINI_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]+|GOOGLE_APPLICATION_CREDENTIALS_JSON[[:space:]]*=[[:space:]]*[^[:space:]#]+)' -- ':!package-lock.json' ':!.env.example' || true)"
+          matches="$(printf '%s\n' "$matches" | grep -v -E 'your_[A-Za-z0-9_]+_here' || true)"
+          if [[ -n "$matches" ]]; then
+            echo 'Potential provider secret detected in tracked files.'
+            printf '%s\n' "$matches"
+            exit 1
+          fi

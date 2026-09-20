@@ -33,6 +33,7 @@ interface OffscreenSession {
   audioMixer: AudioMixer | null;
   pcmProcessor: PCMProcessor | null;
   ws: WebSocket | null;
+  videoTimeMs: number;
   cleanupPromise: Promise<void> | null;
 }
 
@@ -164,6 +165,7 @@ async function startCapture(
     audioMixer: null,
     pcmProcessor: null,
     ws: null,
+    videoTimeMs: 0,
     cleanupPromise: null
   };
   currentSession = session;
@@ -233,7 +235,7 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
           timestamp: Date.now(),
           sequence: session.sequence++,
           pcmBase64,
-          timestampMs
+          videoTimeMs: timestampMs
         };
         try {
           session.ws.send(JSON.stringify(message));
@@ -243,7 +245,8 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
       },
       16000,
       4096,
-      session.sessionId
+      session.sessionId,
+      () => session.videoTimeMs
     );
     assertCurrent(session);
     session.ready = true;
@@ -419,6 +422,7 @@ function handleSeek(fromMs: number, toMs: number, sessionId?: string): void {
 function handleVideoState(state: VideoPlaybackState, sessionId?: string): void {
   const session = currentSession;
   if (!session || !isCurrent(session) || (sessionId && session.sessionId !== sessionId) || session.ws?.readyState !== WebSocket.OPEN) return;
+  session.videoTimeMs = Math.max(0, Math.round(state.currentTime * 1000));
   const message: ClientMessage = {
     type: 'VIDEO_STATE_UPDATE',
     sessionId: session.sessionId,

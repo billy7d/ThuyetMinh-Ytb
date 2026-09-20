@@ -113,8 +113,8 @@ describe('RealtimePipeline End-to-End Flow', () => {
       'sess_dubbing_only_mode',
       'dubbing_only',
       new MockSTTProvider(["Let's break it down."]),
-      new TranslationEngine(),
-      new VietnameseTTSEngine(),
+      new TranslationEngine(new DeterministicTranslationProvider()),
+      new VietnameseTTSEngine(new FixtureTTSProvider()),
       { sendMessage: (msg) => receivedMessages.push(msg) }
     );
 
@@ -145,8 +145,8 @@ describe('RealtimePipeline End-to-End Flow', () => {
       'sess_continuous_voice',
       'dubbing_and_subtitle',
       new MockSTTProvider(["Let's break it down."]),
-      new TranslationEngine(),
-      new VietnameseTTSEngine(),
+      new TranslationEngine(new DeterministicTranslationProvider()),
+      new VietnameseTTSEngine(new FixtureTTSProvider()),
       { sendMessage: (msg) => receivedMessages.push(msg) }
     );
 

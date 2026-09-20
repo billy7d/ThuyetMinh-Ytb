@@ -1,51 +1,43 @@
-# Báo cáo Lịch sử Kiểm thử (Test Report) — VietDub AI
-
-> **Đính chính 2026-09-17:** Bảng dưới đây là snapshot trước review fix. Các claim `100% PASS` của Chrome/Firefox extension E2E không còn là release evidence; xem [P0 Review Fix Report](audit/P0_REVIEW_FIX_REPORT.md) để biết kết quả hiện tại.
-
-> **Phạm vi benchmark:** các số liệu dịch/độ trễ bên dưới là offline benchmark trên pipeline mock, không chứng minh chất lượng AI production hoặc runtime extension.
+# VietDub AI — Integration Test Report
 
 Ngày cập nhật: 2026-09-20
 
-## Trạng thái tổng thể
+## Kết luận
 
-`IMPLEMENTED, NOT VERIFIED` — mã nguồn đã có ranh giới provider thật cho Deepgram STT, Gemini translation và Google Cloud TTS; chưa thể công bố P0 PASS vì môi trường hiện không có credential provider và không có Firefox cài sẵn để chạy browser acceptance thật.
+`BLOCKED — IMPLEMENTED, LOCAL GATES PASS, LIVE ACCEPTANCE PENDING`.
 
-| Phân loại Kiểm thử | Framework | Số lượng Test Cases | Passed | Failed | Trạng thái |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **P0 Feasibility Spike** | Node.js + Playwright (media page) | 6 tiêu chí âm thanh | 6 | 0 | **PASS — MEDIA-ONLY** |
-| **Unit Tests** | Vitest v3.2.7 | 17 tests | 17 | 0 | **PASS (100%)** |
-| **Integration Tests** | Vitest v3.2.7 | Snapshot cũ | Snapshot cũ | — | **LỊCH SỬ** |
-| **E2E Chrome Tests** | Playwright (Chrome Extension Unpacked) | Snapshot cũ | Snapshot cũ | — | **LỊCH SỬ / KHÔNG ĐỦ GATE** |
-| **E2E Firefox Tests** | Playwright (Firefox Browser Context) | Snapshot cũ | Snapshot cũ | — | **LỊCH SỬ / KHÔNG ĐỦ GATE** |
-| **Translation & Latency Benchmark** | 30 mẫu kiểm thử chuẩn hóa | 30 mẫu | 30 | 0 | **PASS (100%)** |
-| **TỔNG CỘNG SNAPSHOT CŨ** | — | **64 tests & checks** | **Không dùng** | **—** | **LỊCH SỬ** |
+The integration worktree contains the P0 reliability line plus the production provider line. Production startup is fail-closed: it never substitutes deterministic fixtures when provider configuration is absent. Fixtures are injected only by tests.
 
-- TypeScript typecheck: PASS.
-- Production build cho shared, backend, Chrome extension, Firefox extension và test package: PASS.
-- Unit/integration/provider contract tests: 6 test files, 21 tests PASS.
-- Chrome smoke E2E dùng local HTML5 fixture: 5 tests PASS; đây chưa phải YouTube/provider-live acceptance.
-- Firefox smoke E2E: BLOCKED vì Playwright Firefox executable không có trong môi trường.
-- `npm audit --omit=dev`: 0 production vulnerabilities. Full audit còn 2 moderate trong Vitest dev dependency; bản sửa đề xuất là breaking change và chưa tự động áp dụng.
+## Local evidence
 
-## Chưa được phép gọi là PASS
+| Gate | Kết quả | Ghi chú |
+| --- | --- | --- |
+| `npm ci` | PASS | Fresh dependency installation in the integration worktree |
+| `npm run typecheck` | PASS | Shared package is built before extension typecheck |
+| `npm run build` | PASS | Shared, backend, Chrome, Firefox, tests; both artifact validators pass |
+| `npm test` | PASS | 15 files, 47 tests |
+| Bundle smoke | PASS | Chrome 1/1, Firefox 1/1 |
+| Fixture benchmark | PASS as fixture-only | 30 samples; output is explicitly `FIXTURE_ONLY_NOT_PRODUCTION_EVIDENCE` |
+| `npm audit --omit=dev` | PASS | 0 production vulnerabilities |
+| `npm audit --audit-level=high` | PASS at high/critical threshold | 2 moderate Vitest dev advisories remain; fix requires breaking Vitest 5 upgrade |
+| Secret scan + `git diff --check` | PASS | No provider key material detected |
+| Firefox acceptance | BLOCKED / skipped | Firefox executable is absent; no false PASS recorded |
+| Chrome extension acceptance | BLOCKED | macOS Chrome starts, but headless harness does not expose the unpacked MV3 service worker |
 
-- Chưa gọi live Deepgram, Gemini hoặc Google Cloud TTS vì không có credential trong môi trường.
-- Chưa đo latency p50/p95 live và chưa chạy soak 30 phút.
-- Chưa có Chrome acceptance trên YouTube/HTML5 với provider thật.
-- Chưa có Firefox acceptance; máy hiện không có Firefox executable.
-- Chưa xác minh audio restoration bằng thao tác người dùng trên cả hai browser.
+## Test inventory retained
 
-### 2.2. Unit & Integration Tests (Vitest)
-- `unit/vad.test.ts`: Kiểm tra phát hiện khoảng lặng, biên độ giọng nói và kích hoạt sự kiện kết thúc câu dứt điểm. (3/3 pass)
-- `unit/translation.test.ts`: Kiểm tra bộ nhớ trượt 5 câu gần nhất, tra cứu từ điển thuật ngữ chuyên ngành, kiểm tra câu chưa hoàn chỉnh (`SentenceCompletionGuard`) và 5 câu mẫu bắt buộc trong PRD. (7/7 pass)
-- `unit/tts.test.ts`: Kiểm tra tạo buffer WAV chuẩn RIFF, định dạng PCM 16-bit Mono và cơ chế hủy generation (`cancelGeneration`) khi người dùng tua video. (3/3 pass)
-- `unit/cost.test.ts`: Kiểm tra tính toán chi phí phiên, công thức dự toán 1 giờ video và `BudgetGuard` ngắt kết nối an toàn khi vượt hạn mức. (4/4 pass)
-- `integration/pipeline.test.ts`: Kiểm tra luồng dữ liệu trọn vẹn từ audio chunk đầu vào -> STT -> Dịch thuật -> TTS -> Subtitle -> Latency metrics; kiểm tra chế độ `subtitle_only` không phát TTS. (2/2 pass)
+The original P0 unit/integration/browser specs remain in the branch, including audio mixer, extension communication/session lifecycle, subtitle relay/renderer, VAD, pipeline and bundle checks. The continuous-speech mock-STT regression is retained and now calls VAD exactly once per PCM chunk while finalizing long voice runs at a bounded segment duration.
 
-### 2.3. Browser E2E Tests (Playwright) — dữ liệu lịch sử
-- Các kết quả Chrome/Firefox trong snapshot này không chứng minh được action invocation thật, extension temporary-install hoặc lifecycle runtime production.
-- Không dùng `5/5 pass` ở trên làm acceptance hiện tại; xem `docs/audit/P0_REVIEW_FIX_REPORT.md`.
+Provider contract coverage adds:
 
-## Ghi chú an toàn
+- production factory fails closed when Deepgram/Gemini/Google TTS configuration is missing;
+- Gemini receives delimited untrusted transcript data and rejects invalid output;
+- Google Cloud TTS requires and parses real RIFF/WAVE metadata instead of guessing format.
 
-Không commit API key. Audio chỉ được gửi tới STT sau Start; backend không lưu transcript/audio theo thiết kế hiện tại. `npm audit` vẫn cần được xử lý riêng trước khi release vì dependency tree còn cảnh báo moderate.
+The gateway integration test uses a test-only fixture provider factory. It does not alter production provider wiring.
+
+## Live acceptance status
+
+No Deepgram, Gemini or Google Cloud TTS request was made because the backend environment has no live credentials. Consequently there is no live STT/translation/TTS quality score, p50/p95 latency, 30-sample human evaluation or 30-minute soak evidence. Chrome YouTube/HTML5 and Firefox YouTube/HTML5 acceptance remain pending operator-run browser sessions with real providers.
+
+See [Provider Setup](PROVIDER_SETUP.md), [Browser Acceptance Checklist](BROWSER_ACCEPTANCE_CHECKLIST.md) and [PRD execution status](PRD_EXECUTION_STATUS.md) for the exact operator actions and release blockers.

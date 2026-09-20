@@ -184,7 +184,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
           const displayed = subtitleRenderer.showSubtitle(
             msg.segmentId,
             msg.text,
-            resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs)
+            resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs),
+            msg.generation ?? 0
           );
           emitDiagnostic('content', 'subtitle_event_rendered', {
             sessionRef: diagnosticSessionRef(msg.sessionId),
@@ -316,7 +317,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
             timestamp: Date.now(),
             sequence: session.sequence++,
             pcmBase64,
-            timestampMs
+            videoTimeMs: timestampMs
           };
           try {
             session.ws?.send(JSON.stringify(message));
@@ -326,7 +327,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         },
         16000,
         4096,
-        session.sessionId
+        session.sessionId,
+        () => Math.max(0, Math.round(session.video.currentTime * 1000))
       );
       assertCurrent(session);
       session.ready = true;
@@ -505,7 +507,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       const displayed = subtitleRenderer.showSubtitle(
         message.segmentId,
         message.text,
-        resolveSubtitleDisplayDurationMs(message.startMs, message.endMs)
+        resolveSubtitleDisplayDurationMs(message.startMs, message.endMs),
+        message.generation
       );
       emitDiagnostic('firefox_ws', 'subtitle_event_rendered', {
         sessionRef: diagnosticSessionRef(session.sessionId),

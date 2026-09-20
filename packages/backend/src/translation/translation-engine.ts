@@ -1,13 +1,12 @@
 import { ContextManager } from './context-manager.js';
 import { SentenceCompletionGuard } from './completion-guard.js';
-import { emitDiagnostic } from '@vietdub/shared';
+import { TranslationProvider } from './types.js';
 
 export interface TranslationOptions {
   preserveNumbers?: boolean;
   contextManager?: ContextManager;
   speakerTone?: 'natural' | 'formal' | 'casual';
 }
-
 export interface TranslationResult {
   sourceText: string;
   translatedText: string;
@@ -133,17 +132,8 @@ export class TranslationEngine {
     if (text.length > this.config.maxTranslationCharacters) {
       throw new Error(`Translation provider returned more than ${this.config.maxTranslationCharacters} characters`);
     }
-
-    // 2. Check if LLM API is available in environment
-    if (process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY) {
-      try {
-        // Không tự gọi provider trong P0; đây chỉ là điểm mở rộng đã được ghi rõ.
-        emitDiagnostic('translation', 'llm_provider_not_implemented', { sourceLength: trimmed.length });
-        const llmResult = await this.callLLM(trimmed);
-        if (llmResult) return llmResult;
-      } catch (err) {
-        console.warn('[TranslationEngine] LLM call failed, falling back to rule engine:', err);
-      }
+    if (/^\s*(?:here(?:'s| is)|giải thích|explanation)\b/i.test(text)) {
+      throw new Error('Translation provider returned commentary instead of a translation');
     }
     if (this.config.validateVietnamese && !this.looksVietnamese(text) && /[a-z]/i.test(sourceText)) {
       throw new Error('Translation provider returned text that does not appear to be Vietnamese');
@@ -151,60 +141,14 @@ export class TranslationEngine {
     return text;
   }
 
-  private async callLLM(sourceText: string): Promise<string | null> {
-    // LLM caller with the 7 strict rules injected into system prompt
-    const contextPrompt = this.contextManager.formatContextPrompt();
-    const terminology = JSON.stringify(this.contextManager.getTerminology());
-
-    const systemPrompt = `Bạn là chuyên gia biên dịch thuyết minh video từ tiếng Anh sang tiếng Việt.
-Tuân thủ 7 quy tắc bắt buộc:
-1. Dịch theo ý nghĩa của toàn câu, văn phong nói tự nhiên của người Việt.
-2. Giữ nguyên số liệu, ngày tháng, tên riêng, thuật ngữ chuyên môn.
-3. Không dịch máy từng từ, không giữ cấu trúc ngữ pháp tiếng Anh rập khuôn.
-4. Tuyệt đối không tự ý bổ sung nội dung hay bỏ bớt ý.
-5. Giữ nhất quán thuật ngữ theo bảng thuật ngữ sau: ${terminology}
-6. Văn phong phù hợp cho thuyết minh giọng đọc tự nhiên.
-${contextPrompt ? `Ngữ cảnh các câu trước đó:\n${contextPrompt}` : ''}
-Chỉ trả về câu dịch tiếng Việt duy nhất, không giải thích gì thêm.`;
-
-    // Stub có chủ đích: không gửi text hoặc phát sinh chi phí API trong P0.
-    void sourceText;
-    return null;
-  }
-
-  private ruleBasedTranslate(text: string): string {
-    let result = text;
-
-    // Apply terminology map
-    const terms = this.contextManager.getTerminology();
-    for (const [enTerm, viTerm] of Object.entries(terms)) {
-      const regex = new RegExp(`\\b${enTerm}\\b`, 'gi');
-      result = result.replace(regex, viTerm);
-    }
-
-    // Common phrase replacements for natural speech
-    const phraseMap: Array<[RegExp, string]> = [
-      [/\bwelcome back to\b/gi, 'Chào mừng các bạn quay trở lại với'],
-      [/\bin this video, we will\b/gi, 'Trong video này, chúng ta sẽ'],
-      [/\bfirst of all\b/gi, 'Trước hết'],
-      [/\bas you can see\b/gi, 'Như bạn có thể thấy'],
-      [/\bfor example\b/gi, 'Ví dụ như'],
-      [/\bon the other hand\b/gi, 'Mặt khác'],
-      [/\bin conclusion\b/gi, 'Tóm lại là'],
-      [/\bthank you for watching\b/gi, 'Cảm ơn các bạn đã theo dõi'],
-      [/\bdon't forget to like and subscribe\b/gi, 'Đừng quên bấm thích và đăng ký kênh nhé'],
-      [/\bhow are you doing\b/gi, 'Bạn cảm thấy thế nào'],
-      [/\bwhat is going on\b/gi, 'Chuyện gì đang xảy ra vậy'],
-      [/\bthis is a test\b/gi, 'Đây là một bài kiểm tra'],
-      [/\bwe are looking at\b/gi, 'Chúng ta đang xem xét'],
-      [/\bthe main reason is\b/gi, 'Lý do chính là']
-    ];
-
-    for (const [pattern, vi] of phraseMap) {
-      result = result.replace(pattern, vi);
-    }
-
-    return result;
+  private looksVietnamese(text: string): boolean {
+    if (/[À-ỹĐđ]/.test(text)) return true;
+    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+    const commonWords = new Set([
+      'và', 'của', 'là', 'trong', 'một', 'những', 'các', 'cho', 'được', 'với',
+      'không', 'này', 'đó', 'chúng', 'ta', 'bạn', 'sẽ', 'theo', 'khi', 'từ'
+    ]);
+    return words.filter(word => commonWords.has(word)).length >= 2;
   }
 
   reset(): void {

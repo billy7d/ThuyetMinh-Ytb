@@ -19,20 +19,16 @@ import { CostTracker, BudgetConfig } from '../cost/cost-tracker.js';
 export interface PipelineCallbacks {
   sendMessage: (msg: ServerMessage) => void;
 }
-
 export class RealtimePipeline {
   private generation = 1;
   private segmentCounter = 0;
   private sttStreamToken = 0;
   private readonly processedFinalKeys = new Set<string>();
   private sttSession: STTStreamSession | null = null;
-  private translationEngine: TranslationEngine;
-  private ttsEngine: TTSProvider;
-  private costTracker: CostTracker;
-  private callbacks: PipelineCallbacks;
+  private isActive = false;
+  private mode: OperationMode;
+  private readonly costTracker: CostTracker;
   private readonly sessionRef: string;
-
-  private isActive: boolean = false;
 
   constructor(
     private readonly sessionId: string,
@@ -44,23 +40,15 @@ export class RealtimePipeline {
     budgetConfig: Partial<BudgetConfig> = {}
   ) {
     this.mode = mode;
-    this.sttProvider = sttProvider;
-    this.translationEngine = translationEngine;
-    this.ttsEngine = ttsEngine;
-    this.callbacks = callbacks;
+    this.costTracker = new CostTracker(sessionId, budgetConfig);
     this.sessionRef = diagnosticSessionRef(sessionId);
-    this.costTracker = new CostTracker(sessionId);
   }
 
   start(): void {
     if (this.isActive) return;
     this.isActive = true;
     emitDiagnostic('pipeline', 'started', { sessionRef: this.sessionRef, mode: this.mode });
-    this.sttSession = this.sttProvider.createStream(this.sessionId, {
-      onInterim: (text, startMs, endMs) => this.handleInterimTranscript(text, startMs, endMs),
-      onFinal: (text, startMs, endMs) => this.handleFinalTranscript(text, startMs, endMs),
-      onError: (err) => this.handleError('STT_ERROR', err.message, false)
-    });
+    this.openSttStream();
   }
 
   handleAudioChunk(pcmData: Buffer, videoTimeMs: number): void {
@@ -71,11 +59,14 @@ export class RealtimePipeline {
       emitDiagnostic('pipeline', 'audio_forwarded_to_stt', {
         sessionRef: this.sessionRef,
         pcmBytes: pcmData.length,
-        timestampMs
+        videoTimeMs
       });
-      this.sttSession.sendAudioChunk(pcmData, timestampMs);
-    } catch (err: any) {
-      this.handleError('AUDIO_CHUNK_ERROR', err.message, false);
+      this.sttSession.sendAudioChunk(pcmData, videoTimeMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fatal = /budget|rate limit|buffer exceeded/i.test(message);
+      this.handleError(fatal ? 'BUDGET_OR_RATE_LIMIT' : 'AUDIO_CHUNK_ERROR', message, fatal);
+      if (fatal) this.stop();
     }
   }
 
@@ -114,6 +105,11 @@ export class RealtimePipeline {
       endMs: result.endMs
     };
     this.callbacks.sendMessage(msg);
+    emitDiagnostic('pipeline', 'transcript_interim_emitted', {
+      sessionRef: this.sessionRef,
+      segmentId,
+      sourceLength: result.text.length
+    });
   }
 
   private async handleFinalTranscript(result: STTResult, streamToken: number): Promise<void> {
@@ -136,12 +132,6 @@ export class RealtimePipeline {
     const pipelineStartedAt = Date.now();
     const sttLatencyMs = 0;
 
-    if (!this.isActive) {
-      emitDiagnostic('pipeline', 'transcript_ignored_after_stop', { sessionRef: this.sessionRef, generation: currentGen });
-      return;
-    }
-
-    // 1. Send final transcript
     const transFinalMsg: TranscriptFinalMessage = {
       type: 'TRANSCRIPT_FINAL',
       sessionId: this.sessionId,
@@ -155,19 +145,16 @@ export class RealtimePipeline {
     emitDiagnostic('pipeline', 'transcript_final_emitted', {
       sessionRef: this.sessionRef,
       segmentId,
-      generation: currentGen,
-      startMs,
-      endMs,
+      generation: currentGeneration,
+      startMs: result.startMs,
+      endMs: result.endMs,
       sourceLength: sourceText.length
     });
 
-    // 2. Translate with context awareness
-    const transStartTime = Date.now();
-    const transResult = await this.translationEngine.translate(sourceText, startMs, endMs);
-    const transEndTime = Date.now();
-    const translationDurationMs = transEndTime - transStartTime;
+    const translationStartedAt = Date.now();
+    const transResult = await this.translationEngine.translate(sourceText, result.startMs, result.endMs);
+    const translationDurationMs = Date.now() - translationStartedAt;
 
-    // If buffered (incomplete thought), wait for completion
     if (transResult.buffered || !transResult.translatedText) {
       emitDiagnostic('pipeline', 'translation_buffered', {
         sessionRef: this.sessionRef,
@@ -176,27 +163,24 @@ export class RealtimePipeline {
       });
       return;
     }
-
-    if (!this.isActive || streamToken !== this.sttStreamToken || currentGeneration !== this.generation) return;
-    if (transResult.buffered || !transResult.translatedText) return;
-    this.costTracker.recordTranslation(sourceText.length);
-
-    // If generation changed during translation (due to seek), discard
-    if (currentGen !== this.generation) {
+    if (currentGeneration !== this.generation) {
       emitDiagnostic('pipeline', 'translation_discarded_generation', {
         sessionRef: this.sessionRef,
         segmentId,
-        generation: currentGen,
+        generation: currentGeneration,
         currentGeneration: this.generation
       });
       return;
     }
-    if (!this.isActive) {
-      emitDiagnostic('pipeline', 'translation_discarded_after_stop', { sessionRef: this.sessionRef, segmentId });
+    if (!this.isActive || streamToken !== this.sttStreamToken) {
+      emitDiagnostic('pipeline', 'translation_discarded_after_stop', {
+        sessionRef: this.sessionRef,
+        segmentId
+      });
       return;
     }
+    this.costTracker.recordTranslation(sourceText.length);
 
-    // 3. Send translation ready
     const transReadyMsg: TranslationReadyMessage = {
       type: 'TRANSLATION_READY',
       sessionId: this.sessionId,
@@ -212,7 +196,7 @@ export class RealtimePipeline {
     emitDiagnostic('pipeline', 'translation_ready_emitted', {
       sessionRef: this.sessionRef,
       segmentId,
-      generation: currentGen,
+      generation: currentGeneration,
       translatedLength: transResult.translatedText.length
     });
 
@@ -228,22 +212,21 @@ export class RealtimePipeline {
         generation: currentGeneration,
         action: 'show'
       };
-      this.callbacks.sendMessage(subMsg);
+      this.callbacks.sendMessage(subtitle);
       emitDiagnostic('pipeline', 'subtitle_event_emitted', {
         sessionRef: this.sessionRef,
         segmentId,
-        generation: currentGen,
+        generation: currentGeneration,
         textLength: transResult.translatedText.length,
-        startMs,
-        endMs
+        startMs: result.startMs,
+        endMs: result.endMs
       });
     }
 
     let ttsLatencyMs = 0;
     if (this.mode === 'dubbing_only' || this.mode === 'dubbing_and_subtitle') {
-      const ttsStartTime = Date.now();
-      const ttsRes = await this.ttsEngine.synthesize({
-        sessionId: this.sessionId,
+      const ttsStartedAt = Date.now();
+      const ttsResult = await this.ttsEngine.synthesize({
         segmentId,
         text: transResult.translatedText,
         generation: currentGeneration,
@@ -274,25 +257,23 @@ export class RealtimePipeline {
         emitDiagnostic('pipeline', 'tts_chunk_emitted', {
           sessionRef: this.sessionRef,
           segmentId,
-          generation: currentGen,
-          audioBytesApprox: Math.floor((ttsRes.audioBase64.length * 3) / 4),
-          durationMs: ttsRes.durationMs,
+          generation: currentGeneration,
+          audioBytesApprox: Math.floor((ttsResult.audioBase64.length * 3) / 4),
+          durationMs: ttsResult.durationMs,
           textLength: transResult.translatedText.length
         });
       } else {
         emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
           sessionRef: this.sessionRef,
           segmentId,
-          generation: currentGen,
-          cancelled: ttsRes.cancelled,
-          hasAudio: Boolean(ttsRes.audioBase64)
+          generation: currentGeneration,
+          cancelled: ttsResult.cancelled,
+          hasAudio: Boolean(ttsResult.audioBase64)
         });
       }
     }
 
-    // 6. Record and send latency breakdown
-    const totalPipelineMs = Date.now() - sttEndTime;
-    const latencyMsg: LatencyMetricMessage = {
+    const latency: LatencyMetricMessage = {
       type: 'LATENCY_METRIC',
       sessionId: this.sessionId,
       timestamp: Date.now(),
@@ -312,10 +293,12 @@ export class RealtimePipeline {
     this.processedFinalKeys.clear();
     this.ttsEngine.cancelGeneration(previousGeneration);
     this.translationEngine.reset();
+    this.sttStreamToken++;
+    this.sttSession?.endStream();
+    this.sttSession = null;
+    this.openSttStream();
     emitDiagnostic('pipeline', 'generation_changed', {
       sessionRef: this.sessionRef,
-      fromMs,
-      toMs,
       generation: this.generation
     });
   }
@@ -341,7 +324,12 @@ export class RealtimePipeline {
   }
 
   private handleError(code: string, message: string, fatal: boolean): void {
-    emitDiagnostic('pipeline', 'error', { sessionRef: this.sessionRef, code, fatal, messageLength: message.length });
+    emitDiagnostic('pipeline', 'error', {
+      sessionRef: this.sessionRef,
+      code,
+      fatal,
+      messageLength: message.length
+    });
     const errorMsg: ErrorMessage = {
       type: 'ERROR',
       sessionId: this.sessionId,
@@ -357,9 +345,12 @@ export class RealtimePipeline {
     if (!this.isActive) return;
     this.isActive = false;
     emitDiagnostic('pipeline', 'stopped', { sessionRef: this.sessionRef });
-    if (this.sttSession) {
-      this.sttSession.endStream();
-      this.sttSession = null;
-    }
+    this.generation++;
+    this.sttStreamToken++;
+    this.ttsEngine.cancelGeneration(this.generation - 1);
+    this.translationEngine.reset();
+    this.processedFinalKeys.clear();
+    this.sttSession?.endStream();
+    this.sttSession = null;
   }
 }

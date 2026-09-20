@@ -2,7 +2,6 @@ import { emitDiagnostic } from '@vietdub/shared';
 
 export const MIN_SUBTITLE_DISPLAY_DURATION_MS = 1500;
 
-/** Bảo đảm subtitle không biến mất quá nhanh khi backend chỉ trả về boundary ngắn. */
 export function resolveSubtitleDisplayDurationMs(
   startMs: number,
   endMs: number,
@@ -43,7 +42,6 @@ export class SubtitleRenderer {
 
   private createOverlay(): void {
     if (!this.targetVideo) return;
-
     this.containerEl = document.createElement('div');
     this.containerEl.id = 'vietdub-subtitle-container';
     this.containerEl.style.cssText = `
@@ -81,23 +79,31 @@ export class SubtitleRenderer {
     this.mountOverlay();
   }
 
-  showSubtitle(segmentId: string, text: string, durationMs: number = 4000): boolean {
-    if (!this.textEl || !this.config.visible) {
+  private mountOverlay(): void {
+    if (!this.targetVideo || !this.containerEl) return;
+    const fullscreenElement = document.fullscreenElement;
+    const parent = fullscreenElement && fullscreenElement.contains(this.targetVideo)
+      ? fullscreenElement
+      : this.targetVideo.parentElement;
+    if (!parent) return;
+    if (getComputedStyle(parent).position === 'static') {
+      (parent as HTMLElement).style.position = 'relative';
+    }
+    if (this.containerEl.parentElement !== parent) parent.appendChild(this.containerEl);
+    this.containerEl.style.bottom = fullscreenElement ? '8%' : '40px';
+  }
+
+  showSubtitle(segmentId: string, text: string, durationMs = 4000, generation = 0): boolean {
+    if (!this.textEl || !this.config.visible || generation < this.currentGeneration) {
       emitDiagnostic('subtitle_renderer', 'display_skipped', {
         hasTextElement: Boolean(this.textEl),
         visible: this.config.visible,
+        generation,
+        currentGeneration: this.currentGeneration,
         textLength: text.length
       });
       return false;
     }
-
-  showSubtitle(
-    segmentId: string,
-    text: string,
-    durationMs = 4000,
-    generation = 0
-  ): void {
-    if (!this.textEl || !this.config.visible || generation < this.currentGeneration) return;
     this.currentGeneration = generation;
     this.currentSegmentId = segmentId;
     this.textEl.textContent = text;
@@ -105,48 +111,24 @@ export class SubtitleRenderer {
     if (this.hideTimeout) clearTimeout(this.hideTimeout);
     this.hideTimeout = setTimeout(
       () => this.hideSubtitle(segmentId),
-      Math.max(700, Math.min(10000, durationMs))
+      Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, Math.min(10000, durationMs))
     );
-  }
-
-    this.hideTimeout = setTimeout(() => {
-      this.hideSubtitle(segmentId);
-    }, Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs));
     emitDiagnostic('subtitle_renderer', 'displayed', {
       textLength: text.length,
-      durationMs: Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs)
+      durationMs: Math.max(MIN_SUBTITLE_DISPLAY_DURATION_MS, durationMs),
+      generation
     });
     return true;
   }
 
+  invalidateGeneration(generation: number): void {
+    if (generation < this.currentGeneration) return;
+    this.currentGeneration = generation;
+    this.hideSubtitle();
+  }
+
   hideSubtitle(segmentId?: string): void {
     if (segmentId && this.currentSegmentId !== segmentId) return;
-    if (this.hideTimeout) {
-      clearTimeout(this.hideTimeout);
-      this.hideTimeout = null;
-    }
-    if (this.textEl) {
-      this.textEl.style.display = 'none';
-      this.textEl.textContent = '';
-    }
-    this.currentSegmentId = null;
-  }
-
-  setFontSize(sizePx: number): void {
-    this.config.fontSizePx = Math.max(14, Math.min(48, sizePx));
-    if (this.textEl) {
-      this.textEl.style.fontSize = `${this.config.fontSizePx}px`;
-    }
-  }
-
-  setVisible(visible: boolean): void {
-    this.config.visible = visible;
-    if (!visible) {
-      this.hideSubtitle();
-    }
-  }
-
-  detach(): void {
     if (this.hideTimeout) {
       clearTimeout(this.hideTimeout);
       this.hideTimeout = null;

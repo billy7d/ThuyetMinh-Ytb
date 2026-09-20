@@ -12,8 +12,7 @@ export class PCMProcessor {
   private onChunk: PCMChunkHandler;
   private targetSampleRate: number;
   private bufferSize: number;
-  private readonly getTimestampMs: () => number;
-  private readonly silentGain: GainNode;
+  private readonly getVideoTimeMs?: () => number;
   private sequence = 0;
 
   private accumulatedSamples: Float32Array[] = [];
@@ -28,7 +27,8 @@ export class PCMProcessor {
     onChunk: PCMChunkHandler,
     targetSampleRate = 16000,
     bufferSize = 4096,
-    sessionId?: string
+    sessionId?: string,
+    getVideoTimeMs?: () => number
   ) {
     this.audioCtx = audioCtx;
     this.inputNode = inputNode;
@@ -36,6 +36,7 @@ export class PCMProcessor {
     this.targetSampleRate = targetSampleRate;
     this.bufferSize = bufferSize;
     this.sessionId = sessionId;
+    this.getVideoTimeMs = getVideoTimeMs;
     // 250ms chunk = 0.25 * targetSampleRate (e.g. 4000 samples) -> 4 chunks/sec
     this.targetChunkSamples = Math.round(targetSampleRate * 0.25);
 
@@ -78,8 +79,17 @@ export class PCMProcessor {
         const pcm16 = this.floatTo16BitPCM(chunk);
         const base64 = this.arrayBufferToBase64(pcm16.buffer);
         // Timestamp tính theo số mẫu đã phát ra để nhiều chunk trong một callback vẫn tăng đều.
-        const timestampMs = Math.round((this.emittedSamples / this.targetSampleRate) * 1000);
+        const audioTimelineTimestampMs = Math.round((this.emittedSamples / this.targetSampleRate) * 1000);
         this.emittedSamples += chunk.length;
+        let timestampMs = audioTimelineTimestampMs;
+        if (this.getVideoTimeMs) {
+          try {
+            const videoTimeMs = this.getVideoTimeMs();
+            if (Number.isFinite(videoTimeMs)) timestampMs = Math.max(0, Math.round(videoTimeMs));
+          } catch {
+            // Keep the local PCM timeline if the video element is being replaced.
+          }
+        }
         const stats = calculateFloatPcmStats(chunk);
         emitDiagnostic('pcm', 'chunk_emitted', {
           sessionRef: diagnosticSessionRef(this.sessionId),
@@ -89,7 +99,8 @@ export class PCMProcessor {
           peak: Math.round(stats.peak * 10000) / 10000,
           nonZeroSamples: stats.nonZeroSamples,
           hasSignal: stats.rms >= 0.015,
-          timestampMs
+          timestampMs,
+          audioTimelineTimestampMs
         });
         try {
           this.onChunk(base64, timestampMs);

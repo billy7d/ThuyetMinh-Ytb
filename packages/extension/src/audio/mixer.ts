@@ -23,6 +23,7 @@ export class AudioMixer {
   private readonly ttsGainNode: GainNode;
   private readonly sttTapNode: GainNode;
   private readonly ttsSources = new Set<AudioBufferSourceNode>();
+  private nextTTSStartTime = 0;
   private disconnected = false;
 
   private config: AudioMixerConfig = {
@@ -118,7 +119,9 @@ export class AudioMixer {
     source.connect(this.ttsGainNode);
     this.ttsSources.add(source);
     source.onended = () => this.ttsSources.delete(source);
-    source.start();
+    const startAt = Math.max(this.audioCtx.currentTime, this.nextTTSStartTime);
+    source.start(startAt);
+    this.nextTTSStartTime = startAt + audioBuffer.duration;
     return source;
   }
 

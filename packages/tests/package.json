@@ -18,7 +18,7 @@
     "test:e2e:chrome": "playwright test --project=chromium",
     "pretest:e2e:firefox": "npm run build -w @vietdub/backend",
     "test:e2e:firefox": "playwright test --project=firefox",
-    "benchmark": "tsx benchmarks/run-benchmarks.ts",
+    "benchmark": "tsx src/benchmarks/run-benchmarks.ts",
     "build": "tsc -b"
   },
   "dependencies": {

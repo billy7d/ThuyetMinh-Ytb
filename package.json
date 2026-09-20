@@ -7,7 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present && node scripts/validate-extension-build.mjs --target all",
+    "build": "npm run build -w @vietdub/shared && npm run build -w @vietdub/backend && npm run build -w @vietdub/extension && npm run build -w @vietdub/tests && node scripts/validate-extension-build.mjs --target all",
+    "typecheck": "npm run build -w @vietdub/shared && npm run typecheck -w @vietdub/extension && npm run build -w @vietdub/backend && npm run build -w @vietdub/tests",
     "validate:build": "node scripts/validate-extension-build.mjs --target all",
     "build:chrome": "npm run build:chrome -w @vietdub/extension && node scripts/validate-extension-build.mjs --target chrome",
     "build:firefox": "npm run build:firefox -w @vietdub/extension && node scripts/validate-extension-build.mjs --target firefox",
