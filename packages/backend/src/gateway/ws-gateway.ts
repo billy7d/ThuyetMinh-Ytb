@@ -169,6 +169,7 @@ export class WebSocketGateway {
             sessionRef: diagnosticSessionRef(msg.sessionId),
             sequence: msg.sequence,
             videoTimeMs: msg.videoTimeMs,
+            audioTimeMs: msg.audioTimeMs,
             pcmBytes: pcmBuffer.length,
             sampleCount: stats.sampleCount,
             rms: Math.round(stats.rms * 10000) / 10000,

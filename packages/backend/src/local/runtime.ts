@@ -29,15 +29,15 @@ export function createLocalRuntime(
   const modelManager = new LocalModelManager(manifestPath, modelRoot);
 
   const workerOptions = {
-    startupTimeoutMs: positiveInt(env.LOCAL_WORKER_STARTUP_TIMEOUT_MS, 15_000),
-    requestTimeoutMs: positiveInt(env.LOCAL_WORKER_REQUEST_TIMEOUT_MS, 30_000),
+    startupTimeoutMs: positiveInt(env.LOCAL_WORKER_STARTUP_TIMEOUT_MS, 90_000),
+    requestTimeoutMs: positiveInt(env.LOCAL_WORKER_REQUEST_TIMEOUT_MS, 90_000),
     maxQueueSize: positiveInt(env.LOCAL_WORKER_MAX_QUEUE, 32),
     maxFrameBytes: positiveInt(env.LOCAL_WORKER_MAX_FRAME_BYTES, 2 * 1024 * 1024)
   };
 
-  const sttWorker = createWorker('stt', env, workerOptions);
-  const translationWorker = createWorker('translation', env, workerOptions);
-  const ttsWorker = createWorker('tts', env, workerOptions);
+  const sttWorker = createWorker('stt', env, workerOptions, cwd);
+  const translationWorker = createWorker('translation', env, workerOptions, cwd);
+  const ttsWorker = createWorker('tts', env, workerOptions, cwd);
 
   return {
     modelManager,
@@ -90,9 +90,9 @@ export function createLocalProviders(
     }),
     ttsProvider: new LocalVietnameseTTSProvider(runtime.ttsWorker, {
       modelPath: modelManager.getModelPath('tts'),
-      timeoutMs: positiveInt(env.LOCAL_TTS_TIMEOUT_MS, 30_000),
+      timeoutMs: positiveInt(env.LOCAL_TTS_TIMEOUT_MS, 90_000),
       maxConcurrentRequests: positiveInt(env.LOCAL_TTS_MAX_CONCURRENT_REQUESTS, 2),
-      sampleRate: positiveInt(env.LOCAL_TTS_SAMPLE_RATE, 24_000)
+      sampleRate: positiveInt(env.LOCAL_TTS_SAMPLE_RATE, 48_000)
     })
   };
 }
@@ -105,7 +105,8 @@ function createWorker(
     requestTimeoutMs: number;
     maxQueueSize: number;
     maxFrameBytes: number;
-  }
+  },
+  cwd: string
 ): LocalWorkerClientLike {
   const prefix = `LOCAL_${component.toUpperCase()}_WORKER`;
   const command = env[`${prefix}_COMMAND`]?.trim();
@@ -113,7 +114,8 @@ function createWorker(
   const args = parseArgs(env[`${prefix}_ARGS`], prefix);
   return new JsonLineWorkerClient({
     name: `Local ${component.toUpperCase()}`,
-    command: { command, args },
+    // Chuẩn hóa working directory để đường dẫn tương đối tính từ root repository.
+    command: { command, args, cwd },
     ...limits
   });
 }

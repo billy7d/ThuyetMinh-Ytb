@@ -175,6 +175,14 @@ const runtime: SessionRuntime = {
     await ensureOffscreenDocument();
     const streamId = await getTabCaptureStreamId(request.tabId, signal);
     throwIfAborted(signal);
+    let initialVideoState: VideoPlaybackState | undefined;
+    try {
+      // Lấy mốc video sau khi Chrome đã cấp capture stream để giữ nguyên user gesture.
+      initialVideoState = (await pingContentScript(request.tabId)).videoState;
+    } catch {
+      // Các timeupdate tiếp theo sẽ cập nhật lại đồng hồ nếu trang vừa điều hướng.
+    }
+    throwIfAborted(signal);
     const response = await sendOffscreen<RuntimeResponse>({
       target: 'offscreen',
       type: 'START_CAPTURE',
@@ -182,7 +190,8 @@ const runtime: SessionRuntime = {
       sessionId: request.sessionId,
       mode: request.mode,
       mixerConfig: request.mixerConfig,
-      wsUrl: request.wsUrl
+      wsUrl: request.wsUrl,
+      initialVideoState
     });
     if (!response?.success) {
       throw new SessionRuntimeError(

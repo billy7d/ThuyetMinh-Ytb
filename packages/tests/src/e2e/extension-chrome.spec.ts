@@ -162,6 +162,24 @@ test.describe('Chrome extension E2E — artifact thật', () => {
   test('content script nhận SUBTITLE_EVENT thật và renderer hiển thị overlay', async () => {
     const popupPage = await openPopupPage();
     try {
+      await videoPage.evaluate(() => {
+        const video = document.querySelector<HTMLVideoElement>('video');
+        if (!video) throw new Error('Không tìm thấy video fixture để dựng DOM kiểu YouTube.');
+
+        // Mô phỏng player YouTube: video absolute nằm trong wrapper trực tiếp cao 0px.
+        const player = document.createElement('div');
+        player.id = 'movie_player';
+        player.style.cssText = 'position:relative;width:640px;height:360px;overflow:hidden;';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'html5-video-container';
+        wrapper.style.cssText = 'position:absolute;inset:0;height:0;';
+        video.style.cssText = 'position:absolute;inset:0;width:640px;height:360px;';
+        video.parentElement?.insertBefore(player, video);
+        player.appendChild(wrapper);
+        wrapper.appendChild(video);
+        window.dispatchEvent(new Event('yt-navigate-finish'));
+      });
+
       const tabId = await getActiveTabId(popupPage);
       const response = await popupPage.evaluate((request) => new Promise<any>((resolve, reject) => {
         chrome.tabs.sendMessage(request.tabId, request.message, (result) => {
@@ -208,6 +226,9 @@ test.describe('Chrome extension E2E — artifact thật', () => {
           containerHeight: containerRect.height
         };
       });
+      const overlayParent = await videoPage.locator('#vietdub-subtitle-container').evaluate(
+        element => element.parentElement?.id
+      );
       expect(geometry).toMatchObject({
         containerDisplay: 'flex',
         containerPosition: 'absolute',
@@ -217,6 +238,7 @@ test.describe('Chrome extension E2E — artifact thật', () => {
         textOpacity: '1',
         overlapsVideo: true
       });
+      expect(overlayParent).toBe('movie_player');
       expect(geometry.containerWidth).toBeGreaterThan(0);
       expect(geometry.containerHeight).toBeGreaterThan(0);
 

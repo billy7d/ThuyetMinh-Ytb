@@ -78,6 +78,7 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
   private readonly maxQueueSize: number;
   private readonly maxFrameBytes: number;
   private child: ChildProcessWithoutNullStreams | null = null;
+  private startupTimer: NodeJS.Timeout | null = null;
   private stdoutBuffer = '';
   private readyPromise: Promise<void> | null = null;
   private readyResolve: (() => void) | null = null;
@@ -173,6 +174,7 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     if (this.closed) return;
     this.closed = true;
     this.state = 'closed';
+    this.clearStartupTimer();
     const child = this.child;
     this.child = null;
     this.readyReject?.(new Error(`${this.name} worker closed`));
@@ -208,7 +210,8 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
       });
       this.child = child;
 
-      const startupTimer = setTimeout(() => {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null;
         this.failWorker(new Error(`${this.name} worker did not become ready within ${this.startupTimeoutMs}ms`));
       }, this.startupTimeoutMs);
 
@@ -217,11 +220,11 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', () => {});
       child.once('error', error => {
-        clearTimeout(startupTimer);
+        this.clearStartupTimer();
         this.failWorker(new Error(`${this.name} worker failed to start: ${error.message}`));
       });
       child.once('exit', (code, signal) => {
-        clearTimeout(startupTimer);
+        this.clearStartupTimer();
         // Worker stderr is deliberately not returned to the browser/health
         // endpoint because it may contain model paths or user data.
         this.failWorker(new Error(`${this.name} worker exited with ${signal || `code ${code}`}`));
@@ -269,6 +272,7 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     }
 
     if (response.event === 'ready') {
+      this.clearStartupTimer();
       this.readyResolve?.();
       this.readyResolve = null;
       this.readyReject = null;
@@ -309,6 +313,9 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
   }
 
   private failWorker(error: Error): void {
+    this.clearStartupTimer();
+    // Giữ lỗi khởi phát đầu tiên; sự kiện thoát sau SIGTERM chỉ là hệ quả của việc dừng worker.
+    if (this.state === 'error') return;
     if (!this.closed) {
       this.state = 'error';
       this.lastError = error.message;
@@ -323,6 +330,12 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     if (child && !child.killed) {
       try { child.kill('SIGTERM'); } catch {}
     }
+  }
+
+  private clearStartupTimer(): void {
+    if (!this.startupTimer) return;
+    clearTimeout(this.startupTimer);
+    this.startupTimer = null;
   }
 }
 

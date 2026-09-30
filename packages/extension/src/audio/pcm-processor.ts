@@ -1,7 +1,7 @@
 import { calculateFloatPcmStats, diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
 export interface PCMChunkHandler {
-  (pcmBase64: string, timestampMs: number): void;
+  (pcmBase64: string, timestampMs: number, audioTimeMs: number): void;
 }
 
 export class PCMProcessor {
@@ -103,7 +103,7 @@ export class PCMProcessor {
           audioTimelineTimestampMs
         });
         try {
-          this.onChunk(base64, timestampMs);
+          this.onChunk(base64, timestampMs, audioTimelineTimestampMs);
         } catch (error) {
           console.error('[PCMProcessor] chunk handler failed', JSON.stringify({ code: 'PCM_CHUNK_HANDLER_FAILED', message: String(error) }));
         }

@@ -20,12 +20,14 @@ export interface PipelineCallbacks {
   sendMessage: (msg: ServerMessage) => void;
 }
 export class RealtimePipeline {
-  private static readonly MAX_PENDING_FINALS = 8;
+  // Whisper cục bộ đôi khi trả nhiều câu trong một đợt; giữ bộ đệm hữu hạn đủ lớn để hấp thụ đợt trả kết quả đó.
+  private static readonly MAX_PENDING_FINALS = 32;
   private generation = 1;
   private segmentCounter = 0;
   private sttStreamToken = 0;
   private readonly processedFinalKeys = new Set<string>();
-  private readonly finalQueue: Array<{ result: STTResult; streamToken: number }> = [];
+  // Ghi thời điểm vào hàng đợi để tách độ trễ chờ khỏi thời gian suy luận của model.
+  private readonly finalQueue: Array<{ result: STTResult; streamToken: number; enqueuedAtMs: number }> = [];
   private readonly audioEndWallClockByVideoMs = new Map<number, number>();
   private drainingFinalQueue = false;
   private sttSession: STTStreamSession | null = null;
@@ -103,20 +105,26 @@ export class RealtimePipeline {
     if (!sourceText) return;
     const dedupeKey = result.segmentId || `${result.startMs}:${result.endMs}:${sourceText}`;
     if (this.processedFinalKeys.has(dedupeKey)) return;
+    if (this.finalQueue.length >= RealtimePipeline.MAX_PENDING_FINALS) {
+      emitDiagnostic('pipeline', 'final_queue_overflow', {
+        sessionRef: this.sessionRef,
+        capacity: RealtimePipeline.MAX_PENDING_FINALS,
+        queuedFinals: this.finalQueue.length
+      });
+      this.handleError(
+        'PIPELINE_BACKPRESSURE',
+        `Bộ xử lý quá tải; đã bỏ qua câu chờ thứ ${RealtimePipeline.MAX_PENDING_FINALS + 1}.`,
+        false
+      );
+      return;
+    }
+    // Chỉ đánh dấu sau khi đã nhận vào hàng đợi để câu bị từ chối còn có thể được gửi lại.
     this.processedFinalKeys.add(dedupeKey);
     if (this.processedFinalKeys.size > 500) {
       const first = this.processedFinalKeys.values().next().value as string | undefined;
       if (first) this.processedFinalKeys.delete(first);
     }
-    if (this.finalQueue.length >= RealtimePipeline.MAX_PENDING_FINALS) {
-      this.handleError(
-        'PIPELINE_BACKPRESSURE',
-        `Bộ xử lý đang bận; đã bỏ qua câu chờ thứ ${RealtimePipeline.MAX_PENDING_FINALS + 1}.`,
-        false
-      );
-      return;
-    }
-    this.finalQueue.push({ result, streamToken });
+    this.finalQueue.push({ result, streamToken, enqueuedAtMs: Date.now() });
     void this.drainFinalQueue();
   }
 
@@ -128,7 +136,11 @@ export class RealtimePipeline {
         const item = this.finalQueue.shift();
         if (!item) continue;
         try {
-          await this.handleFinalTranscript(item.result, item.streamToken);
+          await this.handleFinalTranscript(
+            item.result,
+            item.streamToken,
+            Math.max(0, Date.now() - item.enqueuedAtMs)
+          );
         } catch (error) {
           if (this.isActive && item.streamToken === this.sttStreamToken) {
             this.handleError('PIPELINE_ERROR', error instanceof Error ? error.message : String(error), false);
@@ -161,7 +173,7 @@ export class RealtimePipeline {
     });
   }
 
-  private async handleFinalTranscript(result: STTResult, streamToken: number): Promise<void> {
+  private async handleFinalTranscript(result: STTResult, streamToken: number, queueWaitMs: number): Promise<void> {
     const sourceText = result.text.trim();
     if (!sourceText) return;
     const currentGeneration = this.generation;
@@ -322,6 +334,16 @@ export class RealtimePipeline {
       totalPipelineMs: Date.now() - pipelineStartedAt
     };
     this.callbacks.sendMessage(latency);
+    emitDiagnostic('pipeline', 'latency_metric', {
+      sessionRef: this.sessionRef,
+      segmentId,
+      sttMs: sttLatencyMs,
+      translationMs: translationDurationMs,
+      ttsMs: ttsLatencyMs,
+      totalPipelineMs: latency.totalPipelineMs,
+      queueWaitMs,
+      queuedFinals: this.finalQueue.length
+    });
   }
 
   handleSeek(_fromMs: number, _toMs: number): void {

@@ -174,7 +174,14 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
           hasVideo: !!video,
           videoTitle: document.title,
           currentTime: video?.currentTime || 0,
-          paused: video?.paused ?? true
+          paused: video?.paused ?? true,
+          videoState: video ? {
+            currentTime: video.currentTime,
+            duration: Number.isFinite(video.duration) ? video.duration : 0,
+            paused: video.paused,
+            playbackRate: video.playbackRate,
+            seeking: video.seeking
+          } : undefined
         });
         return false;
       }
@@ -315,7 +322,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       session.pcmProcessor = new PCMProcessor(
         session.audioCtx,
         session.audioMixer.getSTTTapNode(),
-        (pcmBase64, timestampMs) => {
+        (pcmBase64, timestampMs, audioTimeMs) => {
           if (firefoxSession !== session || session.cancelled || session.ws?.readyState !== WebSocket.OPEN) return;
           const message: ClientMessage = {
             type: 'AUDIO_CHUNK',
@@ -323,7 +330,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
             timestamp: Date.now(),
             sequence: session.sequence++,
             pcmBase64,
-            videoTimeMs: timestampMs
+            videoTimeMs: timestampMs,
+            audioTimeMs
           };
           try {
             session.ws?.send(JSON.stringify(message));

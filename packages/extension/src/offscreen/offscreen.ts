@@ -99,7 +99,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
       return false;
 
     case 'START_CAPTURE':
-      startCapture(msg.streamId, msg.sessionId, msg.mode, msg.mixerConfig, msg.wsUrl)
+      startCapture(msg.streamId, msg.sessionId, msg.mode, msg.mixerConfig, msg.wsUrl, msg.initialVideoState)
         .then(() => sendResponse({ success: true }))
         .catch((error) => {
           const code = error?.code || 'CHROME_START_FAILED';
@@ -141,7 +141,8 @@ async function startCapture(
   sessionId: string,
   mode: OperationMode = 'dubbing_and_subtitle',
   mixerConfig?: Partial<AudioMixerConfig>,
-  wsUrl = 'ws://localhost:8080'
+  wsUrl = 'ws://localhost:8080',
+  initialVideoState?: VideoPlaybackState
 ): Promise<void> {
   if (!streamId || !sessionId) throw runtimeError('INVALID_START_REQUEST', 'Thiếu streamId hoặc sessionId.');
   emitDiagnostic('chrome_capture', 'start_requested', {
@@ -167,7 +168,9 @@ async function startCapture(
     audioMixer: null,
     pcmProcessor: null,
     ws: null,
-    videoTimeMs: 0,
+    videoTimeMs: Number.isFinite(initialVideoState?.currentTime)
+      ? Math.max(0, Math.round(initialVideoState!.currentTime * 1000))
+      : 0,
     cleanupPromise: null
   };
   currentSession = session;
@@ -229,7 +232,7 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
     session.pcmProcessor = new PCMProcessor(
       session.audioCtx,
       session.audioMixer.getSTTTapNode(),
-      (pcmBase64, timestampMs) => {
+      (pcmBase64, timestampMs, audioTimeMs) => {
         if (!isCurrent(session) || !session.ws || session.ws.readyState !== WebSocket.OPEN) return;
         const message: ClientMessage = {
           type: 'AUDIO_CHUNK',
@@ -237,7 +240,8 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
           timestamp: Date.now(),
           sequence: session.sequence++,
           pcmBase64,
-          videoTimeMs: timestampMs
+          videoTimeMs: timestampMs,
+          audioTimeMs
         };
         try {
           session.ws.send(JSON.stringify(message));

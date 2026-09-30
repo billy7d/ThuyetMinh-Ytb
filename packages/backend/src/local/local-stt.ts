@@ -33,7 +33,7 @@ interface LocalSTTResponse {
  * streaming/utterance assembly; this adapter never sends audio to a network.
  */
 export class LocalStreamingSTTProvider implements STTProvider {
-  readonly name = 'LocalWhisperCppSTT';
+  readonly name = 'LocalFasterWhisperSTT';
   private readonly config: LocalSTTConfig;
 
   constructor(
@@ -97,6 +97,8 @@ class LocalSTTStreamSession implements STTStreamSession {
       const response = await this.worker.request<LocalSTTResponse>({
         op: 'audio_chunk',
         sessionId: this.sessionId,
+        // Worker xác minh đường dẫn model ở mọi request, không chỉ lúc mở stream.
+        modelPath: this.config.modelPath,
         pcmBase64: pcmData.toString('base64'),
         timestampMs,
         durationMs: Math.round((pcmData.length / 2 / this.config.sampleRate) * 1000),
@@ -118,7 +120,14 @@ class LocalSTTStreamSession implements STTStreamSession {
     this.chain = this.chain
       .then(async () => {
         if (this.reportedError) return;
-        await this.worker.request<void>({ op: 'end_stream', sessionId: this.sessionId });
+        const response = await this.worker.request<LocalSTTResponse>({
+          op: 'end_stream',
+          sessionId: this.sessionId,
+          // Giữ cùng model đã pin trong suốt vòng đời stream.
+          modelPath: this.config.modelPath
+        });
+        // Nhận nốt câu cuối nếu worker chỉ đủ điều kiện chốt utterance khi stream kết thúc.
+        for (const event of response.events ?? []) this.emitEvent(event);
       })
       .catch(error => this.reportError(error))
       .finally(() => { this.ended = true; });

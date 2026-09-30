@@ -13,3 +13,6 @@ test-results/
 # Local model weights/manifests are operator-owned and must not enter Git.
 models/*
 !models/manifest.example.json
+.venv/
+__pycache__/
+*.py[cod]

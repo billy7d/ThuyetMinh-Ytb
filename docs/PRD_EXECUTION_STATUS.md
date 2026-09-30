@@ -1,36 +1,86 @@
-# PRD Execution Status
+# PRD Execution Status — VietDub Local AI
 
-Ngày cập nhật: 2026-09-21
+Ngày cập nhật: 2026-09-24
 
-STATUS: BLOCKED / LOCAL BOUNDARY IMPLEMENTED, NOT VERIFIED
-BRANCH: fix/firefox-extension-reliability-p0 (PR #1 target; local integration branch is codex/vietdub-production-pipeline)
-HEAD_SHA: 0c608f3253329f111bd73ad5e0f69bae90f2bd16 (implementation merge pushed to PR #1 branch; this report is a follow-up documentation commit)
-PR_URL: https://github.com/billy7d/ThuyetMinh-Ytb/pull/1 — PR state/mergeability could not be queried because `gh` is not installed in this environment
-P0_ACCEPTANCE: BLOCKED — no local model/worker runtime, Firefox executable missing and no live hardware evidence
-P0_AND_PRODUCTION_ANCESTRY: PASS — merge commit 0c608f3 has parents a51f7f9 (local runtime) and f98d7ea (PR #1 P0 line)
-AI_DEFAULT_MODE: local; cloud adapters require AI_MODE=cloud, CLOUD_PROVIDERS_ENABLED=true and PAID_API_ALLOWED=true
-ZERO_COST_ENFORCEMENT: PASS in code/tests — local CostTracker reports 0 external API cost and the default factory never constructs cloud adapters
-LOCAL_STT: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL worker boundary; whisper.cpp is the documented candidate
-LOCAL_TRANSLATION: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL en→vi worker boundary; OPUS-MT candidate and license evidence recorded
-LOCAL_VIETNAMESE_TTS: IMPLEMENTED ADAPTER, NOT LIVE VERIFIED — bounded JSONL WAV boundary with parsed metadata; VieNeu candidate retained pending exact rights/revision
-MODEL_MANAGER: IMPLEMENTED, NOT READY — manifest schema, SHA-256/size/license verification and explicit-consent downloader are present; example manifest is intentionally unverified
-CHROME_BROWSER_E2E: BLOCKED — current P0 artifact harness cannot expose the unpacked MV3 service worker; an earlier 5/5 fixture smoke on the pre-merge base is not final local-model/YouTube evidence
-FIREFOX_BROWSER_E2E: BLOCKED — Playwright Firefox executable is not installed in this environment
-SUBTITLE_VISIBLE: NOT VERIFIED on real local-model browser session
-VIETNAMESE_VOICE_AUDIBLE: NOT VERIFIED on real local-model browser session
-AUDIO_RESTORATION: UNIT/LIFECYCLE CODE PRESENT, NOT VERIFIED by Chrome and Firefox operator actions
-SESSION_LIFECYCLE: IMPLEMENTED with bounded final queue, generation cancellation and backend-disconnect cleanup; real tab-close/navigation acceptance pending
-LATENCY_P50_P95: NOT MEASURED live; current STT event is only a bounded wall-clock diagnostic, provider-boundary evidence is required
-TRANSLATION_QUALITY: NOT MEASURED live; fixture output is not production evidence
-API_TEST_COST: 0 USD — no live cloud request was made
-SECURITY: loopback bind, origin/session/frame checks and no-cloud default implemented; production audit 0 vulnerabilities; full audit has 2 moderate Vitest dev advisories with a breaking fix
-TEST_RESULTS: npm run typecheck PASS; npm run build PASS including Chrome/Firefox artifact validators; npm test PASS (16 files, 53 tests); npm run benchmark PASS as 30-sample fixture-only output; current Chrome artifact E2E BLOCKED before tests because MV3 service worker is unavailable in the macOS harness; Firefox E2E BLOCKED by missing Playwright Firefox; health smoke PASS with safe 503; tracked-source secret scan PASS; git diff --check PASS; npm audit --omit=dev PASS
-CI_EXACT_HEAD: not verified from this environment
-EVIDENCE_PATHS: docs/LOCAL_RUNTIME.md, docs/MODEL_LICENSE_REPORT.md, docs/TEST_REPORT.md, docs/BROWSER_ACCEPTANCE_CHECKLIST.md, docs/audit/P0_REVIEW_FIX_REPORT.md, packages/tests/unit/local-runtime.test.ts, packages/tests/unit/provider-contract.test.ts
+STATUS: IN PROGRESS — PINNED MODELS INSTALLED; REAL WORKER AND LOCAL GATEWAY TESTS PASS; BROWSER ACCEPTANCE AND SOAK PENDING
+SOURCE_BRANCH: main
+SOURCE_BASE_SHA: 116d6dda2dbf226b87fe300fd8a9881e64abf223
+WORKTREE: DIRTY — local implementation and documentation changes are uncommitted
+COMMIT / PUSH / NEW_PR / MERGE: NOT_RUN
+
+## Audit máy đích
+
+- Registry đọc được: `ProductName=Windows 10 Pro`, `DisplayVersion=25H2`,
+  `CurrentBuild=26200`, x64 environment. Nhãn Windows và build/DisplayVersion
+  không khớp rõ ràng; giữ dữ liệu thô, không suy diễn. WMI/CIM bị từ chối trong
+  sandbox ở lượt audit này.
+- CPU Intel Core i5-9400F, 6C/6T, 2.90 GHz; NVIDIA GTX 1660 SUPER 6 GiB,
+  driver 591.86. RAM vật lý đọc được 17,122,738,176 bytes (~16 GiB).
+- Ổ C: còn 13,459,668,992 bytes (~12.54 GiB), ổ E: còn 336,242,540,544 bytes
+  (~313.2 GiB). Runtime, model, cache, profile browser và evidence đặt trên E:.
+- Node 24.18.0, npm 11.16.0, Python 3.11.9, FFmpeg build 2026-06-15. Chrome
+  file version 153.0.8010.54; lệnh mở Chrome để đọc version bị profile
+  ProcessSingleton/ACL chặn. Không tìm thấy Firefox ở các vị trí chuẩn đã dò.
+- Python 3.11.9 tại `E:\DevTools\Python311`, Node 24.18.0 tại `D:\nodeJS`,
+  FFmpeg tại `D:\ffmpeg-essentials_build`. Chrome stable file version
+  153.0.8010.54 đã mở với profile acceptance riêng; chưa nạp extension. Firefox
+  chưa cài và chưa có xác nhận cài.
+- Inference chọn CPU 6 threads; không dùng GTX 1660 SUPER. VieNeu chạy ONNX
+  fp32 vì i5-9400F không có VNNI. `pip check` còn cảnh báo các gói UI/voice
+  cloning tùy chọn không thuộc preset inference.
+
+## Triển khai hiện tại
+
+AI_DEFAULT_MODE: local/offline; cloud fallback: DISABLED; no paid API
+P0_SOURCE: PRESERVED — không sửa luồng capture/browser P0; sửa adapter STT và
+  tạo adapter state riêng cho mỗi pipeline session
+STT_WORKER: PASS — faster-whisper base.en CPU JSONL; synthetic speech input
+TRANSLATION_WORKER: PASS — OPUS-MT en→vi CPU JSONL; 30/30 benchmark samples
+VIETNAMESE_TTS_WORKER: PASS — VieNeu v3 Turbo ONNX fp32 + OpenMOSS codec JSONL;
+  20/20 benchmark outputs hợp lệ
+MODEL_REVISIONS: PASS — đúng revisions pin trong `runtime/MODEL_SELECTION.md`
+MODEL_LICENSE_REVIEW: PASS — MIT/Apache-2.0 metadata trong manifest local
+MODEL_DOWNLOAD: PASS — 25 artifacts, 1,005,369,274 bytes, đặt tại
+  `E:\VietDub-AI\models`, ngoài repository
+LOCAL_SHA256 / UPSTREAM_DIGESTS: PASS — local size/hash và upstream identity đã
+  xác minh; backend model manager báo cả ba component `ready`
+PYTHON_DEPENDENCIES: PASS_WITH_OPTIONAL_WARNING — preset inference import và
+  chạy thật; `pip check` chỉ cảnh báo extras VieNeu UI/audio-cloning bị bỏ qua
+BACKEND_HEALTH: PASS — HTTP 200, mode local, workers STT/translation/TTS ready
+LOCAL_GATEWAY: PASS_REAL_MODELS_SYNTHETIC_AUDIO — 2 phiên WebSocket liên tiếp;
+  phụ đề tiếng Việt, WAV mono PCM16 48 kHz, zero cost
+
+## Acceptance chưa đạt
+
+P0_ACCEPTANCE: PENDING_OPERATOR — Chrome extension chưa được nạp trong profile
+  thử nghiệm, nên chưa chạy action popup/tabCapture trên trang video thật
+STT_3_SAMPLE: PASS — 3/3 synthetic VieNeu English speech samples; đây không phải
+  bản ghi người thật hoặc 3 video YouTube
+TRANSLATION_30_SAMPLE: PASS — 30/30 Vietnamese outputs; p50 169 ms, p95 204 ms
+TTS_20_SAMPLE: PASS — 20/20 WAV outputs; p50 1,375 ms, p95 1,620 ms
+STT_RTF: PASS — 3 synthetic samples; p50 0.1319, p95 0.1333
+GATEWAY_LATENCY: 2 observed samples; STT 1,087–1,107 ms, translation 127 ms,
+  TTS 1,015–1,168 ms, pipeline total 1,144–1,299 ms
+CHROME_EXTENSION_E2E: PENDING_OPERATOR — profile acceptance đã chờ 30 phút nhưng
+  extension chưa được nạp; Chrome đã đóng khi hết thời gian. Evidence:
+  `E:\VietDub-AI\evidence\chrome-acceptance-1790256455236.json`. Cần bật
+  Developer mode/Load unpacked từ `packages/extension/dist/chrome`, sau đó click
+  extension thật và bấm Bắt đầu để cấp tabCapture
+FIREFOX_EXTENSION_E2E: NOT_RUN — chưa cài Firefox; cài đặt cần xác nhận riêng
+SUBTITLE_VISIBLE / VIETNAMESE_AUDIO_AUDIBLE: NOT_VERIFIED IN BROWSER
+30_MINUTE_SOAK: NOT_RUN
+CONTEXT_TRANSLATION: NOT_IMPLEMENTED BY CURRENT OPUS-MT WORKER — provider context/terminology fields are not passed to the model
 MERGE_READY: NO
-MERGED: NO
-MERGE_SHA: N/A
-MAIN_SHA: aa0d620c150e89807b8d97f96ffa86c1fe89fb9a
-PR_DESCRIPTION_UPDATED: NO — `gh` is not installed; branch was pushed but PR title/body/state and mergeability could not be queried or edited
-COMMITS_PUSHED: 0c608f3 implementation merge and a07e22a report history are pushed to `fix/firefox-extension-reliability-p0` fast-forward; current branch head is the same report history
-REMAINING_BLOCKERS: install/verify local workers and models; fill exact manifest revisions/checksums/licenses; run STT 3-video, translation 30-sample and TTS 20-sentence evidence; run Chrome+Firefox YouTube/HTML5 3-mode acceptance; run 30-minute soak; measure p50/p95/RTF/CPU/RAM; obtain CI exact-head status; review the two moderate Vitest advisories; update PR #1 body/state (gh is unavailable)
+
+TEST_RESULTS: typecheck PASS; build + Chrome/Firefox validators PASS; npm test
+16 files/58 tests PASS (unit/integration suite includes fixtures); independent
+real model benchmarks and local WebSocket pipeline PASS only for synthetic audio.
+`pip check` WARNING for optional VieNeu extras. Browser E2E, live human speech and
+30-minute soak remain NOT_RUN.
+NODE_DEPENDENCY_AUDIT: BLOCKED — npm registry advisory endpoint/cache ACL error;
+not a vulnerability result.
+
+Model and worker evidence is stored outside Git under `E:\VietDub-AI\evidence`.
+See [`TEST_REPORT.md`](TEST_REPORT.md) for exact benchmark/smoke boundaries. Do
+not promote synthetic audio, fixture tests or an unloaded browser profile to
+human-audio/browser acceptance.

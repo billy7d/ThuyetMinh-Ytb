@@ -4,7 +4,11 @@ import {
   MockSTTProvider,
   DeterministicTranslationProvider,
   TranslationEngine,
-  VietnameseTTSEngine
+  VietnameseTTSEngine,
+  STTProvider,
+  STTStreamCallbacks,
+  STTStreamSession,
+  TranslationProvider
 } from '@vietdub/backend';
 import { ServerMessage } from '@vietdub/shared';
 import { FixtureTTSProvider } from '../src/fixtures/providers.js';
@@ -168,6 +172,54 @@ describe('RealtimePipeline End-to-End Flow', () => {
     expect(messageTypes).toContain('TRANSLATION_READY');
     expect(messageTypes).toContain('SUBTITLE_EVENT');
     expect(messageTypes).toContain('TTS_CHUNK');
+    pipeline.stop();
+  });
+
+  it('hấp thụ đợt STT trả 12 câu liên tiếp mà không bỏ câu thứ 9', async () => {
+    const receivedMessages: ServerMessage[] = [];
+    let onFinal: STTStreamCallbacks['onFinal'] | undefined;
+    const burstSttProvider: STTProvider = {
+      name: 'BurstFixtureSTT',
+      createStream: (_sessionId: string, callbacks: STTStreamCallbacks): STTStreamSession => {
+        onFinal = callbacks.onFinal;
+        return { sendAudioChunk: () => {}, endStream: () => {} };
+      }
+    };
+    const slowTranslationProvider: TranslationProvider = {
+      name: 'SlowFixtureTranslation',
+      async translate(request) {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { translatedText: `Bản dịch câu ${request.startMs}.` };
+      }
+    };
+    const pipeline = new RealtimePipeline(
+      'sess_burst_12_finals',
+      'subtitle_only',
+      burstSttProvider,
+      new TranslationEngine(slowTranslationProvider),
+      new VietnameseTTSEngine(new FixtureTTSProvider()),
+      { sendMessage: (message) => receivedMessages.push(message) }
+    );
+
+    pipeline.start();
+    for (let index = 0; index < 12; index += 1) {
+      onFinal?.({
+        segmentId: `burst-${index}`,
+        text: `Sentence number ${index}.`,
+        startMs: index * 1000,
+        endMs: index * 1000 + 800,
+        isFinal: true,
+        confidence: 1
+      });
+    }
+
+    const deadline = Date.now() + 3000;
+    while (receivedMessages.filter((message) => message.type === 'SUBTITLE_EVENT').length < 12 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(receivedMessages.filter((message) => message.type === 'SUBTITLE_EVENT')).toHaveLength(12);
+    expect(receivedMessages.some((message) => message.type === 'ERROR' && message.code === 'PIPELINE_BACKPRESSURE')).toBe(false);
     pipeline.stop();
   });
 });

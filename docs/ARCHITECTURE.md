@@ -53,9 +53,9 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
 │                 ▲                                      │                │
 │                 │                                      ▼                │
 │                 │                        ┌───────────────────────────┐  │
-│                 │                        │ Context Translation Engine│  │
-│                 │                        │ (local en→vi model,       │  │
-│                 │                        │  Context Memory + terms) │  │
+│                 │                        │ OPUS-MT Translation      │  │
+│                 │                        │ (local en→vi; current     │  │
+│                 │                        │ worker uses source only) │  │
 │                 │                        └─────────────┬─────────────┘  │
 │                 │                                      │                │
 │                 │                                      ▼                │
@@ -80,10 +80,15 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
 - Sử dụng thuật toán tính toán năng lượng RMS trên frame PCM 16kHz Mono.
 - Phát hiện khoảng lặng (silence >= 650ms) để xác định điểm kết thúc câu nói (utterance boundary).
 - Hỗ trợ trả về Interim results để cập nhật giao diện trước khi chốt Final transcript.
-- Production gateway dùng local worker JSONL; `whisper.cpp` là ứng viên STT và worker phải giữ model trong tiến trình lâu dài. Mock STT chỉ được phép trong unit/integration tests.
+- Production gateway dùng local worker JSONL; worker STT giữ `faster-whisper-base.en` trong tiến trình lâu dài. Mock STT chỉ được phép trong unit/integration tests.
 
-### 2.3. Context-Aware Translation Engine
-- **7 Quy tắc vàng:**
+### 2.3. Translation Engine (trạng thái hiện tại)
+- Worker local dùng model OPUS-MT `en→vi` và hiện chỉ nhận `sourceText`.
+- Adapter còn truyền context/terminology nhưng worker chưa dùng các trường đó;
+  không tuyên bố bản dịch ngữ cảnh hoặc nhất quán thuật ngữ đã được triển khai.
+- Các quy tắc dưới đây là yêu cầu chất lượng cần nghiệm thu, không phải cam kết
+  đầu ra của model hiện tại:
+  **7 Quy tắc vàng:**
   1. Dịch theo nghĩa toàn câu, tự nhiên theo văn nói tiếng Việt.
   2. Giữ nguyên số liệu, ngày tháng, tên riêng, thuật ngữ.
   3. Tránh dịch máy từng từ (word-by-word) gây cứng nhắc.
@@ -91,7 +96,8 @@ VietDub AI là tiện ích mở rộng trình duyệt (Chrome & Firefox) cung c�
   5. Giữ nhất quán thuật ngữ chuyên ngành trong suốt phiên xem video.
   6. Phong cách thuyết minh truyền cảm, dễ nghe.
   7. Tự động kiểm tra tính trọn vẹn ngữ nghĩa (`SentenceCompletionGuard`) để tránh dịch nửa câu.
-- **Context Manager:** Duy trì sliding window 5 câu gần nhất kèm bản dịch tiếng Việt để giữ mạch văn thống nhất.
+- Backend có thể duy trì sliding window 5 câu gần nhất, nhưng worker hiện chưa
+  đưa lịch sử đó vào model.
 
 ### 2.4. Vietnamese TTS Engine & Sync Controller
 - Production gateway gọi local Vietnamese TTS worker và kiểm tra metadata WAV thực tế; synthetic WAV chỉ là test fixture.

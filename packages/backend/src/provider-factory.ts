@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DeepgramStreamingSTTProvider } from './stt/deepgram-stt.js';
 import { STTProvider } from './stt/types.js';
 import { GeminiTranslationProvider } from './translation/gemini-translation.js';
@@ -40,6 +41,9 @@ export interface ProductionProviderFactory {
   close?(): Promise<void>;
 }
 
+// Giữ đường dẫn mặc định ở root repository khi npm chạy workspace backend.
+const DEFAULT_PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
 /**
  * Creates the production runtime boundary. Local inference is the default and
  * is the only mode that can be selected without an explicit cloud opt-in.
@@ -48,7 +52,7 @@ export interface ProductionProviderFactory {
  */
 export function createProductionProviderFactory(
   env: NodeJS.ProcessEnv = process.env,
-  cwd = process.cwd()
+  cwd = DEFAULT_PROJECT_ROOT
 ): ProductionProviderFactory {
   const mode = parseRuntimeMode(env.AI_MODE);
   if (mode === 'local') return createLocalFactory(env, cwd);
@@ -62,7 +66,6 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
   const modelManager = new LocalModelManager(manifestPath, modelRoot);
   const runtimeMissing = localRuntimeMissingConfiguration(env);
   let runtime: LocalRuntime | null = null;
-  let dependencies: ProductionPipelineDependencies | null = null;
 
   const getMissing = (): string[] => [...new Set([...modelManager.getMissingConfiguration(), ...runtimeMissing])];
   const factory: ProductionProviderFactory = {
@@ -75,11 +78,10 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
       if (missing.length > 0) {
         throw new Error(`Local AI is not ready: ${missing.join(', ')}`);
       }
-      if (dependencies) return dependencies;
-
       runtime ||= createLocalRuntime(env, { cwd });
+      // Adapter dịch và TTS giữ state theo generation; tạo mới cho từng phiên, còn worker/model vẫn dùng chung.
       const providers = createLocalProviders(runtime, env);
-      dependencies = {
+      return {
         sttProvider: providers.sttProvider,
         translationEngine: new TranslationEngine(providers.translationProvider, undefined, {
           maxPendingCharacters: positiveInt(env.LOCAL_TRANSLATION_MAX_PENDING_CHARACTERS, 1200),
@@ -95,7 +97,6 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
           rateLimitChunksPerSecond: positiveInt(env.MAX_AUDIO_CHUNKS_PER_SECOND, 10)
         }
       };
-      return dependencies;
     },
     async warmup(): Promise<void> {
       const missing = getMissing();
@@ -120,7 +121,6 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
       };
     },
     async close(): Promise<void> {
-      dependencies = null;
       const activeRuntime = runtime;
       runtime = null;
       await activeRuntime?.close();

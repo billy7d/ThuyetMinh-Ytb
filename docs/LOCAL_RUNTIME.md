@@ -2,7 +2,7 @@
 
 `AI_MODE=local` is the default. The backend does not create, contact or fall back to Deepgram, Gemini or Google Cloud TTS in this mode. It starts a local worker only after the model manifest, checksums, license fields and worker commands are ready.
 
-The repository intentionally does not commit model weights, Python environments or a voice model. Those artifacts are large, hardware-dependent and have distribution terms that must be checked by the operator. The checked-in `models/manifest.example.json` is a validation template, not a ready manifest.
+The repository includes three roles in `runtime/workers/vietdub_worker.py` and a pinned Python dependency set. It intentionally does not commit model weights or the target machine's `.venv`. The checked-in `models/manifest.example.json` is a template, not a ready manifest. On the current target, the user approved the pinned set and installed the verified operator manifest/models at `E:\VietDub-AI`; a fresh machine must obtain its own consent and verify its own files.
 
 ## Runtime contract
 
@@ -32,8 +32,8 @@ STT requests:
 
 ```json
 {"op":"start_stream","sessionId":"...","modelPath":"...","sampleRate":16000,"channels":1}
-{"op":"audio_chunk","sessionId":"...","pcmBase64":"...","timestampMs":1234,"durationMs":250,"sampleRate":16000,"channels":1}
-{"op":"end_stream","sessionId":"..."}
+{"op":"audio_chunk","sessionId":"...","modelPath":"...","pcmBase64":"...","timestampMs":1234,"durationMs":250,"sampleRate":16000,"channels":1}
+{"op":"end_stream","sessionId":"...","modelPath":"..."}
 ```
 
 An `audio_chunk` result may contain ordered events:
@@ -51,11 +51,16 @@ Translation request/result:
 {"translatedText":"...","tokensUsed":42}
 ```
 
+The current OPUS-MT worker only consumes `sourceText`; `context`, `terminology`
+and `speakerTone` are accepted by the adapter but are not sent into the model.
+Do not claim contextual translation or term consistency until that path is
+implemented and measured.
+
 TTS request/result:
 
 ```json
 {"op":"synthesize","modelPath":"...","segmentId":"seg_1","generation":1,"text":"Xin chào.","startMs":0,"endMs":1200}
-{"audioBase64":"<RIFF/WAVE base64>","mimeType":"audio/wav","sampleRate":24000,"channels":1,"durationMs":800}
+{"audioBase64":"<RIFF/WAVE base64>","mimeType":"audio/wav","sampleRate":48000,"channels":1,"durationMs":800}
 ```
 
 Production TTS output must be real Vietnamese speech. Synthetic sine waves, beeps, fixture transcripts and rule-based translation are test-only and are prohibited in the configured production workers; the adapter validates the protocol and WAV metadata but cannot infer the acoustic provenance of an arbitrary worker output.
@@ -64,8 +69,8 @@ Production TTS output must be real Vietnamese speech. Synthetic sine waves, beep
 
 1. Read the upstream code, model, tokenizer, codec and voice terms for each selected revision. Confirm redistribution and commercial-use rights independently.
 2. Show the user the source, revision, expected download size, checksum and license notice; obtain explicit consent before downloading.
-3. Download to a local model directory. Use the checked-in `downloadVerifiedModel` helper or another process that verifies HTTPS, pinned size and SHA-256 before renaming the file into place.
-4. Copy `models/manifest.example.json` to `models/manifest.json`, replace every placeholder, list every artifact checksum and mark both distribution and commercial-use fields `verified` only when evidence exists.
+3. Download to a local model directory. Use the checked-in `downloadVerifiedModel` helper or another process that verifies HTTPS, pinned size and SHA-256 before renaming the file into place. For redirects, pass an exact allow-list containing the source host and approved CDN host; only HTTPS/default-port redirects are followed (maximum five), and the helper rejects unapproved hosts before downloading the redirected body.
+4. For a fresh install, create an operator-owned `models/manifest.json`, replace every placeholder, list every artifact checksum and mark both distribution and commercial-use fields `verified` only when evidence exists. The current machine instead uses `E:\VietDub-AI\models\manifest.json`; do not commit it or its weights.
 5. Run the backend health check:
 
 ```bash
@@ -74,29 +79,35 @@ npm run start:backend
 curl http://127.0.0.1:8080/health
 ```
 
-The endpoint must report `mode: "local"`, `configured: true`, and all three component statuses as `ready`. Missing files, a hash mismatch, an unverified license or a missing worker command keeps the service at HTTP 503.
+The endpoint must report `mode: "local"`, `configured: true`, and all three component statuses as `ready`. The current target returns HTTP 200. On an unconfigured fresh install, missing files, a hash mismatch, an unverified license or a missing worker command keeps the service at HTTP 503.
 
 ## Hardware profiles
 
-Do not label Light/Balanced/Quality or real-time support until measured on the target machine. Record OS, CPU/GPU, RAM, model revision/size, worker versions, STT real-time factor, p50/p95 subtitle latency, TTS start latency and memory growth. If the target machine cannot keep up, report `REALTIME_ACCEPTANCE=BLOCKED`.
+Do not label Light/Balanced/Quality or real-time support until measured on the target machine. This target has a real-worker benchmark in `E:\VietDub-AI\evidence\local-worker-benchmark-1790253519893.json`; results are for synthetic speech and do not replace human-speech/browser acceptance. Record OS, CPU/GPU, RAM, model revision/size, worker versions, STT real-time factor, p50/p95 subtitle latency, TTS start latency and memory growth. If the target machine cannot keep up, report `REALTIME_ACCEPTANCE=BLOCKED`.
 
 ## Windows and macOS
 
-Use an absolute executable path in `.env` on both platforms. PowerShell example:
+On Windows, the `.env.example` uses `python` from PATH and passes the worker
+script and role as a JSON argument array. If needed, set each command to the
+absolute path of the Python executable, then retain the corresponding args.
+Example for the current target:
 
 ```powershell
-$env:LOCAL_STT_WORKER_COMMAND = "C:\vietdub\worker\vietdub-stt-worker.exe"
-$env:LOCAL_TRANSLATION_WORKER_COMMAND = "C:\vietdub\worker\vietdub-translation-worker.exe"
-$env:LOCAL_TTS_WORKER_COMMAND = "C:\vietdub\worker\vietdub-tts-worker.exe"
+$env:LOCAL_STT_WORKER_COMMAND = "E:\VietDub-AI\runtime\venv\Scripts\python.exe"
+$env:LOCAL_TRANSLATION_WORKER_COMMAND = "E:\VietDub-AI\runtime\venv\Scripts\python.exe"
+$env:LOCAL_TTS_WORKER_COMMAND = "E:\VietDub-AI\runtime\venv\Scripts\python.exe"
 npm run start:backend
 ```
+
+Use the role-specific `LOCAL_*_WORKER_ARGS` from `.env.example`; do not pass
+audio/text in command-line arguments.
 
 macOS example:
 
 ```bash
-export LOCAL_STT_WORKER_COMMAND="$PWD/runtime/bin/vietdub-stt-worker"
-export LOCAL_TRANSLATION_WORKER_COMMAND="$PWD/runtime/bin/vietdub-translation-worker"
-export LOCAL_TTS_WORKER_COMMAND="$PWD/runtime/bin/vietdub-tts-worker"
+export LOCAL_STT_WORKER_COMMAND="$(command -v python3)"
+export LOCAL_TRANSLATION_WORKER_COMMAND="$(command -v python3)"
+export LOCAL_TTS_WORKER_COMMAND="$(command -v python3)"
 npm run start:backend
 ```
 

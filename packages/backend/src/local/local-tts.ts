@@ -11,9 +11,10 @@ export interface LocalTTSConfig {
 
 export const DEFAULT_LOCAL_TTS_CONFIG: LocalTTSConfig = {
   modelPath: '',
-  timeoutMs: 30_000,
+  timeoutMs: 90_000,
   maxConcurrentRequests: 2,
-  sampleRate: 24_000
+  // VieNeu v3 Turbo xuất WAV mono 48 kHz.
+  sampleRate: 48_000
 };
 
 interface LocalTTSWorkerResponse {

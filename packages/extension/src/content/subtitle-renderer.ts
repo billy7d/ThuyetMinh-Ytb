@@ -79,12 +79,41 @@ export class SubtitleRenderer {
     this.mountOverlay();
   }
 
+  private findOverlayParent(fullscreenElement: Element | null): HTMLElement | null {
+    const video = this.targetVideo;
+    if (!video) return null;
+    if (fullscreenElement?.contains(video)) return fullscreenElement as HTMLElement;
+
+    const videoRect = video.getBoundingClientRect();
+    const videoArea = videoRect.width * videoRect.height;
+    let parent = video.parentElement;
+    const fallbackParent = parent;
+
+    // YouTube có thể đặt video absolute trong wrapper cao 0px; leo lên player thật để overlay không nằm ngoài khung hình.
+    while (parent) {
+      const parentRect = parent.getBoundingClientRect();
+      const overlapWidth = Math.max(
+        0,
+        Math.min(parentRect.right, videoRect.right) - Math.max(parentRect.left, videoRect.left)
+      );
+      const overlapHeight = Math.max(
+        0,
+        Math.min(parentRect.bottom, videoRect.bottom) - Math.max(parentRect.top, videoRect.top)
+      );
+      const overlapRatio = videoArea > 0 ? (overlapWidth * overlapHeight) / videoArea : 1;
+
+      if (parentRect.width > 0 && parentRect.height > 0 && overlapRatio >= 0.5) return parent;
+      if (parent === document.body) break;
+      parent = parent.parentElement;
+    }
+
+    return fallbackParent;
+  }
+
   private mountOverlay(): void {
     if (!this.targetVideo || !this.containerEl) return;
     const fullscreenElement = document.fullscreenElement;
-    const parent = fullscreenElement && fullscreenElement.contains(this.targetVideo)
-      ? fullscreenElement
-      : this.targetVideo.parentElement;
+    const parent = this.findOverlayParent(fullscreenElement);
     if (!parent) return;
     if (getComputedStyle(parent).position === 'static') {
       (parent as HTMLElement).style.position = 'relative';

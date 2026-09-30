@@ -1,8 +1,17 @@
 import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import 'dotenv/config';
+import { config } from 'dotenv';
 import { WebSocketGateway } from './gateway/ws-gateway.js';
 import { ProductionProviderFactory, ProviderFactoryStatus } from './provider-factory.js';
+
+// Nạp .env ở root trước để lệnh npm workspace không làm lệch cấu hình local.
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const repositoryEnvPath = path.join(REPOSITORY_ROOT, '.env');
+config({ path: repositoryEnvPath });
+const workingDirectoryEnvPath = path.resolve(process.cwd(), '.env');
+if (workingDirectoryEnvPath !== repositoryEnvPath) config({ path: workingDirectoryEnvPath });
 
 export function createServer(
   port = 8080,
