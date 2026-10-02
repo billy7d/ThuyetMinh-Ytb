@@ -23,4 +23,6 @@ export interface TTSProvider {
   name: string;
   synthesize(request: TTSRequest): Promise<TTSResponse>;
   cancelGeneration(generation: number): void;
+  /** Số câu có thể tổng hợp song song (mặc định 1). */
+  readonly concurrency?: number;
 }

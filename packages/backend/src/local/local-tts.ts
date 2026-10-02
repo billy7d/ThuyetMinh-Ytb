@@ -36,16 +36,24 @@ export class LocalVietnameseTTSProvider implements TTSProvider {
   private readonly controllers = new Map<number, Set<AbortController>>();
   private readonly waiters: Array<() => void> = [];
   private activeGeneration = 1;
+  /** Số tiến trình worker thực sự; giới hạn số câu tổng hợp song song, vì nhiều request vào một tiến trình chỉ xếp hàng. */
+  private readonly workerProcesses: number;
   private inFlight = 0;
 
   constructor(
     private readonly worker: LocalWorkerClientLike,
-    config: Partial<LocalTTSConfig> = {}
+    config: Partial<LocalTTSConfig> = {},
+    workerProcesses = 1
   ) {
+    this.workerProcesses = Math.max(1, Math.floor(workerProcesses));
     this.config = { ...DEFAULT_LOCAL_TTS_CONFIG, ...config };
     if (!this.config.modelPath.trim()) throw new Error('LOCAL_TTS_MODEL_PATH is required');
     if (this.config.timeoutMs < 1) throw new Error('LOCAL_TTS_TIMEOUT_MS must be positive');
     if (this.config.maxConcurrentRequests < 1) throw new Error('LOCAL_TTS_MAX_CONCURRENT_REQUESTS must be positive');
+  }
+
+  get concurrency(): number {
+    return Math.min(this.config.maxConcurrentRequests, this.workerProcesses);
   }
 
   async synthesize(request: TTSRequest): Promise<TTSResponse> {

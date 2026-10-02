@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { LocalModelManager } from './model-manager.js';
+import { LocalWorkerPool } from './worker-pool.js';
 import { JsonLineWorkerClient, LocalWorkerClientLike, LocalWorkerStatus } from './worker-client.js';
 import { LocalStreamingSTTProvider } from './local-stt.js';
 import { LocalTranslationProvider } from './local-translation.js';
 import { LocalVietnameseTTSProvider } from './local-tts.js';
 
 const MIN_TTS_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_TTS_PROCESSES = 4;
 
 export interface LocalRuntimeOptions {
   cwd?: string;
@@ -16,6 +18,8 @@ export interface LocalRuntime {
   sttWorker: LocalWorkerClientLike;
   translationWorker: LocalWorkerClientLike;
   ttsWorker: LocalWorkerClientLike;
+  /** Số tiến trình TTS (LOCAL_TTS_WORKER_PROCESSES, mặc định 1). */
+  ttsProcesses: number;
   warmup(): Promise<void>;
   getWorkerStatus(): { stt: LocalWorkerStatus | undefined; translation: LocalWorkerStatus | undefined; tts: LocalWorkerStatus | undefined };
   close(): Promise<void>;
@@ -41,13 +45,17 @@ export function createLocalRuntime(
 
   const sttWorker = createWorker('stt', env, workerOptions, cwd);
   const translationWorker = createWorker('translation', env, workerOptions, cwd);
-  const ttsWorker = createWorker('tts', env, workerOptions, cwd);
+  const ttsProcesses = Math.min(positiveInt(env.LOCAL_TTS_WORKER_PROCESSES, 1), MAX_TTS_PROCESSES);
+  const ttsWorker = ttsProcesses > 1
+    ? new LocalWorkerPool(Array.from({ length: ttsProcesses }, (_, index) => createWorker('tts', env, workerOptions, cwd, String(index + 1))))
+    : createWorker('tts', env, workerOptions, cwd);
 
   return {
     modelManager,
     sttWorker,
     translationWorker,
     ttsWorker,
+    ttsProcesses,
     async warmup(): Promise<void> {
       await Promise.all([
         sttWorker.start?.(),
@@ -98,7 +106,7 @@ export function createLocalProviders(
       timeoutMs: positiveInt(env.LOCAL_TTS_TIMEOUT_MS, 90_000),
       maxConcurrentRequests: positiveInt(env.LOCAL_TTS_MAX_CONCURRENT_REQUESTS, 2),
       sampleRate: positiveInt(env.LOCAL_TTS_SAMPLE_RATE, 48_000)
-    })
+    }, runtime.ttsProcesses)
   };
 }
 
@@ -112,7 +120,8 @@ function createWorker(
     maxFrameBytes: number;
     logDir: string;
   },
-  cwd: string
+  cwd: string,
+  instance = ''
 ): LocalWorkerClientLike {
   const prefix = `LOCAL_${component.toUpperCase()}_WORKER`;
   const command = env[`${prefix}_COMMAND`]?.trim();
@@ -120,10 +129,10 @@ function createWorker(
   const args = parseArgs(env[`${prefix}_ARGS`], prefix);
   const { logDir, ...workerLimits } = limits;
   return new JsonLineWorkerClient({
-    name: `Local ${component.toUpperCase()}`,
+    name: `Local ${component.toUpperCase()}${instance ? ` #${instance}` : ''}`,
     // Chuẩn hóa working directory để đường dẫn tương đối tính từ root repository.
     command: { command, args, cwd },
-    stderrLogPath: path.join(logDir, `worker-${component}.log`),
+    stderrLogPath: path.join(logDir, `worker-${component}${instance ? `-${instance}` : ''}.log`),
     ...workerLimits,
     // WAV 48 kHz của TTS lớn hơn nhiều so với JSON của STT/dịch: 2 MB chỉ chứa ~15 s audio và vượt quá sẽ làm worker bị đóng.
     maxFrameBytes: component === 'tts' ? Math.max(workerLimits.maxFrameBytes, MIN_TTS_FRAME_BYTES) : workerLimits.maxFrameBytes

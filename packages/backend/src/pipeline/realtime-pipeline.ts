@@ -89,7 +89,9 @@ export class RealtimePipeline {
   private readonly audioEndWallClockByVideoMs = new Map<number, number>();
   private readonly lastWarningAtByCode = new Map<string, number>();
   private drainingFinalQueue = false;
-  private drainingTtsQueue = false;
+  private activeTtsJobs = 0;
+  // Nối các câu theo thứ tự hàng đợi: câu sau tổng hợp xong trước vẫn phải chờ câu trước phát đi rồi mới gửi.
+  private ttsEmitChain: Promise<void> = Promise.resolve();
   private latestVideoTimeMs = 0;
   private sttSession: STTStreamSession | null = null;
   private isActive = false;
@@ -465,33 +467,42 @@ export class RealtimePipeline {
       // Bỏ giọng đọc nhưng vẫn giữ phụ đề của câu đó.
       if (dropped?.subtitlePending) this.emitSubtitle(dropped);
     }
-    void this.drainTtsQueue();
+    this.pumpTtsQueue();
   }
 
-  private async drainTtsQueue(): Promise<void> {
-    if (this.drainingTtsQueue) return;
-    this.drainingTtsQueue = true;
-    try {
-      while (this.isActive && this.ttsQueue.length > 0) {
-        const job = this.ttsQueue.shift();
-        if (!job) continue;
-        try {
-          await this.synthesizeJob(job);
-        } catch (error) {
-          if (this.isActive && job.streamToken === this.sttStreamToken && job.generation === this.generation) {
-            this.handleError('TTS_ERROR', error instanceof Error ? error.message : String(error), false);
-          }
-          // Lỗi giọng đọc không được làm mất phụ đề.
-          if (job.subtitlePending) this.emitSubtitle(job);
-        }
-      }
-    } finally {
-      this.drainingTtsQueue = false;
-      if (this.isActive && this.ttsQueue.length > 0) void this.drainTtsQueue();
+  /** Chạy tối đa `concurrency` câu cùng lúc (mặc định 1: tuần tự như trước). */
+  private pumpTtsQueue(): void {
+    const concurrency = Math.max(1, this.ttsEngine.concurrency ?? 1);
+    while (this.isActive && this.activeTtsJobs < concurrency && this.ttsQueue.length > 0) {
+      const job = this.ttsQueue.shift();
+      if (!job) continue;
+      this.activeTtsJobs++;
+      void this.runTtsJob(job).finally(() => {
+        this.activeTtsJobs--;
+        this.pumpTtsQueue();
+      });
     }
   }
 
-  private async synthesizeJob(job: TtsJob): Promise<void> {
+  private async runTtsJob(job: TtsJob): Promise<void> {
+    const previous = this.ttsEmitChain;
+    let release: () => void = () => {};
+    this.ttsEmitChain = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await this.synthesizeJob(job, previous);
+    } catch (error) {
+      await previous;
+      if (this.isActive && job.streamToken === this.sttStreamToken && job.generation === this.generation) {
+        this.handleError('TTS_ERROR', error instanceof Error ? error.message : String(error), false);
+      }
+      // Lỗi giọng đọc không được làm mất phụ đề.
+      if (job.subtitlePending) this.emitSubtitle(job);
+    } finally {
+      release();
+    }
+  }
+
+  private async synthesizeJob(job: TtsJob, previous: Promise<void>): Promise<void> {
     if (!this.isJobCurrent(job)) return;
     if (this.mode !== 'dubbing_only' && this.mode !== 'dubbing_and_subtitle') {
       if (job.subtitlePending) this.emitSubtitle(job);
@@ -500,6 +511,7 @@ export class RealtimePipeline {
     const lagMs = this.latestVideoTimeMs - job.endMs;
     if (lagMs > this.timing.ttsMaxLagMs) {
       // Câu đã trôi qua quá xa trên video; đọc lúc này chỉ làm thuyết minh lệch thêm.
+      await previous;
       emitDiagnostic('pipeline', 'tts_skipped_stale', {
         sessionRef: this.sessionRef,
         segmentId: job.segmentId,
@@ -520,6 +532,7 @@ export class RealtimePipeline {
     });
     const ttsLatencyMs = Date.now() - ttsStartedAt;
 
+    await previous;
     if (!this.isJobCurrent(job)) return;
     if (!ttsResult.cancelled && ttsResult.audioBase64) {
       this.costTracker.recordTTS(job.text.length);

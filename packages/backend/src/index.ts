@@ -17,6 +17,7 @@ export * from './pipeline/realtime-pipeline.js';
 export * from './gateway/ws-gateway.js';
 export * from './provider-factory.js';
 export * from './local/worker-client.js';
+export * from './local/worker-pool.js';
 export * from './local/model-manager.js';
 export * from './local/model-downloader.js';
 export * from './local/local-stt.js';
