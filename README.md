@@ -65,88 +65,107 @@ vietdub-ai/
 
 ---
 
-## 🚀 Hướng dẫn Cài đặt & Chuẩn bị Môi trường
+## 🚀 Bắt đầu nhanh (4 bước)
 
-### 1. Yêu cầu Hệ thống
-- **Node.js:** Phiên bản >= 20.x (CI source integration dùng Node.js v24.18.0).
-- **Trình duyệt:** Google Chrome hoặc Mozilla Firefox để nghiệm thu live; artifact build không cần model weights.
-- **Local AI runtime:** cài ba worker STT/dịch/TTS tương thích JSONL và model weights đã được kiểm SHA-256 theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md). Target hiện tại chạy tại `E:\VietDub-AI`; một máy mới chưa có manifest/worker hợp lệ phải giữ `503`, không fallback sang cloud.
-- Kiểm tra chi tiết CPU/GPU/RAM/disk, Python, browser và các bước clean-clone trong [TARGET_MACHINE_SETUP.md](docs/TARGET_MACHINE_SETUP.md).
+Tóm tắt: **build → bật backend → nạp extension → bấm Play rồi bấm Bắt đầu.** Làm lần lượt từng bước bên dưới.
 
-### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
-Mở Terminal tại thư mục dự án và chạy:
+### Bước 0 — Chuẩn bị (làm một lần)
+
+| Cần có | Ghi chú |
+| :--- | :--- |
+| **Node.js 20 trở lên** | Kiểm tra bằng `node --version`. |
+| **Chrome** hoặc **Firefox** | Dùng bản mới. Có thể cài cả hai. |
+| **Model AI chạy trên máy** (STT, dịch, giọng đọc) | Cài theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md) và [TARGET_MACHINE_SETUP.md](docs/TARGET_MACHINE_SETUP.md). Model nằm ngoài repo (trên máy này là `E:\VietDub-AI`). Chưa cài thì backend sẽ báo lỗi 503 và extension không chạy được. |
+
+### Bước 1 — Build extension (làm một lần, và làm lại mỗi khi sửa code)
+
+Mở Terminal tại thư mục dự án:
 
 ```bash
-# Cài đặt đúng dependency tree đã khóa
 npm ci
-
-# Biên dịch toàn bộ các packages
 npm run build
 ```
 
-Sau khi hoàn tất:
-- Thư mục nạp Chrome: `packages/extension/dist/chrome`
-- Thư mục nạp Firefox: `packages/extension/dist/firefox`
+Build xong sẽ có hai thư mục, mỗi trình duyệt dùng một thư mục riêng:
 
----
+| Trình duyệt | Thư mục / tệp cần chọn khi nạp |
+| :--- | :--- |
+| Chrome | thư mục `packages/extension/dist/chrome` |
+| Firefox | tệp `packages/extension/dist/firefox/manifest.json` |
 
-## 📖 Hướng dẫn Khởi chạy & Sử dụng Chi tiết trên Trình duyệt
+### Bước 2 — Bật backend (luôn phải chạy khi dùng extension)
 
-### BƯỚC 1: Cài local models và khởi động Realtime AI Backend
-
-Trước khi bật extension trên trình duyệt, khởi động server WebSocket xử lý AI:
+Backend là chương trình chạy trên máy bạn, xử lý nhận dạng giọng nói, dịch và đọc tiếng Việt. **Không bật backend thì extension không làm được gì.**
 
 ```bash
-# Tạo cấu hình local từ mẫu và điền đường dẫn worker/model manifest.
+# Lần đầu: tạo file cấu hình từ mẫu rồi điền đường dẫn model/worker
 cp .env.example .env
-# Xem giao thức worker, consent, checksum và setup Windows/macOS:
-# docs/LOCAL_RUNTIME.md
+
+# Windows (nên dùng, đã đặt sẵn thư mục cache trên ổ E):
+powershell -ExecutionPolicy Bypass -File runtime/start_backend.ps1
+
+# Hoặc dùng lệnh chung:
 npm run start:backend
 ```
-> Backend chỉ báo ready sau khi `models/manifest.json` hợp lệ, cả ba model có checksum/license đã xác minh và cả ba worker local trả `{"event":"ready"}`. Không nhập API key cho chế độ mặc định.
 
-Kiểm tra readiness:
+Kiểm tra backend đã sẵn sàng bằng cách mở địa chỉ này (hoặc chạy `curl`):
 
-```bash
-curl http://127.0.0.1:8080/health
+```
+http://127.0.0.1:8080/health
 ```
 
-Khi Terminal xuất hiện thông báo:
-> `[VietDub Backend] WebSocket AI Gateway listening on port 8080`
-> thông báo chỉ xác nhận server đã listen. Hãy kiểm tra `/health`: target hiện tại cần `HTTP 200`, mode `local`, manifest và ba worker `ready`; clone/máy mới chưa cài inference phải fail-closed ở `HTTP 503`.
+- **Thấy `HTTP 200`** và ba worker `ready` → sẵn sàng, qua bước 3.
+- **Thấy `503`** → model hoặc worker chưa cài đúng. Xem [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md).
+- Dòng "listening on port 8080" trong Terminal **chưa đủ** để kết luận backend sẵn sàng; hãy nhìn `/health`.
+- **Để cửa sổ Terminal này mở** trong lúc xem video. Muốn tắt backend thì bấm `Ctrl+C`.
+
+### Bước 3 — Nạp extension vào trình duyệt
+
+#### 🟢 Chrome
+
+1. Gõ `chrome://extensions` vào thanh địa chỉ rồi Enter.
+2. Bật công tắc **Developer mode** (Chế độ dành cho nhà phát triển) ở góc trên bên phải.
+3. Bấm **Load unpacked** (Tải tiện ích đã giải nén).
+4. Chọn **thư mục** `packages/extension/dist/chrome` (chọn cả thư mục, không chọn từng tệp).
+5. Bấm biểu tượng mảnh ghép 🧩 trên thanh công cụ và **ghim** VietDub AI ra ngoài để dễ bấm.
+
+> Chrome nhớ extension này sau khi tắt mở lại, bạn chỉ nạp một lần. Sau khi **build lại**, vào `chrome://extensions` và bấm nút ⟳ trên thẻ VietDub AI.
+
+#### 🟠 Firefox
+
+1. Gõ `about:debugging#/runtime/this-firefox` vào thanh địa chỉ rồi Enter.
+2. Bấm **Load Temporary Add-on...** (Tải phần bổ trợ tạm thời).
+3. Chọn **tệp** `packages/extension/dist/firefox/manifest.json`.
+4. Thấy VietDub AI xuất hiện trong danh sách là xong.
+
+> ⚠️ **Firefox chỉ giữ add-on tạm thời cho đến khi bạn đóng Firefox.** Mỗi lần mở lại Firefox, bạn phải làm lại bước 1–3 ở trên. Sau khi build lại, bấm **Reload** trên thẻ VietDub AI trong trang `about:debugging`.
+
+### Bước 4 — Dùng trên một video
+
+1. Mở trang có video tiếng Anh (YouTube, TED, khóa học...). Nếu bạn vừa nạp hoặc reload extension, **nhấn F5 để tải lại trang**.
+2. **Bấm Play trên video trước.** Đây là bước dễ quên nhất: Firefox (và đôi khi Chrome) chỉ cho extension phát âm thanh sau khi bạn đã bấm vào trang.
+3. Bấm biểu tượng **VietDub AI** trên thanh công cụ (đừng mở popup thành một tab riêng, như vậy sẽ không có quyền truy cập trang).
+4. Chọn chế độ (mặc định *Thuyết minh + phụ đề*) rồi bấm **Bắt đầu thuyết minh**.
+5. Đợi vài giây cho tới khi trạng thái là **Đang thuyết minh**. Bạn có thể đóng popup, phiên vẫn chạy.
+6. Muốn dừng: mở popup, bấm nút đỏ **Dừng thuyết minh**. Âm thanh gốc của video được trả lại như cũ.
+
+### Gặp lỗi? Tra nhanh ở đây
+
+| Bạn thấy | Nguyên nhân | Cách xử lý |
+| :--- | :--- | :--- |
+| Popup báo không kết nối được máy chủ / mãi ở "Đang kết nối" | Backend chưa chạy hoặc đang nạp model | Làm Bước 2, đợi `/health` trả `HTTP 200`, rồi bấm lại Bắt đầu. |
+| "Trình duyệt đang chặn âm thanh" | Chưa bấm vào trang | Bấm Play trên video (hoặc bấm vào trang), rồi bấm Bắt đầu lại. |
+| "Không tìm thấy video trong tab" | Video chưa tải xong hoặc nằm trong iframe khác nguồn | F5 tải lại trang, bấm Play, rồi mở popup. |
+| Vừa build hoặc sửa code nhưng không thấy khác | Trình duyệt vẫn dùng bản cũ | Chrome: bấm ⟳ ở `chrome://extensions`. Firefox: bấm Reload ở `about:debugging`. Rồi F5 trang video. |
+| Đã khởi động lại backend nhưng popup vẫn lỗi | Phiên cũ đã mất kết nối | F5 trang video, bấm Play, rồi Bắt đầu lại. |
+| Netflix, Spotify... không thu được âm thanh | Nội dung có DRM | Không hỗ trợ. |
+| Không nghe tiếng Việt | Âm lượng thuyết minh 0% hoặc đang ở chế độ "Chỉ phụ đề" | Chuyển sang *Thuyết minh + phụ đề* và kéo âm lượng thuyết minh lên. |
 
 ---
 
-### BƯỚC 2: Cài đặt (Nạp) Extension vào Trình duyệt
+## 📖 Chi tiết cách dùng trên Trình duyệt
 
-#### 🟢 Nạp vào Google Chrome:
-1. Mở Chrome, truy cập vào đường dẫn:
-   ```
-   chrome://extensions/
-   ```
-2. Bật công tắc **"Developer mode"** (Chế độ dành cho nhà phát triển) ở góc trên bên phải màn hình.
-3. Bấm vào nút **"Load unpacked"** (Tải tiện ích đã giải nén) ở góc trên bên trái.
-4. Chọn thư mục:
-   ```
-   E:\ThuyetMinh-Ytb\packages\extension\dist\chrome
-   ```
-5. Tiện ích **VietDub AI** sẽ xuất hiện. Bạn bấm vào biểu tượng **"Mảnh ghép" (Extensions)** trên thanh công cụ và chọn **Ghim (Pin)** biểu tượng VietDub AI ra ngoài để thao tác thuận tiện.
-
-#### 🟠 Nạp vào Mozilla Firefox:
-1. Mở Firefox, truy cập vào đường dẫn:
-   ```
-   about:debugging#/runtime/this-firefox
-   ```
-2. Bấm vào nút **"Load Temporary Add-on..."** (Tải phần bổ trợ tạm thời...).
-3. Điều hướng và chọn tệp `manifest.json` tại đường dẫn:
-   ```
-   E:\ThuyetMinh-Ytb\packages\extension\dist\firefox\manifest.json
-   ```
-4. Tiện ích **VietDub AI** sẽ được kích hoạt ngay lập tức trên Firefox.
-
----
-
-### BƯỚC 3: Hướng dẫn Sử dụng Khi Xem Video
+### Giao diện và các chế độ
 
 ```
   ┌──────────────────────────────────────────────┐
@@ -196,17 +215,6 @@ Khi Terminal xuất hiện thông báo:
    - **Tua video (Seek):** Khi bạn tua tiến hoặc tua lùi, hệ thống lập tức hủy bỏ (cancel) toàn bộ các câu thuyết minh cũ trong hàng đợi và chỉ thuyết minh từ vị trí thời gian mới, không bị phát trễ hay đọc đè.
    - **Toàn màn hình (Fullscreen):** Phụ đề tự động điều chỉnh hiển thị nổi trên toàn màn hình.
    - **Dừng lại (Stop):** Mở popup và bấm nút đỏ **"Dừng thuyết minh"**, toàn bộ âm thanh gốc của video sẽ được phục hồi nguyên vẹn ngay lập tức.
-
----
-
-### ⚠️ Xử lý Sự cố Thường gặp (Troubleshooting)
-
-| Tình huống | Nguyên nhân | Hướng xử lý |
-| :--- | :--- | :--- |
-| **Báo lỗi "Không tìm thấy video trong tab hiện tại"** | Trang web chưa tải xong video hoặc video nằm sâu trong iframe cross-origin. | Tải lại trang video hoặc bấm Play video trước khi mở popup extension. |
-| **Báo lỗi "Không thể kết nối đến máy chủ WebSocket"** | Backend chưa được khởi động tại cổng 8080. | Mở Terminal và chạy lệnh `npm run start:backend`. |
-| **Không nghe thấy tiếng thuyết minh tiếng Việt** | Âm lượng thuyết minh đang để ở mức 0% hoặc đang chọn chế độ "Chỉ phụ đề". | Mở popup, chuyển sang chế độ "Thuyết minh + phụ đề" và tăng thanh trượt "Âm lượng thuyết minh" lên 100%. |
-| **Video có bản quyền DRM (Netflix, Spotify)** | DRM mã hóa luồng âm thanh ở tầng phần cứng bảo vệ. | Hệ thống tuân thủ chính sách bản quyền DRM, không thể thu âm các trang web có DRM. |
 
 ---
 
