@@ -23,7 +23,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from text_rules import correct_terms, fix_vietnamese, rewrite_source_for_translation, strip_fillers
+from text_rules import (
+    MAX_TERM_TRANSLATIONS,
+    apply_pronunciations,
+    compile_term_patterns,
+    correct_terms,
+    fix_vietnamese,
+    protect_terms,
+    restore_terms,
+    rewrite_source_for_translation,
+    strip_fillers,
+)
 
 
 MAX_AUDIO_BYTES = 512 * 1024
@@ -376,6 +386,25 @@ def load_glossary(path: str) -> list[str]:
     return cleaned[:MAX_GLOSSARY_TERMS]
 
 
+def load_glossary_section(path: str, key: str) -> dict[str, str]:
+    """Đọc mục {"translations": {...}} hoặc {"pronunciations": {...}} của file từ điển: thuật ngữ tiếng Anh -> dạng mong muốn."""
+    if not path:
+        return {}
+    try:
+        parsed = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    section = parsed.get(key) if isinstance(parsed, dict) else None
+    if not isinstance(section, dict):
+        return {}
+    cleaned = {
+        source.strip(): target.strip()
+        for source, target in section.items()
+        if isinstance(source, str) and isinstance(target, str) and source.strip() and target.strip()
+    }
+    return dict(list(cleaned.items())[:MAX_TERM_TRANSLATIONS])
+
+
 class SttRuntime(RuntimeBase):
     def __init__(
         self,
@@ -657,8 +686,10 @@ class TranslationRuntime(RuntimeBase):
         ct2_model_path: Path | None = None,
         device: str = "cpu",
         gpu_compute_type: str = "int8_float16",
+        term_translations: dict[str, str] | None = None,
     ) -> None:
         super().__init__(model_path)
+        self._term_patterns = compile_term_patterns(term_translations or {})
         try:
             from transformers import AutoTokenizer
         except ImportError as exc:
@@ -758,7 +789,13 @@ class TranslationRuntime(RuntimeBase):
             prepared = rewrite_source_for_translation(strip_fillers(source_text), self._rewrite_profile)
             if not prepared:
                 raise WorkerInputError("translation contains no speech")
-            translated, token_count = self._generate(prepared)
+            protected, placeholders = protect_terms(prepared, self._term_patterns)
+            translated, token_count = self._generate(protected)
+            if placeholders:
+                translated, complete = restore_terms(translated, placeholders)
+                if not complete:
+                    # Model bỏ mất ký hiệu giữ chỗ: dịch lại không bảo vệ còn hơn mất thuật ngữ khỏi câu.
+                    translated, token_count = self._generate(prepared)
             translated = fix_vietnamese(translated, source_text)
             translated = truncate_words(collapse_repetitions(strip_non_speech(translated)), translation_char_limit(source_text))
             if not translated:
@@ -771,8 +808,11 @@ class TranslationRuntime(RuntimeBase):
 
 
 class TtsRuntime(RuntimeBase):
-    def __init__(self, model_path: Path, codec_path: Path, threads: int, voice: str) -> None:
+    def __init__(
+        self, model_path: Path, codec_path: Path, threads: int, voice: str, pronunciations: dict[str, str] | None = None
+    ) -> None:
         super().__init__(model_path)
+        self._pronunciation_patterns = compile_term_patterns(pronunciations or {})
         # Ngăn SDK truy cập Hub trong quá trình nạp model hoặc kiểm tra file tùy chọn.
         try:
             import numpy as np
@@ -847,7 +887,7 @@ class TtsRuntime(RuntimeBase):
             raise WorkerInputError("unsupported TTS operation")
         text = safe_text(payload.get("text"), "text")
         try:
-            chunks, gaps = self._normalize_chunks(text, max_chars=256)
+            chunks, gaps = self._normalize_chunks(apply_pronunciations(text, self._pronunciation_patterns), max_chars=256)
             audio_chunks = []
             total_samples = 0
             for chunk in chunks:
@@ -923,9 +963,15 @@ def build_runtime(args: argparse.Namespace) -> RuntimeBase:
         )
     if args.role == "translation":
         ct2_path = resolve_existing_directory(args.ct2_model_path, "CTranslate2 model") if args.ct2_model_path else None
-        return TranslationRuntime(model_path, args.threads, ct2_path, args.device, args.gpu_compute_type)
+        return TranslationRuntime(
+            model_path, args.threads, ct2_path, args.device, args.gpu_compute_type,
+            term_translations=load_glossary_section(args.glossary_file, "translations"),
+        )
     codec_path = resolve_existing_directory(args.codec_path, "codec")
-    return TtsRuntime(model_path, codec_path, args.threads, args.voice)
+    return TtsRuntime(
+        model_path, codec_path, args.threads, args.voice,
+        pronunciations=load_glossary_section(args.glossary_file, "pronunciations"),
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

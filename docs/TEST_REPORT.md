@@ -327,3 +327,52 @@ Bắt đầu để cấp `tabCapture`. Chạy kiểm thử extension trên trang
 nhận subtitle/TTS/pause/seek/mode/stop/restore, rồi mới chạy soak 30 phút. Không
 coi synthetic speech hay fixture/mock là bằng chứng human-audio/browser PASS.
 Chưa commit, push, tạo PR hoặc merge cho tới khi các gate này có evidence.
+
+## Cờ `LOCAL_TTS_WORKER_PROCESSES` – 2 tiến trình TTS song song (2026-10-02)
+
+Thêm cờ tùy chọn (mặc định `1` = hành vi cũ). Khi đặt `2`: backend chạy 2 tiến trình TTS (`LocalWorkerPool`, chia request cho
+tiến trình rảnh nhất, `cancel` gửi cho tất cả), pipeline tổng hợp tối đa 2 câu cùng lúc nhưng vẫn phát câu theo đúng thứ tự
+(câu xong sớm chờ câu trước rồi mới gửi; phụ đề vẫn đi ngay trước giọng đọc cùng `segmentId`). Cần đặt thêm
+`LOCAL_TTS_MAX_CONCURRENT_REQUESTS=2` và `--threads 3` cho worker TTS.
+
+Đo A/B xen kẽ (p1,p2,p1,p2), soak gateway 60 s, giọng nói dày (`--tempo 1.35 --gap 0.3`), model thật, i5-9400F:
+
+| Chỉ số | 1 tiến trình × 4 luồng (2 lần) | 2 tiến trình × 3 luồng (2 lần) |
+| --- | --- | --- |
+| Phụ đề / TTS | 20 / 20 | 20 / 20 |
+| Trễ TTS p50 / p95 | 3.15 s, 3.09 s / 4.0 s, 3.6 s | 3.26 s, 3.28 s / 4.4 s, 4.7 s |
+| Trễ phụ đề p50 / p95 | 3.14 s, 3.09 s / 4.0 s, 3.6 s | 3.25 s, 3.27 s / 4.4 s, 4.7 s |
+| Giọng đọc bắt đầu sau khi hết câu, p50 / p95 | 4.72 s, 4.75 s / 5.8 s, 5.4 s | 4.14 s, 4.35 s / 5.2 s, 5.3 s |
+| Backlog mixer tối đa | 2.8 s, 2.8 s | 3.7 s, 3.9 s |
+| Câu bị bỏ ở mixer | 0, 0 | 1, 1 |
+| Lỗi | 0 | 0 |
+
+Kết luận: không có lợi ích rõ ràng nên **giữ mặc định 1**. Thông lượng tổng hợp tăng (bench riêng +22%) nhưng trong
+pipeline thật nút thắt nằm ở hàng đợi phát của mixer chứ không phải tốc độ sinh: giọng đọc bắt đầu sớm hơn ~0.4–0.6 s,
+đổi lại phụ đề/TTS trễ hơn ~0.1–0.3 s (p95 +0.4–1.1 s), backlog mixer cao hơn và có 1 câu bị bỏ, RAM gấp đôi.
+Bằng chứng: `E:\VietDub-AI\evidence\local-gateway-soak-ttsprocs-*.json`. Chưa đo với Firefox thật.
+
+## Cải thiện chất lượng dịch: beam, giữ thuật ngữ, từ điển cách đọc (2026-10-02)
+
+Đo trên vinai-translate-en2vi-v2 (CTranslate2, GPU int8_float16), 40 câu chung (tập A/B cũ) + 24 câu kỹ thuật mới
+(`E:\VietDub-AI\runtime\tech_sentences.json`). Chất lượng do Claude đọc từng câu, không phải người bản ngữ hay metric tự động.
+
+**1. Tham số giải mã** (beam 4/6/8, length_penalty 1.3, repetition_penalty 1.1): chỉ đổi 4–12/64 câu, khác biệt là cách chọn
+từ tương đương, không bên nào đúng hơn rõ ràng; beam 6 chậm hơn (p50 206 ms so với 170 ms của beam 4). **Giữ beam 4.**
+
+**2. Giữ thuật ngữ khi dịch** (mục `translations` trong file từ điển, cần `--glossary-file` ở worker dịch): thay thuật ngữ bằng
+ký hiệu giữ chỗ `X1`, dịch xong đặt lại dạng mong muốn; mất ký hiệu thì dịch lại không bảo vệ. So sánh ký hiệu: `X1` giữ đủ ngữ cảnh
+(`machine learning pipeline` -> `máy học pipeline`), còn `QZT1`/tên riêng làm model bỏ mất `machine learning`.
+
+| | Không bảo vệ | Bảo vệ thuật ngữ |
+| --- | --- | --- |
+| Câu thay đổi | – | 9/64 (đều là câu kỹ thuật), 0/40 câu chung |
+| Ví dụ | "biến đổi xử lý", "mã thông báo", "các nhúng", "Ổn định khuếch tán", "đẩy một cam kết", "Quá mức xảy ra" | "Transformer xử lý", "token", "embedding", "Stable Diffusion", "đẩy commit", "Overfitting xảy ra" |
+| Độ trễ dịch p50 / p95 | 157 / 223 ms | 148 / 206 ms (trong sai số đo) |
+
+**3. Cách đọc riêng** (mục `pronunciations`, tùy chọn, mặc định rỗng, chỉ áp cho văn bản đưa vào TTS, phụ đề giữ nguyên):
+VieNeu vốn phiên âm từ tiếng Anh bằng âm tiếng Anh (`Kubernetes` -> `kuːbɚnˈɛɾiːz`), nên không đặt sẵn mục nào. Chưa nghe thử bằng tai.
+
+Chưa thêm luật sửa lỗi mới vào `text_rules.py` vì chưa có câu sai thực tế từ người dùng; các lỗi còn lại trong tập mẫu
+(ví dụ "Prometheus cạo các số liệu", "dấu chân bộ nhớ") là cách dùng từ của model, có thể thêm vào `translations` khi cần.
+Bằng chứng: `E:\VietDub-AI\evidence\translation-decode-exp.json`, `translation-protect-e2e.json`.

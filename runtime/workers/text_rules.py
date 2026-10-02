@@ -198,3 +198,63 @@ def correct_terms(text: str, terms: list[str]) -> str:
             output.append(tokens[index])
             index += 1
     return " ".join(output)
+
+
+# ---- Thuật ngữ giữ nguyên khi dịch và cách đọc riêng khi thuyết minh ----
+# Model dịch hay dịch sát từng chữ thuật ngữ ("transformer" -> "biến đổi", "token" -> "mã thông báo", "Stable Diffusion" ->
+# "Ổn định khuếch tán"). Thay thuật ngữ bằng ký hiệu giữ chỗ trước khi dịch rồi đặt lại dạng mong muốn sau khi dịch.
+# Đo trên 24 câu kỹ thuật: ký hiệu "X1" giữ nguyên ngữ cảnh xung quanh tốt hơn tên riêng hoặc "QZT1" (hai kiểu kia làm model bỏ mất
+# cụm "machine learning" đứng trước thuật ngữ).
+MAX_TERM_TRANSLATIONS = 500
+_PLACEHOLDER_IN_SOURCE = re.compile(r"\bX\d+\b")
+_SENTENCE_START = re.compile(r"(?:^|[.!?…]\s+)$")
+
+
+def compile_term_patterns(mapping: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
+    """Biên dịch từ điển {thuật ngữ tiếng Anh: dạng trong bản dịch}; cụm dài khớp trước, chấp nhận số nhiều (s/es)."""
+    patterns = []
+    for source, target in sorted(mapping.items(), key=lambda item: -len(item[0])):
+        source, target = source.strip(), target.strip()
+        if source and target:
+            patterns.append((re.compile(rf"(?<![\w-]){re.escape(source)}(?:s|es)?(?![\w-])", re.IGNORECASE), target))
+    return patterns
+
+
+def protect_terms(text: str, patterns: list[tuple[re.Pattern[str], str]]) -> tuple[str, list[tuple[str, str]]]:
+    """Trả (câu đã thay ký hiệu giữ chỗ, danh sách (ký hiệu, dạng đích)). Không làm gì nếu câu đã có sẵn chuỗi giống ký hiệu."""
+    if not patterns or _PLACEHOLDER_IN_SOURCE.search(text):
+        return text, []
+    placeholders: list[tuple[str, str]] = []
+    protected = text
+    for pattern, target in patterns:
+        def replace(_: re.Match[str], target: str = target) -> str:
+            token = f"X{len(placeholders) + 1}"
+            placeholders.append((token, target))
+            return token
+
+        protected = pattern.sub(replace, protected)
+    return protected, placeholders
+
+
+def restore_terms(translated: str, placeholders: list[tuple[str, str]]) -> tuple[str, bool]:
+    """Đặt dạng đích vào chỗ ký hiệu. Trả (văn bản, True nếu mọi ký hiệu đều còn trong bản dịch)."""
+    restored = translated
+    complete = True
+    for token, target in placeholders:
+        match = re.search(rf"(?<!\w){re.escape(token)}(?!\w)", restored, re.IGNORECASE)
+        if match is None:
+            complete = False
+            continue
+        value = target
+        if _SENTENCE_START.search(restored[: match.start()]) and value[:1].islower():
+            value = value[:1].upper() + value[1:]
+        restored = restored[: match.start()] + value + restored[match.end():]
+    return restored, complete
+
+
+def apply_pronunciations(text: str, patterns: list[tuple[re.Pattern[str], str]]) -> str:
+    """Thay thuật ngữ bằng cách viết dễ đọc hơn, chỉ dùng cho văn bản đưa vào TTS (phụ đề giữ nguyên)."""
+    spoken = text
+    for pattern, target in patterns:
+        spoken = pattern.sub(target, spoken)
+    return spoken

@@ -334,5 +334,66 @@ class ArgumentTests(unittest.TestCase):
         self.assertTrue(args.whisper_vad)
 
 
+class TermTranslationTests(unittest.TestCase):
+    PATTERNS = text_rules.compile_term_patterns(
+        {"transformer": "Transformer", "token": "token", "Stable Diffusion": "Stable Diffusion", "overfitting": "overfitting"}
+    )
+
+    def test_replaces_terms_with_placeholders_and_restores_them(self) -> None:
+        protected, placeholders = text_rules.protect_terms("The transformer reads each token.", self.PATTERNS)
+        self.assertEqual(protected, "The X1 reads each X2.")
+        restored, complete = text_rules.restore_terms("X1 đọc từng X2.", placeholders)
+        self.assertTrue(complete)
+        self.assertEqual(restored, "Transformer đọc từng token.")
+
+    def test_accepts_plurals_but_not_longer_words(self) -> None:
+        protected, placeholders = text_rules.protect_terms("Tokens and the tokenizer.", self.PATTERNS)
+        self.assertEqual(protected, "X1 and the tokenizer.")
+        self.assertEqual(len(placeholders), 1)
+
+    def test_multiword_term_wins_over_its_parts(self) -> None:
+        protected, placeholders = text_rules.protect_terms("Stable Diffusion is fast.", self.PATTERNS)
+        self.assertEqual(protected, "X1 is fast.")
+        self.assertEqual(placeholders, [("X1", "Stable Diffusion")])
+
+    def test_capitalises_term_at_sentence_start_only(self) -> None:
+        restored, _ = text_rules.restore_terms("X1 xảy ra khi mô hình học vẹt.", [("X1", "overfitting")])
+        self.assertEqual(restored, "Overfitting xảy ra khi mô hình học vẹt.")
+        restored, _ = text_rules.restore_terms("Đây là X1. X2 khác.", [("X1", "token"), ("X2", "token")])
+        self.assertEqual(restored, "Đây là token. Token khác.")
+
+    def test_reports_incomplete_when_model_drops_a_placeholder(self) -> None:
+        restored, complete = text_rules.restore_terms("Mô hình đọc X1.", [("X1", "token"), ("X2", "prompt")])
+        self.assertFalse(complete)
+        self.assertEqual(restored, "Mô hình đọc token.")
+
+    def test_skips_protection_when_source_already_contains_a_placeholder_lookalike(self) -> None:
+        protected, placeholders = text_rules.protect_terms("Point X1 is a token.", self.PATTERNS)
+        self.assertEqual(protected, "Point X1 is a token.")
+        self.assertEqual(placeholders, [])
+
+    def test_empty_mapping_changes_nothing(self) -> None:
+        self.assertEqual(text_rules.protect_terms("A token.", text_rules.compile_term_patterns({})), ("A token.", []))
+
+    def test_pronunciations_only_rewrite_matching_words(self) -> None:
+        patterns = text_rules.compile_term_patterns({"CUDA": "Cu-đa"})
+        self.assertEqual(text_rules.apply_pronunciations("CUDA chạy nhanh, cuda cũng vậy.", patterns), "Cu-đa chạy nhanh, Cu-đa cũng vậy.")
+        self.assertEqual(text_rules.apply_pronunciations("Kubernetes", patterns), "Kubernetes")
+
+    def test_load_glossary_section_reads_only_valid_string_pairs(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "glossary.json"
+            path.write_text(
+                json.dumps({"terms": ["A"], "translations": {"token": "token", "": "x", "bad": 3}, "pronunciations": []}),
+                encoding="utf-8",
+            )
+            self.assertEqual(worker.load_glossary_section(str(path), "translations"), {"token": "token"})
+            self.assertEqual(worker.load_glossary_section(str(path), "pronunciations"), {})
+            self.assertEqual(worker.load_glossary_section("", "translations"), {})
+
+
 if __name__ == "__main__":
     unittest.main()
