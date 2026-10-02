@@ -15,7 +15,7 @@ if (workingDirectoryEnvPath !== repositoryEnvPath) config({ path: workingDirecto
 
 export function createServer(
   port = 8080,
-  options: { providerFactory?: ProductionProviderFactory } = {}
+  options: { providerFactory?: ProductionProviderFactory; runtimeReadyTimeoutMs?: number } = {}
 ): { server: http.Server; gateway: WebSocketGateway } {
   let gateway: WebSocketGateway;
   const server = http.createServer((req, res) => {

@@ -1,0 +1,11 @@
+{
+  "_comment": "Từ điển thuật ngữ chuyên ngành: Whisper nghe nhầm thì được sửa lại đúng cách viết sau khi nhận dạng (so khớp mờ, không tốn độ trễ). Thêm/bớt tự do; thuật ngữ <6 ký tự (API, GPU, CPU) chỉ sửa chữ hoa/thường. Sao chép file này ra ngoài repo (ví dụ E:/VietDub-AI/glossary.json) rồi trỏ --glossary-file tới đó.",
+  "terms": [
+    "Docker", "Kubernetes", "PyTorch", "TensorFlow", "TensorRT", "CUDA", "GPU", "CPU", "API", "SDK", "JSON", "YAML", "SQL",
+    "PostgreSQL", "MongoDB", "Redis", "Kafka", "Nginx", "Elasticsearch", "Prometheus", "Grafana", "Terraform", "Ansible",
+    "GitHub", "GitLab", "WebSocket", "WebAssembly", "JavaScript", "TypeScript", "Python", "Node.js", "React", "Next.js",
+    "Kubernetes", "microservices", "tokenizer", "transformer", "embedding", "quantization", "inference", "fine-tuning",
+    "LLM", "ChatGPT", "OpenAI", "Anthropic", "Hugging Face", "Whisper", "Stable Diffusion", "regression", "backpropagation",
+    "blockchain", "cryptocurrency", "Bitcoin", "Ethereum", "cybersecurity", "ransomware", "encryption", "firewall"
+  ]
+}

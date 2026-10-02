@@ -1,5 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createWriteStream, mkdirSync, renameSync, statSync, WriteStream } from 'node:fs';
+import path from 'node:path';
 
 export interface LocalWorkerCommand {
   /** Absolute executable path or an executable resolved by PATH. */
@@ -17,11 +19,15 @@ export interface LocalWorkerClientOptions {
   requestTimeoutMs?: number;
   maxQueueSize?: number;
   maxFrameBytes?: number;
+  /** File log local nhận stderr của worker; không bao giờ gửi về trình duyệt. */
+  stderrLogPath?: string;
 }
 
 export interface LocalWorkerRequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Lệnh điều khiển (cancel) phải đi được cả khi hàng đợi suy luận đã đầy. */
+  bypassQueueLimit?: boolean;
 }
 
 export interface LocalWorkerClientLike {
@@ -43,6 +49,7 @@ interface WorkerResponse {
   result?: unknown;
   error?: string;
   event?: string;
+  cancelled?: boolean;
 }
 
 interface PendingRequest {
@@ -57,6 +64,7 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_QUEUE_SIZE = 32;
 const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
+const MAX_STDERR_LOG_BYTES = 5 * 1024 * 1024;
 
 /**
  * Small JSON-lines RPC transport for local inference workers.
@@ -77,6 +85,8 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
   private readonly requestTimeoutMs: number;
   private readonly maxQueueSize: number;
   private readonly maxFrameBytes: number;
+  private readonly stderrLogPath: string | undefined;
+  private stderrLog: WriteStream | null = null;
   private child: ChildProcessWithoutNullStreams | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private stdoutBuffer = '';
@@ -96,6 +106,7 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.maxQueueSize = options.maxQueueSize ?? DEFAULT_MAX_QUEUE_SIZE;
     this.maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+    this.stderrLogPath = options.stderrLogPath;
 
     if (!this.command.command.trim()) {
       throw new Error(`${this.name} worker command is empty`);
@@ -107,7 +118,7 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
 
   async request<T>(payload: Record<string, unknown>, options: LocalWorkerRequestOptions = {}): Promise<T> {
     if (this.closed) throw new Error(`${this.name} worker is closed`);
-    if (this.pending.size + this.requestReservations >= this.maxQueueSize) {
+    if (!options.bypassQueueLimit && this.pending.size + this.requestReservations >= this.maxQueueSize) {
       throw new Error(`${this.name} worker queue exceeded ${this.maxQueueSize} pending requests`);
     }
 
@@ -182,6 +193,8 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     this.readyReject = null;
     this.readyPromise = null;
     this.rejectAll(new Error(`${this.name} worker closed`));
+    this.stderrLog?.end();
+    this.stderrLog = null;
     if (!child) return;
 
     if (!child.killed) {
@@ -218,7 +231,8 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => this.consumeStdout(chunk));
       child.stderr.setEncoding('utf8');
-      child.stderr.on('data', () => {});
+      const stderrLog = this.openStderrLog();
+      child.stderr.on('data', (chunk: string) => stderrLog?.write(chunk));
       child.once('error', error => {
         this.clearStartupTimer();
         this.failWorker(new Error(`${this.name} worker failed to start: ${error.message}`));
@@ -291,6 +305,10 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
       pending.signal.removeEventListener('abort', pending.abortListener);
     }
     if (response.ok === false) {
+      if (response.cancelled) {
+        pending.reject(abortError(`${this.name} request was cancelled by the worker`));
+        return;
+      }
       pending.reject(new Error(response.error || `${this.name} worker request failed`));
       return;
     }
@@ -330,6 +348,31 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     if (child && !child.killed) {
       try { child.kill('SIGTERM'); } catch {}
     }
+  }
+
+  private openStderrLog(): WriteStream | null {
+    if (!this.stderrLogPath) return null;
+    if (this.stderrLog) return this.stderrLog;
+    try {
+      mkdirSync(path.dirname(this.stderrLogPath), { recursive: true });
+      try {
+        // Xoay vòng một bản để log không phình vô hạn trên máy người dùng.
+        if (statSync(this.stderrLogPath).size > MAX_STDERR_LOG_BYTES) {
+          renameSync(this.stderrLogPath, `${this.stderrLogPath}.old`);
+        }
+      } catch {
+        // File log chưa tồn tại.
+      }
+      const stream = createWriteStream(this.stderrLogPath, { flags: 'a' });
+      stream.on('error', () => {
+        if (this.stderrLog === stream) this.stderrLog = null;
+      });
+      stream.write(`\n[${new Date().toISOString()}] ${this.name} worker starting\n`);
+      this.stderrLog = stream;
+    } catch {
+      this.stderrLog = null;
+    }
+    return this.stderrLog;
   }
 
   private clearStartupTimer(): void {

@@ -1,4 +1,4 @@
-import { AudioMixerConfig, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME } from '@vietdub/shared';
+import { AudioMixerConfig, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, emitDiagnostic } from '@vietdub/shared';
 
 export type AudioSourceMode = 'media-element' | 'capture-stream' | 'media-stream';
 
@@ -8,6 +8,42 @@ export interface AudioMixerOptions {
   initialConfig?: Partial<AudioMixerConfig>;
 }
 
+/**
+ * Hàng chờ phát TTS tối đa trước khi bỏ câu mới (ms). Mỗi giây chờ là một giây thuyết minh (và phụ đề
+ * đồng bộ theo nó) trễ thêm so với video, nên giữ ngắn.
+ */
+export const DEFAULT_MAX_TTS_BACKLOG_MS = 3_500;
+
+export interface ScheduledTTS {
+  source: AudioBufferSourceNode;
+  /** Thời gian chờ tới khi câu bắt đầu phát (ms). */
+  delayMs: number;
+  /** Thời lượng phát thực tế sau khi tính tốc độ (ms). */
+  durationMs: number;
+}
+/** Tốc độ phát tối đa; cao hơn mức này giọng đọc (đổi cao độ theo tốc độ) khó nghe. */
+export const MAX_TTS_PLAYBACK_RATE = 1.3;
+
+/**
+ * Tốc độ phát TTS theo độ dài hàng chờ: 1.0 khi không trễ, tăng dần từ 0.5 s tới trần 1.3 khi trễ ~3 s.
+ * Tăng tốc sớm giữ hàng chờ khỏi đầy tới mức phải bỏ cả câu thuyết minh.
+ */
+export function ttsPlaybackRateForBacklog(backlogMs: number): number {
+  if (!Number.isFinite(backlogMs) || backlogMs <= 500) return 1;
+  return Math.min(MAX_TTS_PLAYBACK_RATE, 1 + (backlogMs - 500) / 8_000);
+}
+
+/**
+ * Tốc độ để giọng đọc vừa khung thời gian của câu gốc (cộng 0.6 s nghỉ). Giọng tiếng Việt dài hơn lời gốc
+ * mà phát ở 1.0x thì mỗi câu đẩy câu sau trễ thêm, thuyết minh (và phụ đề đồng bộ) trôi dần khỏi video.
+ */
+export function ttsPlaybackRateForSlot(audioDurationMs: number, sourceDurationMs: number | undefined): number {
+  if (!Number.isFinite(audioDurationMs) || !Number.isFinite(sourceDurationMs) || (sourceDurationMs as number) <= 0) return 1;
+  const slotMs = (sourceDurationMs as number) + 600;
+  if (audioDurationMs <= slotMs) return 1;
+  return Math.min(MAX_TTS_PLAYBACK_RATE, audioDurationMs / slotMs);
+}
+
 interface SavedVideoAudioState {
   volume: number;
   muted: boolean;
@@ -15,7 +51,7 @@ interface SavedVideoAudioState {
 
 export class AudioMixer {
   private readonly audioCtx: AudioContext;
-  private readonly sourceNode: MediaStreamAudioSourceNode | MediaElementAudioSourceNode;
+  private sourceNode: MediaStreamAudioSourceNode | MediaElementAudioSourceNode;
   private readonly sourceMode: AudioSourceMode;
   private readonly videoElement: HTMLMediaElement | null;
   private readonly savedVideoAudioState: SavedVideoAudioState | null;
@@ -68,6 +104,21 @@ export class AudioMixer {
     this.ttsGainNode.connect(this.audioCtx.destination);
   }
 
+  /**
+   * Thay nguồn thu (chỉ chế độ capture-stream): khi trang đổi nguồn phát (YouTube chèn quảng cáo, nạp lại
+   * MediaSource…), track cũ của captureStream chết và chỉ còn trả về im lặng.
+   */
+  replaceCaptureSource(sourceNode: MediaStreamAudioSourceNode): void {
+    if (this.disconnected || this.sourceMode !== 'capture-stream') return;
+    try {
+      this.sourceNode.disconnect();
+    } catch {
+      // Nút cũ đã bị ngắt.
+    }
+    this.sourceNode = sourceNode;
+    this.sourceNode.connect(this.sttTapNode);
+  }
+
   getSTTTapNode(): GainNode {
     return this.sttTapNode;
   }
@@ -112,17 +163,55 @@ export class AudioMixer {
     return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
   }
 
-  /** Phát một AudioBuffer trên nhánh TTS độc lập. */
-  playTTSBuffer(audioBuffer: AudioBuffer): AudioBufferSourceNode {
+  /**
+   * Phát một AudioBuffer trên nhánh TTS độc lập, nối tiếp câu trước.
+   * Nếu hàng chờ phát đã dài hơn maxBacklogMs thì bỏ câu mới (trả về null) để thuyết minh không trễ dồn.
+   */
+  playTTSBuffer(audioBuffer: AudioBuffer, maxBacklogMs = DEFAULT_MAX_TTS_BACKLOG_MS): AudioBufferSourceNode | null {
+    return this.scheduleTTSBuffer(audioBuffer, maxBacklogMs)?.source ?? null;
+  }
+
+  /** Như playTTSBuffer nhưng trả về thời điểm bắt đầu/thời lượng để hiển thị phụ đề đúng lúc giọng đọc. */
+  scheduleTTSBuffer(
+    audioBuffer: AudioBuffer,
+    maxBacklogMs = DEFAULT_MAX_TTS_BACKLOG_MS,
+    sourceDurationMs?: number
+  ): ScheduledTTS | null {
+    if (this.disconnected) return null;
+    if (this.getTTSBacklogMs() > maxBacklogMs) {
+      // Bỏ giọng đọc của câu quá trễ là hành vi thiết kế (phụ đề câu đó vẫn hiện), không phải lỗi: chỉ ghi chẩn đoán.
+      emitDiagnostic('tts_mixer', 'backlog_skipped', {
+        backlogMs: this.getTTSBacklogMs(),
+        limitMs: maxBacklogMs,
+        segmentDurationMs: Math.round(audioBuffer.duration * 1000)
+      });
+      return null;
+    }
     const source = this.audioCtx.createBufferSource();
     source.buffer = audioBuffer;
+    // Câu tiếng Việt thường dài hơn câu gốc; khi bắt đầu trễ thì phát nhanh hơn một chút để bắt kịp video.
+    const rate = Math.max(
+      ttsPlaybackRateForBacklog(this.getTTSBacklogMs()),
+      ttsPlaybackRateForSlot(audioBuffer.duration * 1000, sourceDurationMs)
+    );
+    if (source.playbackRate) source.playbackRate.value = rate;
     source.connect(this.ttsGainNode);
     this.ttsSources.add(source);
     source.onended = () => this.ttsSources.delete(source);
     const startAt = Math.max(this.audioCtx.currentTime, this.nextTTSStartTime);
     source.start(startAt);
-    this.nextTTSStartTime = startAt + audioBuffer.duration;
-    return source;
+    this.nextTTSStartTime = startAt + audioBuffer.duration / rate;
+    const delayMs = Math.max(0, Math.round((startAt - this.audioCtx.currentTime) * 1000));
+    const durationMs = Math.round((audioBuffer.duration / rate) * 1000);
+    // AudioContext bị trình duyệt tạm dừng (chính sách autoplay) thì câu được lên lịch nhưng không phát ra loa.
+    emitDiagnostic('tts_mixer', 'scheduled', {
+      contextState: this.audioCtx.state,
+      delayMs,
+      durationMs,
+      rate: Math.round(rate * 100) / 100,
+      ttsGain: Math.round(this.config.ttsVolume)
+    });
+    return { source, delayMs, durationMs };
   }
 
   stopTTS(): void {

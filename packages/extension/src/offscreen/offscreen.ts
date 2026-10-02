@@ -1,5 +1,6 @@
 import { AudioMixer } from '../audio/mixer.js';
 import { PCMProcessor } from '../audio/pcm-processor.js';
+import { AudioContextBlockedError, ensureAudioContextRunning } from '../audio/audio-context-guard.js';
 import {
   AudioMixerConfig,
   ClientMessage,
@@ -11,6 +12,8 @@ import {
   diagnosticSessionRef,
   emitDiagnostic
 } from '@vietdub/shared';
+import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
+import { TtsSubtitleSync } from '../sync/tts-subtitle-sync.js';
 
 interface RuntimeResponse {
   success: boolean;
@@ -36,6 +39,8 @@ interface OffscreenSession {
   ws: WebSocket | null;
   videoTimeMs: number;
   cleanupPromise: Promise<void> | null;
+  /** Giữ phụ đề tới đúng lúc giọng đọc cùng câu bắt đầu phát rồi mới chuyển cho tab hiển thị. */
+  subtitleSync: TtsSubtitleSync | null;
 }
 
 let currentSession: OffscreenSession | null = null;
@@ -141,7 +146,8 @@ async function startCapture(
   sessionId: string,
   mode: OperationMode = 'dubbing_and_subtitle',
   mixerConfig?: Partial<AudioMixerConfig>,
-  wsUrl = 'ws://localhost:8080',
+  // Backend chỉ bind IPv4 loopback; "localhost" có thể phân giải sang ::1 trước.
+  wsUrl = 'ws://127.0.0.1:8080',
   initialVideoState?: VideoPlaybackState
 ): Promise<void> {
   if (!streamId || !sessionId) throw runtimeError('INVALID_START_REQUEST', 'Thiếu streamId hoặc sessionId.');
@@ -171,8 +177,13 @@ async function startCapture(
     videoTimeMs: Number.isFinite(initialVideoState?.currentTime)
       ? Math.max(0, Math.round(initialVideoState!.currentTime * 1000))
       : 0,
-    cleanupPromise: null
+    cleanupPromise: null,
+    subtitleSync: null
   };
+  session.subtitleSync = new TtsSubtitleSync(({ message, ttsDurationMs }) => {
+    if (!isCurrent(session)) return;
+    notifyBackground(ttsDurationMs === undefined ? message : { ...message, ttsDurationMs });
+  });
   currentSession = session;
 
   const flight = runStartCapture(session, streamId, defaultMixerConfig(mixerConfig));
@@ -207,7 +218,12 @@ async function runStartCapture(session: OffscreenSession, streamId: string, mixe
     });
 
     session.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    if (session.audioCtx.state === 'suspended') await session.audioCtx.resume();
+    try {
+      await ensureAudioContextRunning(session.audioCtx);
+    } catch (error) {
+      if (!(error instanceof AudioContextBlockedError)) throw error;
+      throw runtimeError('AUDIO_CONTEXT_BLOCKED', error.message, false, true);
+    }
     assertCurrent(session);
     emitDiagnostic('chrome_capture', 'audio_context_ready', {
       sessionRef: diagnosticSessionRef(session.sessionId),
@@ -270,7 +286,7 @@ async function connectWebSocket(session: OffscreenSession): Promise<void> {
       if (settled) return;
       settled = true;
       reject(runtimeError('WS_CONNECTION_TIMEOUT', 'Hết thời gian chờ phản hồi từ máy chủ AI.', true, true));
-    }, 7000);
+    }, SESSION_READY_TIMEOUT_MS);
 
     try {
       session.ws = new WebSocket(session.wsUrl);
@@ -342,6 +358,12 @@ async function connectWebSocket(session: OffscreenSession): Promise<void> {
           session.ready = true;
           emitDiagnostic('chrome_ws', 'session_ready_received', { sessionRef: diagnosticSessionRef(session.sessionId) });
           resolve();
+        } else if (serverMessage.type === 'ERROR' && serverMessage.fatal && !settled) {
+          // Backend từ chối phiên (model đang khởi động, cấu hình thiếu…): báo đúng mã lỗi thay vì chờ timeout.
+          settled = true;
+          clearTimeout(timeout);
+          reject(runtimeError(serverMessage.code, serverMessage.message, isRetryableServerError(serverMessage.code), true));
+          return;
         }
         emitDiagnostic('chrome_ws', 'server_event_received', {
           sessionRef: diagnosticSessionRef(session.sessionId),
@@ -359,7 +381,12 @@ async function connectWebSocket(session: OffscreenSession): Promise<void> {
 async function handleServerMessage(session: OffscreenSession, message: ServerMessage): Promise<void> {
   if (!isCurrent(session)) return;
 
-  if (message.type === 'SUBTITLE_EVENT' || message.type === 'LATENCY_METRIC' || message.type === 'SESSION_METRICS') {
+  if (message.type === 'SUBTITLE_EVENT' && session.subtitleSync?.offer(message)) {
+    emitDiagnostic('chrome_ws', 'subtitle_held_for_tts', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      segmentId: message.segmentId
+    });
+  } else if (message.type === 'SUBTITLE_EVENT' || message.type === 'LATENCY_METRIC' || message.type === 'SESSION_METRICS') {
     notifyBackground(message);
     emitDiagnostic('chrome_ws', 'event_forwarded_to_background', {
       sessionRef: diagnosticSessionRef(session.sessionId),
@@ -370,8 +397,9 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
 
   if (message.type === 'ERROR') {
     notifyBackground(message);
-    if (message.fatal || session.ready) {
-      await failSession(session, runtimeError(message.code, message.message, false, message.fatal));
+    // Chỉ lỗi nghiêm trọng mới dừng phiên; lỗi tạm thời được background hiển thị như cảnh báo.
+    if (message.fatal) {
+      await failSession(session, runtimeError(message.code, message.message, isRetryableServerError(message.code), true));
     }
     return;
   }
@@ -384,14 +412,20 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
       for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
       const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
       if (isCurrent(session) && message.generation === session.generation && playbackEpochAtDecodeStart === session.playbackEpoch && session.audioMixer) {
-        session.audioMixer.playTTSBuffer(audioBuffer);
+        const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, message.endMs - message.startMs);
+        if (scheduled) session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs);
+        else session.subtitleSync?.ttsDropped(message.segmentId);
         emitDiagnostic('chrome_tts', 'decoded_and_played', {
           sessionRef: diagnosticSessionRef(session.sessionId),
+          segmentId: message.segmentId,
           generation: message.generation,
-          durationMs: Math.round(audioBuffer.duration * 1000)
+          durationMs: Math.round(audioBuffer.duration * 1000),
+          scheduled: Boolean(scheduled),
+          delayMs: scheduled?.delayMs
         });
       }
     } catch (error) {
+      session.subtitleSync?.ttsDropped(message.segmentId);
       emitDiagnostic('chrome_tts', 'decoder_or_playback_error', {
         sessionRef: diagnosticSessionRef(session.sessionId),
         generation: message.generation
@@ -415,6 +449,7 @@ function handleSeek(fromMs: number, toMs: number, sessionId?: string): void {
   session.generation += 1;
   session.playbackEpoch += 1;
   session.audioMixer?.stopTTS();
+  session.subtitleSync?.clear();
   if (session.ws?.readyState === WebSocket.OPEN) {
     const message: ClientMessage = {
       type: 'SEEK_EVENT',
@@ -435,6 +470,7 @@ function handleVideoState(state: VideoPlaybackState, sessionId?: string): void {
   if (state.paused) {
     session.playbackEpoch += 1;
     session.audioMixer?.stopTTS();
+    session.subtitleSync?.clear();
   }
   const message: ClientMessage = {
     type: 'VIDEO_STATE_UPDATE',
@@ -483,6 +519,7 @@ async function stopCapture(sessionId?: string, reason = 'user'): Promise<void> {
   currentSession = null;
   session.cancelled = true;
   session.playbackEpoch += 1;
+  session.subtitleSync?.clear();
   await cleanupSession(session, reason);
 }
 

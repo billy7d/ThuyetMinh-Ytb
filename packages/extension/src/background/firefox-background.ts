@@ -15,6 +15,18 @@ import {
   toSessionError
 } from './session-manager.js';
 import { ContentPingResponse, ContentScriptHandshake } from './content-handshake.js';
+import { isRetryableServerError } from '../errors/runtime-errors.js';
+import { isSameVideo } from '../navigation/video-identity.js';
+
+// URL video lúc bắt đầu phiên, để phân biệt đổi video với việc trang tự sửa query.
+let sessionVideoUrl: string | null = null;
+
+function rememberSessionVideoUrl(tabId: number): void {
+  chrome.tabs.get(tabId, (tab) => {
+    if (!chrome.runtime.lastError) sessionVideoUrl = tab?.url || null;
+  });
+}
+import { attachWsRelay } from '../relay/ws-relay.js';
 
 interface ContentCommandResponse {
   success?: boolean;
@@ -24,6 +36,22 @@ interface ContentCommandResponse {
 }
 
 console.log('[BACKGROUND] Firefox background script loaded.');
+
+// WebSocket tới backend local phải mở ở đây (Origin moz-extension://), không phải trong content script.
+attachWsRelay(chrome.runtime.onConnect as any, undefined, (tabId) => {
+  // Content script mất (tải lại trang/đóng tab) khi phiên còn chạy: báo lỗi rõ ràng thay vì để popup hiện "đang thuyết minh".
+  const snapshot = sessionManager.getSnapshot();
+  if (tabId !== snapshot.tabId || !snapshot.sessionId || snapshot.state !== 'ACTIVE') return;
+  void sessionManager.handleRuntimeEvent({
+    sessionId: snapshot.sessionId,
+    error: {
+      code: 'PAGE_RELOADED',
+      message: 'Trang video đã tải lại hoặc đóng; phiên thu âm cũ đã kết thúc.',
+      retryable: true,
+      fatal: true
+    }
+  });
+});
 
 function notifyPopup(message: unknown): void {
   try {
@@ -102,6 +130,7 @@ const runtime: SessionRuntime = {
 
   async start(request: SessionStartRequest & { sessionId: string }, signal: AbortSignal): Promise<void> {
     throwIfAborted(signal);
+    rememberSessionVideoUrl(request.tabId);
     let response: ContentCommandResponse;
     try {
       response = await sendTabMessage<ContentCommandResponse>(request.tabId, {
@@ -254,7 +283,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender, sendResponse) => {
       if (msg.sessionId === sessionManager.getSnapshot().sessionId) {
         void sessionManager.handleRuntimeEvent({
           sessionId: msg.sessionId,
-          error: { code: msg.code, message: msg.message, retryable: false, fatal: msg.fatal }
+          error: { code: msg.code, message: msg.message, retryable: isRetryableServerError(msg.code), fatal: msg.fatal === true }
         });
       }
       sendResponse({ success: true });
@@ -281,9 +310,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (tabId === sessionManager.getSnapshot().tabId && (changeInfo.url || changeInfo.status === 'loading')) {
-    void sessionManager.stop('tab-navigation').catch((error) => {
-      console.error('[BACKGROUND] navigation cleanup failed', JSON.stringify(toSessionError(error, 'NAVIGATION_CLEANUP_FAILED')));
-    });
+  const snapshot = sessionManager.getSnapshot();
+  if (tabId !== snapshot.tabId || !snapshot.sessionId || !changeInfo.url) return;
+  // YouTube tự sửa query (&t=, &pp=, sau quảng cáo…) khi vẫn phát cùng video; chỉ dừng khi thật sự đổi video.
+  if (!sessionVideoUrl || isSameVideo(sessionVideoUrl, changeInfo.url)) {
+    sessionVideoUrl = changeInfo.url;
+    return;
   }
+  sessionVideoUrl = null;
+  void sessionManager.stop('tab-navigation').catch((error) => {
+    console.error('[BACKGROUND] navigation cleanup failed', JSON.stringify(toSessionError(error, 'NAVIGATION_CLEANUP_FAILED')));
+  });
 });

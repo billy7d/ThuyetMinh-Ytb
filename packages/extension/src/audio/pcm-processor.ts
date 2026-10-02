@@ -1,7 +1,8 @@
 import { calculateFloatPcmStats, diagnosticSessionRef, emitDiagnostic } from '@vietdub/shared';
 
 export interface PCMChunkHandler {
-  (pcmBase64: string, timestampMs: number, audioTimeMs: number): void;
+  /** `rms` cho phép phía gọi phát hiện nguồn thu bị câm (toàn số 0) mà không phải giải mã lại PCM. */
+  (pcmBase64: string, timestampMs: number, audioTimeMs: number, rms: number): void;
 }
 
 export class PCMProcessor {
@@ -103,7 +104,7 @@ export class PCMProcessor {
           audioTimelineTimestampMs
         });
         try {
-          this.onChunk(base64, timestampMs, audioTimelineTimestampMs);
+          this.onChunk(base64, timestampMs, audioTimelineTimestampMs, stats.rms);
         } catch (error) {
           console.error('[PCMProcessor] chunk handler failed', JSON.stringify({ code: 'PCM_CHUNK_HANDLER_FAILED', message: String(error) }));
         }

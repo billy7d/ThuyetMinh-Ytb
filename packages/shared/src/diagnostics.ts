@@ -37,7 +37,9 @@ export function emitDiagnostic(
   const safeFields = Object.fromEntries(
     Object.entries(fields).map(([field, value]) => [field, sanitizeField(field, value)])
   );
-  globalThis.console?.debug(`[VIETDUB][DIAG] ${scope}.${event}`, safeFields);
+  // Một dòng JSON (đã lọc trường nhạy cảm): đọc được cả khi console không cho truy cập object
+  // (content script Firefox) và dễ grep trong log backend.
+  globalThis.console?.debug(`[VIETDUB][DIAG] ${scope}.${event} ${JSON.stringify(safeFields)}`);
 }
 
 /** Tính thống kê PCM 16-bit little-endian mà không lưu hoặc ghi lại mẫu âm thanh. */

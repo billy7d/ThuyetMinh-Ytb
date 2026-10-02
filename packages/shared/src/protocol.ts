@@ -134,6 +134,13 @@ export interface SubtitleEventMessage extends BaseMessage {
   endMs: number;
   generation: number;
   action: 'show' | 'hide';
+  /**
+   * true: phụ đề đi kèm câu thuyết minh cùng segmentId (gửi ngay trước TTS_CHUNK). Bên phát audio hiển thị
+   * phụ đề đúng lúc giọng đọc bắt đầu, để phụ đề và thuyết minh không lệch nhau.
+   */
+  syncWithTts?: boolean;
+  /** Thời lượng giọng đọc (ms) khi syncWithTts. */
+  ttsDurationMs?: number;
 }
 
 export interface LatencyMetricMessage extends BaseMessage {
@@ -143,6 +150,8 @@ export interface LatencyMetricMessage extends BaseMessage {
   translationMs: number;
   ttsMs: number;
   totalPipelineMs: number;
+  /** Độ trễ thật so với video: thời điểm video mới nhất trừ thời điểm kết thúc câu (ms). */
+  videoLagMs?: number;
 }
 
 export interface SessionMetricsMessage extends BaseMessage {

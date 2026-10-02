@@ -77,7 +77,9 @@ function classifyLocalError(message) {
 }
 
 async function main() {
-  const healthResponse = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(5000) });
+  // Health cùng host/cổng với WebSocket để smoke chạy được với backend ở cổng thử nghiệm.
+  const healthUrl = new URL('/health', wsUrl.replace(/^ws/, 'http')).toString();
+  const healthResponse = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
   const health = await healthResponse.json();
   if (!healthResponse.ok || health.status !== 'ok' || health.providers?.mode !== 'local' || !health.providers?.configured) {
     throw new Error('Backend local chưa sẵn sàng; không gửi audio gateway.');

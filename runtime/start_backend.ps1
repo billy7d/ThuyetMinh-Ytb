@@ -1,4 +1,4 @@
-param([string]$NodeExecutable = '')
+﻿param([string]$NodeExecutable = '')
 
 $ErrorActionPreference = 'Stop'
 
@@ -28,8 +28,10 @@ foreach ($name in $cachePaths.Keys) {
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:HF_HUB_DISABLE_TELEMETRY = '1'
-$env:OMP_NUM_THREADS = '6'
-$env:MKL_NUM_THREADS = '6'
+# Ba worker chạy song song; số luồng suy luận của từng worker đặt qua --threads trong .env.
+# Giữ pool OpenMP/MKL nhỏ để tổng số luồng không vượt số nhân CPU (tranh chấp CPU làm STT chậm hơn thời gian thực).
+$env:OMP_NUM_THREADS = '2'
+$env:MKL_NUM_THREADS = '2'
 
 if (-not $NodeExecutable) {
     $nodeCommand = Get-Command node -ErrorAction SilentlyContinue

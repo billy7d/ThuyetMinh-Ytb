@@ -205,14 +205,16 @@ describe('local runtime contracts', () => {
       onError: error => results.push(`error:${error.message}`)
     });
     stream.sendAudioChunk(Buffer.alloc(8000), 1000);
-    stream.sendAudioChunk(Buffer.alloc(8000), 1500);
+    stream.sendAudioChunk(Buffer.alloc(8000), 1250);
     stream.endStream();
     await new Promise(resolve => setTimeout(resolve, 10));
+    // Hai chunk liền mạch đến khi worker chưa sẵn sàng được gom thành một request 500 ms.
     expect(results).toEqual([
-      'final:Hello from local worker.',
       'final:Hello from local worker.',
       'final:Final utterance from stream flush.'
     ]);
+    const audioRequest = worker.requests.find(request => request.op === 'audio_chunk');
+    expect(audioRequest).toMatchObject({ timestampMs: 1000, durationMs: 500 });
 
     const translation = new LocalTranslationProvider(worker, { modelPath: '/models/translation' });
     await expect(translation.translate({
@@ -238,13 +240,11 @@ describe('local runtime contracts', () => {
     expect(worker.requests.map(request => request.op)).toEqual([
       'start_stream',
       'audio_chunk',
-      'audio_chunk',
       'end_stream',
       'translate',
       'synthesize'
     ]);
-    expect(worker.requests.slice(0, 4).map(request => request.modelPath)).toEqual([
-      '/models/stt',
+    expect(worker.requests.slice(0, 3).map(request => request.modelPath)).toEqual([
       '/models/stt',
       '/models/stt',
       '/models/stt'

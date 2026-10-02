@@ -1,0 +1,4 @@
+# Tùy chọn: thư viện CUDA cho CTranslate2 (Whisper + OPUS-MT) chạy trên GPU NVIDIA. Cần driver NVIDIA hỗ trợ CUDA 12.
+# Khoảng 1.3 GB; chỉ cài khi operator đồng ý. Worker tự thêm thư mục DLL vào PATH (enable_cuda_libraries).
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.27.0.42

@@ -11,7 +11,7 @@ import {
   diagnosticSessionRef,
   emitDiagnostic
 } from '@vietdub/shared';
-import { STTProvider, STTResult, STTStreamSession } from '../stt/types.js';
+import { STTProvider, STTResult, STTStreamError, STTStreamSession } from '../stt/types.js';
 import { TranslationEngine } from '../translation/translation-engine.js';
 import { TTSProvider } from '../tts/types.js';
 import { CostTracker, BudgetConfig } from '../cost/cost-tracker.js';
@@ -19,6 +19,62 @@ import { CostTracker, BudgetConfig } from '../cost/cost-tracker.js';
 export interface PipelineCallbacks {
   sendMessage: (msg: ServerMessage) => void;
 }
+
+export interface PipelineTimingConfig {
+  /** Bỏ câu thuyết minh nếu khi đến lượt tổng hợp, video đã chạy quá câu đó hơn ngưỡng này (ms). */
+  ttsMaxLagMs: number;
+  /** Số câu thuyết minh tối đa chờ tổng hợp; vượt quá thì bỏ câu cũ nhất để không trễ dồn. */
+  maxPendingTts: number;
+  /** Khoảng cách tối thiểu giữa hai cảnh báo không nghiêm trọng cùng mã gửi cho extension (ms). */
+  warningIntervalMs: number;
+  /**
+   * Mảnh câu chưa trọn được giữ chờ câu nối tiếp; nếu không có câu mới trong khoảng này (ms)
+   * thì dịch luôn mảnh đó để phụ đề không treo tới lượt nói sau. Đo thực tế: lượt nói sau luôn tới
+   * muộn hơn ≥1 s nên chỉ ghép các câu Whisper trả về cùng một lần; chờ lâu hơn chỉ làm tăng độ trễ.
+   */
+  pendingFlushMs: number;
+}
+
+const DEFAULT_TIMING: PipelineTimingConfig = {
+  ttsMaxLagMs: 6_000,
+  maxPendingTts: 3,
+  warningIntervalMs: 10_000,
+  pendingFlushMs: 150
+};
+
+interface TtsJob {
+  segmentId: string;
+  text: string;
+  startMs: number;
+  endMs: number;
+  generation: number;
+  streamToken: number;
+  sttLatencyMs: number;
+  translationDurationMs: number;
+  pipelineStartedAt: number;
+  queueWaitMs: number;
+  /** Phụ đề của câu này chưa gửi: sẽ gửi cùng lúc với giọng đọc (hoặc ngay khi câu bị bỏ thuyết minh). */
+  subtitlePending: boolean;
+}
+
+type FinalQueueItem =
+  | { kind: 'final'; result: STTResult; streamToken: number; enqueuedAtMs: number }
+  | { kind: 'flush'; streamToken: number; generation: number; enqueuedAtMs: number };
+
+interface TranslatedSegment {
+  segmentId: string;
+  sourceText: string;
+  translatedText: string;
+  startMs: number;
+  endMs: number;
+  generation: number;
+  streamToken: number;
+  sttLatencyMs: number;
+  translationDurationMs: number;
+  pipelineStartedAt: number;
+  queueWaitMs: number;
+}
+
 export class RealtimePipeline {
   // Whisper cục bộ đôi khi trả nhiều câu trong một đợt; giữ bộ đệm hữu hạn đủ lớn để hấp thụ đợt trả kết quả đó.
   private static readonly MAX_PENDING_FINALS = 32;
@@ -27,14 +83,20 @@ export class RealtimePipeline {
   private sttStreamToken = 0;
   private readonly processedFinalKeys = new Set<string>();
   // Ghi thời điểm vào hàng đợi để tách độ trễ chờ khỏi thời gian suy luận của model.
-  private readonly finalQueue: Array<{ result: STTResult; streamToken: number; enqueuedAtMs: number }> = [];
+  private readonly finalQueue: FinalQueueItem[] = [];
+  private readonly ttsQueue: TtsJob[] = [];
+  private pendingFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly audioEndWallClockByVideoMs = new Map<number, number>();
+  private readonly lastWarningAtByCode = new Map<string, number>();
   private drainingFinalQueue = false;
+  private drainingTtsQueue = false;
+  private latestVideoTimeMs = 0;
   private sttSession: STTStreamSession | null = null;
   private isActive = false;
   private mode: OperationMode;
   private readonly costTracker: CostTracker;
   private readonly sessionRef: string;
+  private readonly timing: PipelineTimingConfig;
 
   constructor(
     private readonly sessionId: string,
@@ -43,11 +105,13 @@ export class RealtimePipeline {
     private readonly translationEngine: TranslationEngine,
     private readonly ttsEngine: TTSProvider,
     private readonly callbacks: PipelineCallbacks,
-    budgetConfig: Partial<BudgetConfig> = {}
+    budgetConfig: Partial<BudgetConfig> = {},
+    timing: Partial<PipelineTimingConfig> = {}
   ) {
     this.mode = mode;
     this.costTracker = new CostTracker(sessionId, budgetConfig);
     this.sessionRef = diagnosticSessionRef(sessionId);
+    this.timing = { ...DEFAULT_TIMING, ...timing };
   }
 
   start(): void {
@@ -63,6 +127,7 @@ export class RealtimePipeline {
       const durationSec = pcmData.length / 2 / 16000;
       this.costTracker.recordAudioChunk(durationSec);
       const audioEndVideoMs = Math.round(videoTimeMs + durationSec * 1000);
+      this.latestVideoTimeMs = audioEndVideoMs;
       this.audioEndWallClockByVideoMs.set(audioEndVideoMs, Date.now());
       if (this.audioEndWallClockByVideoMs.size > 256) {
         const first = this.audioEndWallClockByVideoMs.keys().next().value as number | undefined;
@@ -76,7 +141,7 @@ export class RealtimePipeline {
       this.sttSession.sendAudioChunk(pcmData, videoTimeMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const fatal = /budget|rate limit|buffer exceeded/i.test(message);
+      const fatal = /budget|rate limit|buffer exceeded|duration limit/i.test(message);
       this.handleError(fatal ? 'BUDGET_OR_RATE_LIMIT' : 'AUDIO_CHUNK_ERROR', message, fatal);
       if (fatal) this.stop();
     }
@@ -95,9 +160,21 @@ export class RealtimePipeline {
       },
       onError: error => {
         if (!this.isActive || token !== this.sttStreamToken) return;
-        this.handleError('STT_ERROR', error.message, false);
+        const code = error instanceof STTStreamError ? error.code : 'STT_ERROR';
+        const fatal = error instanceof STTStreamError && error.fatal;
+        this.handleError(code, error.message, fatal);
+        if (fatal) this.stop();
       }
     });
+  }
+
+  private closeSttStream(): void {
+    const session = this.sttSession;
+    this.sttSession = null;
+    if (!session) return;
+    // Tua/dừng: hủy ngay để worker không tiếp tục nhận dạng audio của phiên cũ.
+    if (session.abort) session.abort();
+    else session.endStream();
   }
 
   private enqueueFinalTranscript(result: STTResult, streamToken: number): void {
@@ -106,6 +183,8 @@ export class RealtimePipeline {
     const dedupeKey = result.segmentId || `${result.startMs}:${result.endMs}:${sourceText}`;
     if (this.processedFinalKeys.has(dedupeKey)) return;
     if (this.finalQueue.length >= RealtimePipeline.MAX_PENDING_FINALS) {
+      // Bỏ câu cũ nhất thay vì câu mới: người xem cần câu đang nói hơn câu đã trôi qua.
+      this.finalQueue.shift();
       emitDiagnostic('pipeline', 'final_queue_overflow', {
         sessionRef: this.sessionRef,
         capacity: RealtimePipeline.MAX_PENDING_FINALS,
@@ -113,10 +192,9 @@ export class RealtimePipeline {
       });
       this.handleError(
         'PIPELINE_BACKPRESSURE',
-        `Bộ xử lý quá tải; đã bỏ qua câu chờ thứ ${RealtimePipeline.MAX_PENDING_FINALS + 1}.`,
+        'Bộ xử lý đang quá tải; đã bỏ qua câu cũ nhất để bắt kịp video.',
         false
       );
-      return;
     }
     // Chỉ đánh dấu sau khi đã nhận vào hàng đợi để câu bị từ chối còn có thể được gửi lại.
     this.processedFinalKeys.add(dedupeKey);
@@ -124,8 +202,27 @@ export class RealtimePipeline {
       const first = this.processedFinalKeys.values().next().value as string | undefined;
       if (first) this.processedFinalKeys.delete(first);
     }
-    this.finalQueue.push({ result, streamToken, enqueuedAtMs: Date.now() });
+    // Có câu mới: mảnh câu đang giữ sẽ được ghép với câu này nên không cần flush theo thời gian.
+    this.cancelPendingFlush();
+    this.finalQueue.push({ kind: 'final', result, streamToken, enqueuedAtMs: Date.now() });
     void this.drainFinalQueue();
+  }
+
+  private schedulePendingFlush(streamToken: number, generation: number): void {
+    this.cancelPendingFlush();
+    this.pendingFlushTimer = setTimeout(() => {
+      this.pendingFlushTimer = null;
+      if (!this.isActive || streamToken !== this.sttStreamToken || generation !== this.generation) return;
+      this.finalQueue.push({ kind: 'flush', streamToken, generation, enqueuedAtMs: Date.now() });
+      void this.drainFinalQueue();
+    }, this.timing.pendingFlushMs);
+  }
+
+  private cancelPendingFlush(): void {
+    if (this.pendingFlushTimer !== null) {
+      clearTimeout(this.pendingFlushTimer);
+      this.pendingFlushTimer = null;
+    }
   }
 
   private async drainFinalQueue(): Promise<void> {
@@ -136,14 +233,16 @@ export class RealtimePipeline {
         const item = this.finalQueue.shift();
         if (!item) continue;
         try {
-          await this.handleFinalTranscript(
-            item.result,
-            item.streamToken,
-            Math.max(0, Date.now() - item.enqueuedAtMs)
-          );
+          const queueWaitMs = Math.max(0, Date.now() - item.enqueuedAtMs);
+          if (item.kind === 'flush') await this.handlePendingFlush(item.streamToken, item.generation, queueWaitMs);
+          else await this.handleFinalTranscript(item.result, item.streamToken, queueWaitMs);
         } catch (error) {
-          if (this.isActive && item.streamToken === this.sttStreamToken) {
-            this.handleError('PIPELINE_ERROR', error instanceof Error ? error.message : String(error), false);
+          const message = error instanceof Error ? error.message : String(error);
+          if (/contains no speech/i.test(message)) {
+            // Đoạn chỉ có nhạc/tiếng động: bỏ qua lặng lẽ, không phải lỗi để báo người dùng.
+            emitDiagnostic('pipeline', 'translation_skipped_non_speech', { sessionRef: this.sessionRef });
+          } else if (this.isActive && item.streamToken === this.sttStreamToken) {
+            this.handleError('PIPELINE_ERROR', message, false);
           }
         }
       }
@@ -198,7 +297,9 @@ export class RealtimePipeline {
       generation: currentGeneration,
       startMs: result.startMs,
       endMs: result.endMs,
-      sourceLength: sourceText.length
+      sourceLength: sourceText.length,
+      // Độ tin cậy của Whisper (exp(avg_logprob)); không chứa nội dung, dùng để đối chiếu câu nghe nhầm.
+      confidence: Math.round((Number.isFinite(result.confidence) ? result.confidence : 0) * 100) / 100
     });
 
     const translationStartedAt = Date.now();
@@ -211,153 +312,302 @@ export class RealtimePipeline {
         segmentId,
         sourceLength: sourceText.length
       });
+      if (this.translationEngine.hasFlushablePending() && currentGeneration === this.generation && streamToken === this.sttStreamToken) {
+        this.schedulePendingFlush(streamToken, currentGeneration);
+      }
       return;
     }
-    if (currentGeneration !== this.generation) {
+    this.publishTranslation({
+      segmentId,
+      sourceText: transResult.sourceText || sourceText,
+      translatedText: transResult.translatedText,
+      // Bản dịch có thể gộp nhiều câu STT; dùng mốc bắt đầu của cả đoạn đã gộp.
+      startMs: Math.min(result.startMs, transResult.startMs ?? result.startMs),
+      endMs: result.endMs,
+      generation: currentGeneration,
+      streamToken,
+      sttLatencyMs,
+      translationDurationMs,
+      pipelineStartedAt,
+      queueWaitMs
+    });
+  }
+
+  /** Không có câu nối tiếp mảnh câu đang giữ: dịch luôn mảnh đó. */
+  private async handlePendingFlush(streamToken: number, generation: number, queueWaitMs: number): Promise<void> {
+    if (streamToken !== this.sttStreamToken || generation !== this.generation || !this.translationEngine.hasFlushablePending()) return;
+    const segmentId = `seg_${++this.segmentCounter}`;
+    const pipelineStartedAt = Date.now();
+    const transResult = await this.translationEngine.flushPending();
+    if (transResult.buffered || !transResult.translatedText) return;
+    emitDiagnostic('pipeline', 'translation_pending_flushed', {
+      sessionRef: this.sessionRef,
+      segmentId,
+      sourceLength: transResult.sourceText.length
+    });
+    const endMs = transResult.endMs ?? this.latestVideoTimeMs;
+    this.publishTranslation({
+      segmentId,
+      sourceText: transResult.sourceText,
+      translatedText: transResult.translatedText,
+      startMs: transResult.startMs ?? endMs,
+      endMs,
+      generation,
+      streamToken,
+      sttLatencyMs: 0,
+      translationDurationMs: Date.now() - pipelineStartedAt,
+      pipelineStartedAt,
+      queueWaitMs
+    });
+  }
+
+  private publishTranslation(segment: TranslatedSegment): void {
+    const { segmentId, generation } = segment;
+    if (generation !== this.generation) {
       emitDiagnostic('pipeline', 'translation_discarded_generation', {
         sessionRef: this.sessionRef,
         segmentId,
-        generation: currentGeneration,
+        generation,
         currentGeneration: this.generation
       });
       return;
     }
-    if (!this.isActive || streamToken !== this.sttStreamToken) {
+    if (!this.isActive || segment.streamToken !== this.sttStreamToken) {
       emitDiagnostic('pipeline', 'translation_discarded_after_stop', {
         sessionRef: this.sessionRef,
         segmentId
       });
       return;
     }
-    this.costTracker.recordTranslation(sourceText.length);
+    this.costTracker.recordTranslation(segment.sourceText.length);
 
     const transReadyMsg: TranslationReadyMessage = {
       type: 'TRANSLATION_READY',
       sessionId: this.sessionId,
       timestamp: Date.now(),
       segmentId,
-      sourceText,
-      translatedText: transResult.translatedText,
-      startMs: result.startMs,
-      endMs: result.endMs,
-      generation: currentGeneration
+      sourceText: segment.sourceText,
+      translatedText: segment.translatedText,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      generation
     };
     this.callbacks.sendMessage(transReadyMsg);
     emitDiagnostic('pipeline', 'translation_ready_emitted', {
       sessionRef: this.sessionRef,
       segmentId,
-      generation: currentGeneration,
-      translatedLength: transResult.translatedText.length
+      generation,
+      translatedLength: segment.translatedText.length
     });
 
-    if (this.mode === 'subtitle_only' || this.mode === 'dubbing_and_subtitle') {
-      const subtitle: SubtitleEventMessage = {
-        type: 'SUBTITLE_EVENT',
+    const dubbing = this.mode === 'dubbing_only' || this.mode === 'dubbing_and_subtitle';
+    const job: TtsJob = {
+      segmentId,
+      text: segment.translatedText,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      generation,
+      streamToken: segment.streamToken,
+      sttLatencyMs: segment.sttLatencyMs,
+      translationDurationMs: segment.translationDurationMs,
+      pipelineStartedAt: segment.pipelineStartedAt,
+      queueWaitMs: segment.queueWaitMs,
+      // Có thuyết minh: phụ đề được gửi cùng giọng đọc để hai thứ không lệch nhau.
+      subtitlePending: dubbing
+    };
+    if (!dubbing) {
+      this.emitSubtitle(job);
+      this.emitLatency(job, 0);
+      return;
+    }
+    this.enqueueTts(job);
+  }
+
+  /** Gửi phụ đề của một câu (một lần). syncWithTts: bên phát hiển thị đúng lúc giọng đọc bắt đầu. */
+  private emitSubtitle(job: TtsJob, tts?: { durationMs: number }): void {
+    job.subtitlePending = false;
+    if (this.mode !== 'subtitle_only' && this.mode !== 'dubbing_and_subtitle') return;
+    if (!this.isJobCurrent(job)) return;
+    const subtitle: SubtitleEventMessage = {
+      type: 'SUBTITLE_EVENT',
+      sessionId: this.sessionId,
+      timestamp: Date.now(),
+      segmentId: job.segmentId,
+      text: job.text,
+      startMs: job.startMs,
+      endMs: job.endMs,
+      generation: job.generation,
+      action: 'show',
+      ...(tts ? { syncWithTts: true, ttsDurationMs: tts.durationMs } : {})
+    };
+    this.callbacks.sendMessage(subtitle);
+    emitDiagnostic('pipeline', 'subtitle_event_emitted', {
+      sessionRef: this.sessionRef,
+      segmentId: job.segmentId,
+      generation: job.generation,
+      textLength: job.text.length,
+      startMs: job.startMs,
+      endMs: job.endMs,
+      syncWithTts: Boolean(tts),
+      videoLagMs: Math.max(0, this.latestVideoTimeMs - job.endMs)
+    });
+  }
+
+  private enqueueTts(job: TtsJob): void {
+    this.ttsQueue.push(job);
+    while (this.ttsQueue.length > this.timing.maxPendingTts) {
+      const dropped = this.ttsQueue.shift();
+      emitDiagnostic('pipeline', 'tts_dropped_backlog', {
+        sessionRef: this.sessionRef,
+        segmentId: dropped?.segmentId,
+        queuedTts: this.ttsQueue.length
+      });
+      // Bỏ giọng đọc nhưng vẫn giữ phụ đề của câu đó.
+      if (dropped?.subtitlePending) this.emitSubtitle(dropped);
+    }
+    void this.drainTtsQueue();
+  }
+
+  private async drainTtsQueue(): Promise<void> {
+    if (this.drainingTtsQueue) return;
+    this.drainingTtsQueue = true;
+    try {
+      while (this.isActive && this.ttsQueue.length > 0) {
+        const job = this.ttsQueue.shift();
+        if (!job) continue;
+        try {
+          await this.synthesizeJob(job);
+        } catch (error) {
+          if (this.isActive && job.streamToken === this.sttStreamToken && job.generation === this.generation) {
+            this.handleError('TTS_ERROR', error instanceof Error ? error.message : String(error), false);
+          }
+          // Lỗi giọng đọc không được làm mất phụ đề.
+          if (job.subtitlePending) this.emitSubtitle(job);
+        }
+      }
+    } finally {
+      this.drainingTtsQueue = false;
+      if (this.isActive && this.ttsQueue.length > 0) void this.drainTtsQueue();
+    }
+  }
+
+  private async synthesizeJob(job: TtsJob): Promise<void> {
+    if (!this.isJobCurrent(job)) return;
+    if (this.mode !== 'dubbing_only' && this.mode !== 'dubbing_and_subtitle') {
+      if (job.subtitlePending) this.emitSubtitle(job);
+      return;
+    }
+    const lagMs = this.latestVideoTimeMs - job.endMs;
+    if (lagMs > this.timing.ttsMaxLagMs) {
+      // Câu đã trôi qua quá xa trên video; đọc lúc này chỉ làm thuyết minh lệch thêm.
+      emitDiagnostic('pipeline', 'tts_skipped_stale', {
+        sessionRef: this.sessionRef,
+        segmentId: job.segmentId,
+        lagMs
+      });
+      if (job.subtitlePending) this.emitSubtitle(job);
+      this.emitLatency(job, 0);
+      return;
+    }
+
+    const ttsStartedAt = Date.now();
+    const ttsResult = await this.ttsEngine.synthesize({
+      segmentId: job.segmentId,
+      text: job.text,
+      generation: job.generation,
+      startMs: job.startMs,
+      endMs: job.endMs
+    });
+    const ttsLatencyMs = Date.now() - ttsStartedAt;
+
+    if (!this.isJobCurrent(job)) return;
+    if (!ttsResult.cancelled && ttsResult.audioBase64) {
+      this.costTracker.recordTTS(job.text.length);
+      const ttsMsg: TTSChunkMessage = {
+        type: 'TTS_CHUNK',
         sessionId: this.sessionId,
         timestamp: Date.now(),
-        segmentId,
-        text: transResult.translatedText,
-        startMs: result.startMs,
-        endMs: result.endMs,
-        generation: currentGeneration,
-        action: 'show'
+        segmentId: job.segmentId,
+        audioBase64: ttsResult.audioBase64,
+        mimeType: ttsResult.mimeType,
+        sampleRate: ttsResult.sampleRate,
+        channels: ttsResult.channels,
+        durationMs: ttsResult.durationMs,
+        generation: job.generation,
+        translatedText: job.text,
+        startMs: job.startMs,
+        endMs: job.endMs
       };
-      this.callbacks.sendMessage(subtitle);
-      emitDiagnostic('pipeline', 'subtitle_event_emitted', {
+      // Phụ đề đi ngay trước giọng đọc cùng segmentId; bên phát hiển thị phụ đề khi giọng đọc bắt đầu.
+      if (job.subtitlePending) this.emitSubtitle(job, { durationMs: ttsResult.durationMs });
+      this.callbacks.sendMessage(ttsMsg);
+      emitDiagnostic('pipeline', 'tts_chunk_emitted', {
         sessionRef: this.sessionRef,
-        segmentId,
-        generation: currentGeneration,
-        textLength: transResult.translatedText.length,
-        startMs: result.startMs,
-        endMs: result.endMs
+        segmentId: job.segmentId,
+        generation: job.generation,
+        audioBytesApprox: Math.floor((ttsResult.audioBase64.length * 3) / 4),
+        durationMs: ttsResult.durationMs,
+        textLength: job.text.length
       });
-    }
-
-    let ttsLatencyMs = 0;
-    if (this.mode === 'dubbing_only' || this.mode === 'dubbing_and_subtitle') {
-      const ttsStartedAt = Date.now();
-      const ttsResult = await this.ttsEngine.synthesize({
-        segmentId,
-        text: transResult.translatedText,
-        generation: currentGeneration,
-        startMs: result.startMs,
-        endMs: result.endMs
+    } else {
+      emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
+        sessionRef: this.sessionRef,
+        segmentId: job.segmentId,
+        generation: job.generation,
+        cancelled: ttsResult.cancelled,
+        hasAudio: Boolean(ttsResult.audioBase64)
       });
-      ttsLatencyMs = Date.now() - ttsStartedAt;
-
-      if (!this.isActive || streamToken !== this.sttStreamToken || currentGeneration !== this.generation) return;
-      if (!ttsResult.cancelled && ttsResult.audioBase64) {
-        this.costTracker.recordTTS(transResult.translatedText.length);
-        const ttsMsg: TTSChunkMessage = {
-          type: 'TTS_CHUNK',
-          sessionId: this.sessionId,
-          timestamp: Date.now(),
-          segmentId,
-          audioBase64: ttsResult.audioBase64,
-          mimeType: ttsResult.mimeType,
-          sampleRate: ttsResult.sampleRate,
-          channels: ttsResult.channels,
-          durationMs: ttsResult.durationMs,
-          generation: currentGeneration,
-          translatedText: transResult.translatedText,
-          startMs: result.startMs,
-          endMs: result.endMs
-        };
-        this.callbacks.sendMessage(ttsMsg);
-        emitDiagnostic('pipeline', 'tts_chunk_emitted', {
-          sessionRef: this.sessionRef,
-          segmentId,
-          generation: currentGeneration,
-          audioBytesApprox: Math.floor((ttsResult.audioBase64.length * 3) / 4),
-          durationMs: ttsResult.durationMs,
-          textLength: transResult.translatedText.length
-        });
-      } else {
-        emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
-          sessionRef: this.sessionRef,
-          segmentId,
-          generation: currentGeneration,
-          cancelled: ttsResult.cancelled,
-          hasAudio: Boolean(ttsResult.audioBase64)
-        });
-      }
+      if (job.subtitlePending && !ttsResult.cancelled) this.emitSubtitle(job);
     }
+    this.emitLatency(job, ttsLatencyMs);
+  }
 
+  private isJobCurrent(job: TtsJob): boolean {
+    return this.isActive && job.streamToken === this.sttStreamToken && job.generation === this.generation;
+  }
+
+  private emitLatency(job: TtsJob, ttsLatencyMs: number): void {
+    const videoLagMs = Math.max(0, this.latestVideoTimeMs - job.endMs);
     const latency: LatencyMetricMessage = {
       type: 'LATENCY_METRIC',
       sessionId: this.sessionId,
       timestamp: Date.now(),
-      segmentId,
-      sttMs: sttLatencyMs,
-      translationMs: translationDurationMs,
+      segmentId: job.segmentId,
+      sttMs: job.sttLatencyMs,
+      translationMs: job.translationDurationMs,
       ttsMs: ttsLatencyMs,
-      totalPipelineMs: Date.now() - pipelineStartedAt
+      totalPipelineMs: Date.now() - job.pipelineStartedAt,
+      videoLagMs
     };
     this.callbacks.sendMessage(latency);
     emitDiagnostic('pipeline', 'latency_metric', {
       sessionRef: this.sessionRef,
-      segmentId,
-      sttMs: sttLatencyMs,
-      translationMs: translationDurationMs,
+      segmentId: job.segmentId,
+      sttMs: job.sttLatencyMs,
+      translationMs: job.translationDurationMs,
       ttsMs: ttsLatencyMs,
       totalPipelineMs: latency.totalPipelineMs,
-      queueWaitMs,
-      queuedFinals: this.finalQueue.length
+      videoLagMs,
+      queueWaitMs: job.queueWaitMs,
+      queuedFinals: this.finalQueue.length,
+      queuedTts: this.ttsQueue.length
     });
   }
 
-  handleSeek(_fromMs: number, _toMs: number): void {
+  handleSeek(_fromMs: number, toMs: number): void {
     if (!this.isActive) return;
     const previousGeneration = this.generation;
     this.generation++;
     this.processedFinalKeys.clear();
     this.audioEndWallClockByVideoMs.clear();
+    this.latestVideoTimeMs = Number.isFinite(toMs) ? Math.max(0, toMs) : 0;
     this.ttsEngine.cancelGeneration(previousGeneration);
     this.translationEngine.reset();
+    this.cancelPendingFlush();
     this.sttStreamToken++;
     this.finalQueue.length = 0;
-    this.sttSession?.endStream();
-    this.sttSession = null;
+    this.ttsQueue.length = 0;
+    this.closeSttStream();
     this.openSttStream();
     emitDiagnostic('pipeline', 'generation_changed', {
       sessionRef: this.sessionRef,
@@ -367,6 +617,11 @@ export class RealtimePipeline {
 
   setMode(newMode: OperationMode): void {
     this.mode = newMode;
+    if (newMode === 'subtitle_only') {
+      // Câu đang chờ giọng đọc vẫn cần phụ đề.
+      const pending = this.ttsQueue.splice(0);
+      for (const job of pending) if (job.subtitlePending) this.emitSubtitle(job);
+    }
   }
 
   getCostTracker(): CostTracker {
@@ -392,6 +647,13 @@ export class RealtimePipeline {
       fatal,
       messageLength: message.length
     });
+    if (!fatal) {
+      // Cảnh báo lặp lại cùng mã chỉ gửi định kỳ để không làm ngập WebSocket và popup.
+      const now = Date.now();
+      const lastAt = this.lastWarningAtByCode.get(code);
+      if (lastAt !== undefined && now - lastAt < this.timing.warningIntervalMs) return;
+      this.lastWarningAtByCode.set(code, now);
+    }
     const errorMsg: ErrorMessage = {
       type: 'ERROR',
       sessionId: this.sessionId,
@@ -427,11 +689,12 @@ export class RealtimePipeline {
     this.generation++;
     this.sttStreamToken++;
     this.finalQueue.length = 0;
+    this.ttsQueue.length = 0;
     this.ttsEngine.cancelGeneration(this.generation - 1);
     this.translationEngine.reset();
+    this.cancelPendingFlush();
     this.processedFinalKeys.clear();
     this.audioEndWallClockByVideoMs.clear();
-    this.sttSession?.endStream();
-    this.sttSession = null;
+    this.closeSttStream();
   }
 }
