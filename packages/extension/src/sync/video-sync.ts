@@ -11,6 +11,7 @@ export class VideoSyncController {
   private video: HTMLVideoElement;
   private callbacks: VideoSyncCallbacks;
   private lastTimeMs: number = 0;
+  private lastTimeUpdateEmissionMs: number = 0;
   private isSeeking: boolean = false;
   private ttsAudioQueue: Array<{
     segmentId: string;
@@ -62,6 +63,8 @@ export class VideoSyncController {
     const diff = Math.abs(currentMs - this.lastTimeMs);
     if (!this.isSeeking && diff > 1500) {
       this.handleSeek(this.lastTimeMs, currentMs);
+    } else if (!this.isSeeking) {
+      this.emitState(false);
     }
     this.lastTimeMs = currentMs;
   }
@@ -102,7 +105,11 @@ export class VideoSyncController {
     this.emitState();
   }
 
-  private emitState(): void {
+  private emitState(force = true): void {
+    const now = Date.now();
+    // Giới hạn timeupdate ở 5Hz, đủ đồng bộ chunk PCM 250ms mà không tạo nhiều message thừa.
+    if (!force && now - this.lastTimeUpdateEmissionMs < 200) return;
+    this.lastTimeUpdateEmissionMs = now;
     this.callbacks.onStateChange({
       currentTime: this.video.currentTime,
       duration: isNaN(this.video.duration) ? 0 : this.video.duration,

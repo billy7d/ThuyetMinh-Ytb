@@ -1,9 +1,11 @@
 import { SessionRuntimeError, toSessionError } from './session-manager.js';
+import type { VideoPlaybackState } from '@vietdub/shared';
 
 export interface ContentPingResponse {
   ready?: boolean;
   hasVideo?: boolean;
   videoTitle?: string;
+  videoState?: VideoPlaybackState;
 }
 
 export interface ContentHandshakePort {

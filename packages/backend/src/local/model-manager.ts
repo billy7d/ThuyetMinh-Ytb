@@ -21,6 +21,17 @@ export interface ModelArtifactManifest {
   relativePath: string;
   sizeBytes: number;
   sha256: string;
+  sourceModelId?: string;
+  sourceRevision?: string;
+  upstreamLfsSha256?: string;
+  upstreamGitBlobSha1?: string;
+}
+
+export interface ModelDependencyManifest {
+  modelId: string;
+  revision: string;
+  upstreamUrl: string;
+  license: string;
 }
 
 export interface LocalModelEntry {
@@ -29,6 +40,7 @@ export interface LocalModelEntry {
   revision: string;
   upstreamUrl: string;
   relativePath: string;
+  dependencies?: { codec: ModelDependencyManifest };
   artifacts: ModelArtifactManifest[];
   license: ModelLicenseManifest;
 }
@@ -235,6 +247,7 @@ function validateEntry(component: LocalModelComponent, value: unknown): LocalMod
     revision: requireString(value.revision, `${component}.revision`),
     upstreamUrl: requireString(value.upstreamUrl, `${component}.upstreamUrl`),
     relativePath: safeRelativePath(requireString(value.relativePath, `${component}.relativePath`)),
+    dependencies: validateDependencies(component, value.dependencies),
     artifacts: artifacts.map((artifact, index) => validateArtifact(component, artifact, index)),
     license: {
       model: requireString(license.model, `${component}.license.model`),
@@ -254,6 +267,39 @@ function validateEntry(component: LocalModelComponent, value: unknown): LocalMod
   };
 }
 
+function validateDependencies(
+  component: LocalModelComponent,
+  value: unknown
+): { codec: ModelDependencyManifest } | undefined {
+  if (value === undefined) return undefined;
+  if (component !== 'tts' || !isRecord(value) || !isRecord(value.codec)) {
+    throw new Error(`${component}.dependencies.codec must be an object only on TTS`);
+  }
+  const codec = value.codec;
+  const upstreamUrl = requireString(codec.upstreamUrl, `${component}.dependencies.codec.upstreamUrl`);
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(upstreamUrl);
+  } catch {
+    throw new Error(`${component}.dependencies.codec.upstreamUrl must be an HTTPS URL`);
+  }
+  if (parsedUrl.protocol !== 'https:') {
+    throw new Error(`${component}.dependencies.codec.upstreamUrl must be an HTTPS URL`);
+  }
+  const revision = requireString(codec.revision, `${component}.dependencies.codec.revision`);
+  if (!/^[a-f0-9]{40}$/i.test(revision)) {
+    throw new Error(`${component}.dependencies.codec.revision must be a 40-character commit SHA`);
+  }
+  return {
+    codec: {
+      modelId: requireString(codec.modelId, `${component}.dependencies.codec.modelId`),
+      revision,
+      upstreamUrl,
+      license: requireString(codec.license, `${component}.dependencies.codec.license`)
+    }
+  };
+}
+
 function validateArtifact(component: LocalModelComponent, value: unknown, index: number): ModelArtifactManifest {
   if (!isRecord(value)) throw new Error(`${component}.artifacts[${index}] must be an object`);
   const sha256 = requireString(value.sha256, `${component}.artifacts[${index}].sha256`).toLowerCase();
@@ -262,10 +308,33 @@ function validateArtifact(component: LocalModelComponent, value: unknown, index:
   if (typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
     throw new Error(`${component}.artifacts[${index}].sizeBytes must be a positive integer`);
   }
+  const sourceModelId = optionalString(value.sourceModelId);
+  const sourceRevision = optionalString(value.sourceRevision);
+  if ((sourceModelId && !sourceRevision) || (!sourceModelId && sourceRevision)) {
+    throw new Error(`${component}.artifacts[${index}] sourceModelId and sourceRevision must be provided together`);
+  }
+  if (sourceRevision && !/^[a-f0-9]{40}$/i.test(sourceRevision)) {
+    throw new Error(`${component}.artifacts[${index}].sourceRevision must be a 40-character commit SHA`);
+  }
+  const upstreamLfsSha256 = optionalString(value.upstreamLfsSha256)?.toLowerCase();
+  const upstreamGitBlobSha1 = optionalString(value.upstreamGitBlobSha1)?.toLowerCase();
+  if (upstreamLfsSha256 && !SHA256_RE.test(upstreamLfsSha256)) {
+    throw new Error(`${component}.artifacts[${index}].upstreamLfsSha256 must be a SHA-256 digest`);
+  }
+  if (upstreamGitBlobSha1 && !/^[a-f0-9]{40}$/.test(upstreamGitBlobSha1)) {
+    throw new Error(`${component}.artifacts[${index}].upstreamGitBlobSha1 must be a Git blob SHA-1 digest`);
+  }
+  if (upstreamLfsSha256 && upstreamGitBlobSha1) {
+    throw new Error(`${component}.artifacts[${index}] must use one upstream digest kind`);
+  }
   return {
     relativePath: safeRelativePath(requireString(value.relativePath, `${component}.artifacts[${index}].relativePath`)),
     sizeBytes,
-    sha256
+    sha256,
+    ...(sourceModelId ? { sourceModelId } : {}),
+    ...(sourceRevision ? { sourceRevision } : {}),
+    ...(upstreamLfsSha256 ? { upstreamLfsSha256 } : {}),
+    ...(upstreamGitBlobSha1 ? { upstreamGitBlobSha1 } : {})
   };
 }
 

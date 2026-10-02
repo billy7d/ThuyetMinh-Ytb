@@ -1,0 +1,338 @@
+"""Kiểm thử logic gom câu STT và hủy request của worker, không cần nạp model thật.
+
+Chạy: python -m unittest runtime/workers/test_vietdub_worker.py
+"""
+
+from __future__ import annotations
+
+import base64
+import math
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import numpy as np  # noqa: E402
+
+import text_rules  # noqa: E402
+import vietdub_worker as worker  # noqa: E402
+
+SAMPLE_RATE = worker.SAMPLE_RATE_STT
+
+
+def tone(duration_ms: int, amplitude: float, frequency: float = 220.0) -> np.ndarray:
+    count = int(SAMPLE_RATE * duration_ms / 1000)
+    t = np.arange(count, dtype=np.float32) / SAMPLE_RATE
+    return (amplitude * np.sin(2 * math.pi * frequency * t)).astype(np.float32)
+
+
+def to_pcm(samples: np.ndarray) -> bytes:
+    return (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+class FakeStt(worker.SttRuntime):
+    """SttRuntime không nạp Whisper; ghi lại các đoạn audio được đưa đi nhận dạng."""
+
+    def __init__(self, **kwargs: object) -> None:
+        self._np = np
+        self._vad_threshold = float(kwargs.get("vad_threshold", 0.006))
+        self._silence_limit_ms = float(kwargs.get("silence_ms", 400))
+        self._soft_max_utterance_ms = float(kwargs.get("soft_max", 5000))
+        self._max_utterance_ms = float(kwargs.get("hard_max", 7000))
+        self._whisper_vad = False
+        self._sessions = {}
+        self._segment_counter = 0
+        self.model_path = Path("/model")
+        self.transcribed: list[tuple[float, float]] = []
+        self.next_text = ""
+
+    def check_model(self, payload: dict) -> None:
+        return None
+
+    def _transcribe(self, pcm: bytes, start_ms: float) -> list[dict]:
+        duration = len(pcm) / 2 / SAMPLE_RATE * 1000
+        self.transcribed.append((start_ms, duration))
+        text = self.next_text or "x"
+        return [{"kind": "final", "segmentId": f"t{len(self.transcribed)}", "text": text, "startMs": start_ms, "endMs": start_ms + duration}]
+
+
+def feed(runtime: FakeStt, samples: np.ndarray, start_ms: float = 0.0, chunk_ms: int = 250) -> list[dict]:
+    runtime.handle({"op": "start_stream", "sessionId": "s", "sampleRate": SAMPLE_RATE, "channels": 1})
+    events: list[dict] = []
+    step = int(SAMPLE_RATE * chunk_ms / 1000)
+    for index in range(0, len(samples), step):
+        chunk = samples[index:index + step]
+        events.extend(runtime.handle({
+            "op": "audio_chunk",
+            "sessionId": "s",
+            "pcmBase64": base64.b64encode(to_pcm(chunk)).decode("ascii"),
+            "timestampMs": start_ms + index / SAMPLE_RATE * 1000,
+            "durationMs": len(chunk) / SAMPLE_RATE * 1000,
+            "sampleRate": SAMPLE_RATE,
+            "channels": 1,
+        })["events"])
+    return events
+
+
+class SegmentationTests(unittest.TestCase):
+    def test_flushes_after_short_silence(self) -> None:
+        runtime = FakeStt()
+        audio = np.concatenate([tone(1500, 0.2), np.zeros(int(SAMPLE_RATE * 0.8), dtype=np.float32)])
+        events = feed(runtime, audio)
+        self.assertEqual(len(events), 1)
+        start_ms, duration = runtime.transcribed[0]
+        self.assertLessEqual(start_ms, 20)
+        self.assertLess(duration, 2200)
+
+    def test_continuous_music_is_cut_before_hard_limit(self) -> None:
+        # Nhạc nền liên tục không có khoảng lặng: trước đây phải chờ 10 s mới cắt.
+        runtime = FakeStt()
+        audio = tone(16000, 0.25) * (1.0 + 0.3 * np.sin(np.arange(int(SAMPLE_RATE * 16)) / SAMPLE_RATE * 2 * math.pi * 0.7)).astype(np.float32)
+        feed(runtime, audio)
+        self.assertGreaterEqual(len(runtime.transcribed), 2)
+        for _, duration in runtime.transcribed:
+            self.assertLessEqual(duration, 7000 + 1)
+
+    def test_cuts_at_quiet_gap_near_soft_limit(self) -> None:
+        runtime = FakeStt()
+        loud = tone(4400, 0.3)
+        gap = np.full(int(SAMPLE_RATE * 0.2), 0.0, dtype=np.float32) + tone(200, 0.02)
+        audio = np.concatenate([loud, gap, tone(3000, 0.3), np.zeros(int(SAMPLE_RATE * 0.6), dtype=np.float32)])
+        feed(runtime, audio)
+        self.assertGreaterEqual(len(runtime.transcribed), 2)
+        first_start, first_duration = runtime.transcribed[0]
+        # Điểm cắt phải rơi vào khoảng lặng ngắn quanh giây 4.4–4.6, không kéo tới giới hạn cứng.
+        self.assertGreater(first_start + first_duration, 4300)
+        self.assertLess(first_start + first_duration, 4800)
+        second_start, _ = runtime.transcribed[1]
+        self.assertAlmostEqual(second_start, first_start + first_duration, delta=21)
+
+    def test_timeline_is_continuous_across_coalesced_chunks(self) -> None:
+        runtime = FakeStt()
+        audio = np.concatenate([np.zeros(int(SAMPLE_RATE * 1.0), dtype=np.float32), tone(1000, 0.2), np.zeros(int(SAMPLE_RATE * 0.6), dtype=np.float32)])
+        # Backend gom nhiều chunk thành một request lớn khi worker bận.
+        feed(runtime, audio, start_ms=30_000, chunk_ms=1300)
+        start_ms, _ = runtime.transcribed[0]
+        self.assertAlmostEqual(start_ms, 30_800, delta=60)
+
+    def test_quiet_noise_does_not_trigger_transcription(self) -> None:
+        runtime = FakeStt()
+        rng = np.random.default_rng(1)
+        audio = (rng.standard_normal(int(SAMPLE_RATE * 3)) * 0.001).astype(np.float32)
+        self.assertEqual(feed(runtime, audio), [])
+        self.assertEqual(runtime.transcribed, [])
+
+    def test_discard_end_stream_skips_transcription(self) -> None:
+        runtime = FakeStt()
+        feed(runtime, tone(1000, 0.2))
+        result = runtime.handle({"op": "end_stream", "sessionId": "s", "discard": True})
+        self.assertEqual(result, {"events": []})
+        self.assertEqual(runtime.transcribed, [])
+
+
+class SanitizeTranscriptTests(unittest.TestCase):
+    def test_collapses_whisper_repetition_loop(self) -> None:
+        text = "Hello, this is a locally generated English " + "English " * 300
+        cleaned = worker.sanitize_transcript(text, 3.8)
+        self.assertLessEqual(len(cleaned), int(3.8 * worker.MAX_CHARS_PER_SECOND))
+        self.assertNotIn("English English English", cleaned)
+        self.assertTrue(cleaned.startswith("Hello, this is a locally generated English"))
+
+    def test_collapses_repeated_phrases(self) -> None:
+        cleaned = worker.sanitize_transcript("thank you for watching " * 20, 10.0)
+        self.assertEqual(cleaned, "thank you for watching thank you for watching")
+
+    def test_keeps_normal_sentence(self) -> None:
+        sentence = "We really, really want to go home now."
+        self.assertEqual(worker.sanitize_transcript(sentence, 3.0), sentence)
+
+    def test_collapse_keeps_vietnamese_translation_intact(self) -> None:
+        text = "Xin chào, đây là mẫu tiếng Anh. Tiếng Anh tiếng Anh tiếng Anh tiếng Anh tiếng Anh"
+        cleaned = worker.collapse_repetitions(text)
+        self.assertTrue(cleaned.startswith("Xin chào, đây là mẫu tiếng Anh."))
+        self.assertLess(len(cleaned), len(text))
+
+    def test_strips_music_symbols_and_non_speech_tags(self) -> None:
+        self.assertEqual(worker.strip_non_speech("♪ There will be ♪ ♪"), "There will be")
+        self.assertEqual(worker.strip_non_speech("[Music] Good morning. (Laughter)"), "Good morning.")
+        self.assertEqual(worker.strip_non_speech("♪♪ [Applause] ♪"), "")
+        self.assertEqual(worker.sanitize_transcript("(upbeat music)", 2.0), "")
+        self.assertEqual(worker.strip_non_speech("♪ Sẽ có ♪ ♪"), "Sẽ có")
+
+    def test_dedupes_hallucinated_sentence_lists(self) -> None:
+        text = "I'm tired. I'm trying to go back. I'm tired. I'm tired. I'm fine. I'm fine."
+        self.assertEqual(worker.dedupe_sentences(text), "I'm tired. I'm trying to go back. I'm fine.")
+        self.assertEqual(worker.dedupe_sentences("Good morning. How are you?"), "Good morning. How are you?")
+
+    def test_hallucination_gate_keeps_confident_speech(self) -> None:
+        self.assertFalse(worker.is_probable_hallucination(0.05, -0.30, 1.19))
+        self.assertFalse(worker.is_probable_hallucination(0.02, -0.61, 0.62))
+        self.assertTrue(worker.is_probable_hallucination(0.7, -1.1, 1.2))
+        self.assertTrue(worker.is_probable_hallucination(0.1, -1.4, 1.0))
+        self.assertTrue(worker.is_probable_hallucination(0.1, -0.5, 3.1))
+
+    def test_translation_limit_stops_runaway_expansion(self) -> None:
+        source = "and so we went over to the"
+        self.assertEqual(worker.translation_char_limit(source), 52)
+        runaway = "và vì vậy chúng tôi đã đi đến đó và rồi chúng tôi lại đi tiếp đến những nơi khác nữa"
+        self.assertLessEqual(len(worker.truncate_words(runaway, worker.translation_char_limit(source))), 52)
+        normal = "Tôi đã hoàn toàn bị choáng ngợp bởi toàn bộ chuyện này."
+        self.assertEqual(worker.truncate_words(normal, worker.translation_char_limit("I've been blown away by this whole thing.")), normal)
+        self.assertEqual(worker.translation_char_limit("Hi."), 40)
+
+    def test_short_segments_keep_minimum_budget(self) -> None:
+        self.assertEqual(worker.sanitize_transcript("Hello there, friend.", 0.2), "Hello there, friend.")
+
+
+class TextRulesTests(unittest.TestCase):
+    def test_strips_fillers_but_keeps_real_words(self) -> None:
+        self.assertEqual(text_rules.strip_fillers("Um"), "")
+        self.assertEqual(text_rules.strip_fillers("Um, so today we start."), "so today we start.")
+        self.assertEqual(text_rules.strip_fillers("Hmm... okay."), "okay.")
+        self.assertEqual(text_rules.strip_fillers("I mean, it works pretty well."), "it works pretty well.")
+        # "um" nằm trong từ khác thì giữ nguyên.
+        self.assertEqual(text_rules.strip_fillers("The umbrella is humming."), "The umbrella is humming.")
+        self.assertEqual(text_rules.strip_fillers("Alright, let's go."), "Alright, let's go.")
+
+    def test_rewrites_phrases_the_model_mistranslates(self) -> None:
+        rewrite = text_rules.rewrite_source_for_translation
+        self.assertEqual(rewrite("Don't forget to subscribe."), "Don't forget to sign up.")
+        self.assertEqual(rewrite("Hit the like button and subscribe."), "Hit the VDLIKE button and sign up.")
+        self.assertEqual(rewrite("Like, comment, and subscribe."), "VDLIKE, comment, and sign up.")
+        self.assertEqual(rewrite("I've been blown away by it."), "I've been amazed by it.")
+        self.assertEqual(rewrite("Let me show you what I mean."), "Let me show you what I am saying.")
+        # "like" thông thường không bị động tới.
+        self.assertEqual(rewrite("If you like this video, stay."), "If you like this video, stay.")
+
+    def test_rewrite_profiles_differ_per_model(self) -> None:
+        rewrite = text_rules.rewrite_source_for_translation
+        # vinai dịch đúng "subscribe" và "what I mean": không viết lại; quy tắc chung vẫn áp dụng.
+        self.assertEqual(rewrite("Don't forget to subscribe.", "vinai"), "Don't forget to subscribe.")
+        self.assertEqual(rewrite("Let me show you what I mean.", "vinai"), "Let me show you what I mean.")
+        self.assertEqual(rewrite("Hit the like button.", "vinai"), "Hit the VDLIKE button.")
+        self.assertEqual(rewrite("It's a game changer.", "vinai"), "It's a breakthrough.")
+        self.assertEqual(rewrite("Don't forget to subscribe.", "opus"), "Don't forget to sign up.")
+
+    def test_informal_you_becomes_ban_but_guys_and_boys_stay(self) -> None:
+        fix = text_rules.fix_vietnamese
+        self.assertEqual(fix("Chuyện này sẽ làm cậu ngạc nhiên đấy.", "This will surprise you."), "Chuyện này sẽ làm bạn ngạc nhiên đấy.")
+        self.assertEqual(fix("Khỏe không, các cậu?", "What's up, you guys?"), "Khỏe không, các cậu?")
+        self.assertEqual(fix("Cậu bé nói với bạn.", "The boy told you."), "Cậu bé nói với bạn.")
+
+    def test_fixes_known_vietnamese_errors_and_second_person(self) -> None:
+        fix = text_rules.fix_vietnamese
+        self.assertEqual(fix("Nhấn nút VDLIKEEE và để lại ghi chú.", "Hit the like button"), "Nhấn nút Thích và để lại ghi chú.")
+        self.assertEqual(fix("Chào mừng trở lại với kênh liên lạc.", "Welcome back to the channel."), "Chào mừng trở lại với kênh.")
+        self.assertEqual(fix("Anh có nghe thấy tôi không?", "Can you hear me?"), "Bạn có nghe thấy tôi không?")
+        self.assertEqual(fix("Vậy anh nghĩ sao?", "So, what do you think?"), "Vậy bạn nghĩ sao?")
+        # "Anh" là tên nước/ngôn ngữ, hoặc nguồn không có ngôi thứ hai: giữ nguyên.
+        self.assertEqual(fix("Học tiếng Anh ở nước Anh.", "Do you study English in England?"), "Học tiếng Anh ở nước Anh.")
+        self.assertEqual(fix("Anh trai tôi đến.", "My brother came."), "Anh trai tôi đến.")
+        self.assertEqual(fix("Anh ấy đến.", "He came to see you, brother."), "Anh ấy đến.")
+
+    def test_replaces_archaic_pronouns_only_when_source_confirms_person(self) -> None:
+        fix = text_rules.fix_vietnamese
+        self.assertEqual(fix("Ta mang vàng đến cho ngươi.", "I brought you gold."), "Tôi mang vàng đến cho bạn.")
+        self.assertEqual(fix("Sarah, hắn quen cổ một tháng.", "Sarah, he'd known her a month."), "Sarah, anh ấy quen cô ấy một tháng.")
+        # Không có ngôi tương ứng ở nguồn: không đụng tới ("chúng ta", "cổ" = cái cổ).
+        self.assertEqual(fix("Chúng ta cùng đi.", "Let's go together."), "Chúng ta cùng đi.")
+        self.assertEqual(fix("Cái cổ áo bị rách.", "Her collar is torn."), "Cái cổ áo bị rách.")
+        self.assertEqual(fix("Ta đi đây.", "We are leaving."), "Ta đi đây.")
+
+    def test_removes_word_segmentation_underscores(self) -> None:
+        self.assertEqual(text_rules.fix_vietnamese("Nhưng đứa trẻ thứ_ba nói.", "But the third kid said."), "Nhưng đứa trẻ thứ ba nói.")
+        self.assertEqual(
+            text_rules.fix_vietnamese("Người thứ_ba trả_lời rằng : Frank gởi cái nầy .", "And the third boy said, Frank sent this."),
+            "Người thứ ba trả lời rằng: Frank gởi cái nầy.",
+        )
+
+    def test_sanitize_transcript_drops_filler_only_text(self) -> None:
+        self.assertEqual(worker.sanitize_transcript("Um", 1.0), "")
+        self.assertEqual(worker.sanitize_transcript("Um, hello there.", 2.0), "hello there.")
+
+
+class GlossaryTests(unittest.TestCase):
+    TERMS = ["Docker", "Kubernetes", "TensorRT", "WebSocket", "Elasticsearch", "Nginx", "JSON", "API", "transformer"]
+
+    def fix(self, text: str) -> str:
+        return text_rules.correct_terms(text, self.TERMS)
+
+    def test_corrects_misheard_terms_and_casing(self) -> None:
+        self.assertEqual(self.fix("We use nginx as a proxy."), "We use Nginx as a proxy.")
+        self.assertEqual(self.fix("export it to tensor RT."), "export it to TensorRT.")
+        self.assertEqual(self.fix("the web socket server and json messages"), "the WebSocket server and JSON messages")
+        self.assertEqual(self.fix("it runs on kubernetis today"), "it runs on Kubernetes today")
+
+    def test_does_not_guess_when_too_different(self) -> None:
+        self.assertEqual(self.fix("we store logs in lr stick search"), "we store logs in lr stick search")
+
+    def test_never_swallows_neighbouring_words_or_crosses_sentences(self) -> None:
+        self.assertEqual(self.fix("We push it to Kubernetes now."), "We push it to Kubernetes now.")
+        self.assertEqual(self.fix("Measure with Prometheus. If it fails."), "Measure with Prometheus. If it fails.")
+        self.assertEqual(self.fix("the websocket"), "the WebSocket")
+        self.assertEqual(self.fix("Ask the transform team."), "Ask the transform team.")
+
+    def test_short_terms_only_fix_casing_not_fuzzy(self) -> None:
+        self.assertEqual(self.fix("call the api now"), "call the API now")
+        self.assertEqual(self.fix("a pie and a pi"), "a pie and a pi")
+
+    def test_empty_glossary_changes_nothing(self) -> None:
+        self.assertEqual(text_rules.correct_terms("anything at all", []), "anything at all")
+
+    def test_load_glossary_accepts_json_and_text_files(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            as_json = Path(folder) / "terms.json"
+            as_json.write_text('{"terms": ["Kubernetes", "PyTorch", 5, ""]}', encoding="utf-8")
+            self.assertEqual(worker.load_glossary(str(as_json)), ["Kubernetes", "PyTorch"])
+            as_text = Path(folder) / "terms.txt"
+            as_text.write_text("\n".join(["# chú thích", "CUDA", "", "TensorRT", ""]), encoding="utf-8")
+            self.assertEqual(worker.load_glossary(str(as_text)), ["CUDA", "TensorRT"])
+        self.assertEqual(worker.load_glossary(""), [])
+
+    def test_beam_size_is_validated(self) -> None:
+        with self.assertRaises(SystemExit):
+            worker.parse_args(["--role", "stt", "--model-path", "x", "--beam-size", "0"])
+        self.assertEqual(worker.parse_args(["--role", "stt", "--model-path", "x", "--beam-size", "3"]).beam_size, 3)
+
+
+class CancellationTests(unittest.TestCase):
+    def test_cancelled_session_and_old_generation_are_skipped(self) -> None:
+        registry = worker.CancellationRegistry()
+        registry.cancel({"sessionId": "stt-1"})
+        registry.cancel({"sessionId": "tts-1", "beforeGeneration": 3})
+        self.assertTrue(registry.is_cancelled({"op": "audio_chunk", "sessionId": "stt-1"}))
+        self.assertTrue(registry.is_cancelled({"op": "synthesize", "sessionId": "tts-1", "generation": 2}))
+        self.assertFalse(registry.is_cancelled({"op": "synthesize", "sessionId": "tts-1", "generation": 3}))
+        self.assertFalse(registry.is_cancelled({"op": "end_stream", "sessionId": "stt-1"}))
+        self.assertFalse(registry.is_cancelled({"op": "audio_chunk", "sessionId": "stt-2"}))
+
+    def test_generation_floor_never_moves_backwards(self) -> None:
+        registry = worker.CancellationRegistry()
+        registry.cancel({"sessionId": "tts", "beforeGeneration": 5})
+        registry.cancel({"sessionId": "tts", "beforeGeneration": 2})
+        self.assertTrue(registry.is_cancelled({"op": "synthesize", "sessionId": "tts", "generation": 4}))
+
+    def test_rejects_invalid_cancel(self) -> None:
+        registry = worker.CancellationRegistry()
+        with self.assertRaises(worker.WorkerInputError):
+            registry.cancel({})
+        with self.assertRaises(worker.WorkerInputError):
+            registry.cancel({"sessionId": "x", "beforeGeneration": -1})
+
+
+class ArgumentTests(unittest.TestCase):
+    def test_rejects_invalid_utterance_limits(self) -> None:
+        with self.assertRaises(SystemExit):
+            worker.parse_args(["--role", "stt", "--model-path", "x", "--soft-max-utterance-ms", "6000", "--max-utterance-ms", "5000"])
+
+    def test_defaults_bound_latency(self) -> None:
+        args = worker.parse_args(["--role", "stt", "--model-path", "x"])
+        self.assertLessEqual(args.max_utterance_ms, 7000)
+        self.assertTrue(args.whisper_vad)
+
+
+if __name__ == "__main__":
+    unittest.main()

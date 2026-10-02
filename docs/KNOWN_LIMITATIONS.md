@@ -1,12 +1,19 @@
 # Known Limitations
 
-Ngày cập nhật: 2026-09-21
+Ngày cập nhật: 2026-09-24
 
 - DRM-protected media is out of scope; the extension does not bypass EME/CDM protections.
 - Firefox capture of cross-origin media without suitable CORS permissions may be rejected by the browser.
 - Original audio volume controls the complete original mix; source separation that preserves BGM while removing speech is not implemented.
-- Live streams can accumulate provider/network delay. The client drops stale TTS work beyond the configured backlog threshold instead of playing an increasingly late queue.
-- Browser acceptance, live provider quality, p50/p95 latency and 30-minute soak are not verified in the current environment.
-- The repository ships the local worker protocol and adapters, but not model weights or a universal STT/translation/TTS runtime binary. Operators must install compatible workers and complete the manifest/license gate before the backend becomes ready.
-- VieNeu/codec/voice distribution terms and exact model revisions still require operator evidence; the example manifest intentionally remains unverified.
+- Live streams can accumulate provider/network delay. The backend skips TTS for segments more than 6 s behind the video and the client plays queued TTS up to 1.3× faster, then skips a segment when more than 3.5 s is already queued. On a slow CPU some dubbed sentences are therefore intentionally skipped (subtitles are still shown).
+- Vietnamese dubbing is usually longer than the English source; at 1.3× the playback pitch rises noticeably (playback-rate speed-up, no pitch-preserving time stretch).
+- The translation model `vinai-translate-en2vi-v2` is licensed AGPL-3.0 (copyleft). It is recorded as such in the local manifest; distributing the model or running it as a network service for others needs AGPL compliance review. The repository default (`models/manifest.example.json`) remains OPUS-MT (CC-BY-4.0).
+- Translation accuracy is limited by the local models: Whisper base.en mishears fast or accented speech (measured on a British-accented talk: Whisper confidence 0.5–0.7 for both correct and wrong sentences, so confidence cannot filter mistakes safely), and OPUS-MT en-vi translates idioms literally. `text_rules.py` fixes the systematic errors observed so far; a larger STT model (e.g. faster-whisper small.en) and a stronger EN→VI model would help but cost latency on this 6-core CPU and need a separate download/licence approval.
+- Subtitles and dubbing still trail the original speech: a sentence can only be recognised after it has been spoken. On the i5-9400F target the measured floor after the end of a sentence is ~0.3 s silence detection + ~0.8–1.1 s Whisper base.en + ~0.1 s OPUS-MT + ~0.6–1.2 s VieNeu synthesis (RTF ~0.58), i.e. roughly 2–2.5 s, plus the sentence's own duration from its first word. In `dubbing_and_subtitle` mode the subtitle deliberately waits for its voice, so it appears ~0.6–1.2 s later than in `subtitle_only` mode. Lower delay needs faster models/GPU or delaying the video itself, which is not implemented.
+- The STT utterance splitter uses an adaptive energy threshold, not a neural streaming VAD. Speech over very loud continuous music is still split by the 3.5–5 s soft/hard limits; Whisper's bundled Silero VAD then filters music-only audio inside each utterance.
+- In Chrome the video time attached to audio chunks comes from ~5 Hz `timeupdate` relays, so segment timestamps can be off by ~250 ms.
+- Browser acceptance, live human-speech quality and 30-minute soak are not verified. Offline worker benchmarks and two short synthetic-audio gateway runs have passed, but they do not establish real browser latency or audibility.
+- The three Python JSONL workers (faster-whisper, OPUS-MT, VieNeu) have loaded the pinned models and completed real CPU inference. The gateway has passed only with English speech synthesized locally by VieNeu, not a human recording.
+- Model/code/codec/voice licenses, immutable upstream revisions and local artifact hashes are recorded in the operator manifest at `E:\VietDub-AI\models\manifest.json`; weights/cache/evidence stay outside Git. A fresh machine still needs its own approved download and verification.
+- The translation worker currently translates `sourceText` as a standalone input; context and terminology fields from the provider boundary are not applied by this OPUS-MT worker. Context-aware translation quality is therefore not verified.
 - The current latency event schema needs provider-boundary monotonic timestamps before it can support authoritative end-to-end p50/p95 reporting.

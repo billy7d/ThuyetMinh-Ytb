@@ -5,6 +5,8 @@ import { LocalStreamingSTTProvider } from './local-stt.js';
 import { LocalTranslationProvider } from './local-translation.js';
 import { LocalVietnameseTTSProvider } from './local-tts.js';
 
+const MIN_TTS_FRAME_BYTES = 8 * 1024 * 1024;
+
 export interface LocalRuntimeOptions {
   cwd?: string;
 }
@@ -29,15 +31,17 @@ export function createLocalRuntime(
   const modelManager = new LocalModelManager(manifestPath, modelRoot);
 
   const workerOptions = {
-    startupTimeoutMs: positiveInt(env.LOCAL_WORKER_STARTUP_TIMEOUT_MS, 15_000),
-    requestTimeoutMs: positiveInt(env.LOCAL_WORKER_REQUEST_TIMEOUT_MS, 30_000),
+    startupTimeoutMs: positiveInt(env.LOCAL_WORKER_STARTUP_TIMEOUT_MS, 90_000),
+    requestTimeoutMs: positiveInt(env.LOCAL_WORKER_REQUEST_TIMEOUT_MS, 90_000),
     maxQueueSize: positiveInt(env.LOCAL_WORKER_MAX_QUEUE, 32),
-    maxFrameBytes: positiveInt(env.LOCAL_WORKER_MAX_FRAME_BYTES, 2 * 1024 * 1024)
+    maxFrameBytes: positiveInt(env.LOCAL_WORKER_MAX_FRAME_BYTES, 2 * 1024 * 1024),
+    // Log stderr của worker nằm cạnh thư mục model (ngoài Git) để chẩn đoán lỗi suy luận.
+    logDir: resolveFromCwd(env.LOCAL_WORKER_LOG_DIR || path.join(path.dirname(modelRoot), 'logs'), cwd)
   };
 
-  const sttWorker = createWorker('stt', env, workerOptions);
-  const translationWorker = createWorker('translation', env, workerOptions);
-  const ttsWorker = createWorker('tts', env, workerOptions);
+  const sttWorker = createWorker('stt', env, workerOptions, cwd);
+  const translationWorker = createWorker('translation', env, workerOptions, cwd);
+  const ttsWorker = createWorker('tts', env, workerOptions, cwd);
 
   return {
     modelManager,
@@ -82,7 +86,8 @@ export function createLocalProviders(
       modelPath: modelManager.getModelPath('stt'),
       sampleRate: positiveInt(env.LOCAL_STT_SAMPLE_RATE, 16_000),
       channels: positiveInt(env.LOCAL_STT_CHANNELS, 1),
-      maxPendingChunks: positiveInt(env.LOCAL_STT_MAX_PENDING_CHUNKS, 12)
+      maxBufferedMs: positiveInt(env.LOCAL_STT_MAX_BUFFERED_MS, 8_000),
+      maxRequestMs: positiveInt(env.LOCAL_STT_MAX_REQUEST_MS, 4_000)
     }),
     translationProvider: new LocalTranslationProvider(runtime.translationWorker, {
       modelPath: modelManager.getModelPath('translation'),
@@ -90,9 +95,9 @@ export function createLocalProviders(
     }),
     ttsProvider: new LocalVietnameseTTSProvider(runtime.ttsWorker, {
       modelPath: modelManager.getModelPath('tts'),
-      timeoutMs: positiveInt(env.LOCAL_TTS_TIMEOUT_MS, 30_000),
+      timeoutMs: positiveInt(env.LOCAL_TTS_TIMEOUT_MS, 90_000),
       maxConcurrentRequests: positiveInt(env.LOCAL_TTS_MAX_CONCURRENT_REQUESTS, 2),
-      sampleRate: positiveInt(env.LOCAL_TTS_SAMPLE_RATE, 24_000)
+      sampleRate: positiveInt(env.LOCAL_TTS_SAMPLE_RATE, 48_000)
     })
   };
 }
@@ -105,16 +110,23 @@ function createWorker(
     requestTimeoutMs: number;
     maxQueueSize: number;
     maxFrameBytes: number;
-  }
+    logDir: string;
+  },
+  cwd: string
 ): LocalWorkerClientLike {
   const prefix = `LOCAL_${component.toUpperCase()}_WORKER`;
   const command = env[`${prefix}_COMMAND`]?.trim();
   if (!command) throw new Error(`${prefix}_COMMAND is required`);
   const args = parseArgs(env[`${prefix}_ARGS`], prefix);
+  const { logDir, ...workerLimits } = limits;
   return new JsonLineWorkerClient({
     name: `Local ${component.toUpperCase()}`,
-    command: { command, args },
-    ...limits
+    // Chuẩn hóa working directory để đường dẫn tương đối tính từ root repository.
+    command: { command, args, cwd },
+    stderrLogPath: path.join(logDir, `worker-${component}.log`),
+    ...workerLimits,
+    // WAV 48 kHz của TTS lớn hơn nhiều so với JSON của STT/dịch: 2 MB chỉ chứa ~15 s audio và vượt quá sẽ làm worker bị đóng.
+    maxFrameBytes: component === 'tts' ? Math.max(workerLimits.maxFrameBytes, MIN_TTS_FRAME_BYTES) : workerLimits.maxFrameBytes
   });
 }
 

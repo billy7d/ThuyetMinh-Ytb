@@ -1,5 +1,5 @@
 import { ContextManager } from './context-manager.js';
-import { SentenceCompletionGuard } from './completion-guard.js';
+import { NO_FINAL_PUNCTUATION, SentenceCompletionGuard } from './completion-guard.js';
 import { TranslationProvider } from './types.js';
 
 export interface TranslationOptions {
@@ -13,6 +13,10 @@ export interface TranslationResult {
   buffered: boolean;
   latencyMs: number;
   tokensUsed?: number;
+  /** Mốc bắt đầu (video ms) của toàn bộ đoạn nguồn đã gộp để dịch. */
+  startMs?: number;
+  /** Mốc kết thúc (video ms) của đoạn nguồn đã dịch. */
+  endMs?: number;
 }
 
 export interface TranslationEngineConfig {
@@ -20,13 +24,22 @@ export interface TranslationEngineConfig {
   maxTranslationCharacters: number;
   maxContextItems: number;
   validateVietnamese: boolean;
+  /** Đoạn chưa trọn câu được giữ tối đa chừng này thời gian video rồi buộc dịch, tránh phụ đề bị treo. */
+  maxPendingDurationMs: number;
+  /** Đoạn chưa trọn câu dài tới ngưỡng ký tự này thì buộc dịch. */
+  forceFlushCharacters: number;
+  /** Mảnh câu cụt đang giữ mà câu kế tiếp bắt đầu sau hơn chừng này (ms video) thì bỏ, không ghép nhầm sang câu khác. */
+  maxPendingGapMs: number;
 }
 
 const DEFAULT_CONFIG: TranslationEngineConfig = {
   maxPendingCharacters: 1200,
   maxTranslationCharacters: 2400,
   maxContextItems: 5,
-  validateVietnamese: true
+  validateVietnamese: true,
+  maxPendingDurationMs: 3_000,
+  forceFlushCharacters: 220,
+  maxPendingGapMs: 3_000
 };
 
 /**
@@ -40,7 +53,8 @@ export class TranslationEngine {
   private readonly provider: TranslationProvider;
   private readonly config: TranslationEngineConfig;
   private pendingBuffer = '';
-  private pendingStartMs = 0;
+  private pendingStartMs: number | null = null;
+  private pendingEndMs = 0;
   private resetVersion = 0;
 
   constructor(
@@ -80,17 +94,28 @@ export class TranslationEngine {
       return { sourceText: '', translatedText: '', buffered: true, latencyMs: Date.now() - startedAt };
     }
 
+    if (this.pendingBuffer && startMs - this.pendingEndMs > this.config.maxPendingGapMs) {
+      // Câu nối tiếp không tới kịp: mảnh cụt đang giữ thuộc về một lượt nói đã qua, không ghép với câu mới.
+      this.pendingBuffer = '';
+      this.pendingStartMs = null;
+    }
     const candidateText = (this.pendingBuffer ? `${this.pendingBuffer} ${incoming}` : incoming).trim();
     if (candidateText.length > this.config.maxPendingCharacters) {
       this.pendingBuffer = '';
-      this.pendingStartMs = 0;
+      this.pendingStartMs = null;
       throw new Error(`Transcript segment exceeded ${this.config.maxPendingCharacters} characters before completion`);
     }
 
     const completionCheck = this.completionGuard.check(candidateText);
-    if (!completionCheck.isComplete) {
+    const pendingSinceMs = this.pendingStartMs ?? startMs;
+    const mustFlush = candidateText.length >= this.config.forceFlushCharacters
+      || endMs - pendingSinceMs >= this.config.maxPendingDurationMs
+      || (completionCheck.reason === NO_FINAL_PUNCTUATION
+        && this.completionGuard.isTranslatableWithoutPunctuation(candidateText));
+    if (!completionCheck.isComplete && !mustFlush) {
       this.pendingBuffer = candidateText;
-      if (!this.pendingStartMs) this.pendingStartMs = startMs;
+      if (this.pendingStartMs === null) this.pendingStartMs = startMs;
+      this.pendingEndMs = endMs;
       return {
         sourceText: candidateText,
         translatedText: '',
@@ -99,11 +124,41 @@ export class TranslationEngine {
       };
     }
 
-    const fullSourceText = candidateText;
-    const contextStartMs = this.pendingStartMs || startMs;
+    return this.translateNow(candidateText, this.pendingStartMs ?? startMs, endMs, options, startedAt);
+  }
+
+  hasPending(): boolean {
+    return this.pendingBuffer.length > 0;
+  }
+
+  /** Có mảnh câu đang giữ đủ dài để dịch riêng (mảnh quá ngắn thì chỉ chờ câu nối tiếp). */
+  hasFlushablePending(): boolean {
+    return this.pendingBuffer.length > 0 && !this.completionGuard.isTinyFragment(this.pendingBuffer);
+  }
+
+  /**
+   * Dịch ngay mảnh câu đang giữ (pipeline gọi khi không có câu nối tiếp trong một khoảng ngắn),
+   * để mảnh câu cuối của một lượt nói không bị treo tới câu sau.
+   */
+  async flushPending(options: TranslationOptions = {}): Promise<TranslationResult> {
+    const startedAt = Date.now();
+    const pending = this.pendingBuffer.trim();
+    if (!pending || this.completionGuard.isTinyFragment(pending)) {
+      return { sourceText: '', translatedText: '', buffered: true, latencyMs: 0 };
+    }
+    return this.translateNow(pending, this.pendingStartMs ?? this.pendingEndMs, this.pendingEndMs, options, startedAt);
+  }
+
+  private async translateNow(
+    fullSourceText: string,
+    contextStartMs: number,
+    endMs: number,
+    options: TranslationOptions,
+    startedAt: number
+  ): Promise<TranslationResult> {
     const requestResetVersion = this.resetVersion;
     this.pendingBuffer = '';
-    this.pendingStartMs = 0;
+    this.pendingStartMs = null;
 
     const providerResult = await this.provider.translate({
       sourceText: fullSourceText,
@@ -129,7 +184,9 @@ export class TranslationEngine {
       translatedText,
       buffered: false,
       latencyMs: Date.now() - startedAt,
-      tokensUsed: providerResult.tokensUsed
+      tokensUsed: providerResult.tokensUsed,
+      startMs: contextStartMs,
+      endMs
     };
   }
 
@@ -147,6 +204,9 @@ export class TranslationEngine {
       throw new Error('Translation provider returned commentary instead of a translation');
     }
     if (this.config.validateVietnamese && !this.looksVietnamese(text) && /[a-z]/i.test(sourceText)) {
+      // Câu cực ngắn ("Oh.", "Yeah.", tên riêng) model giữ nguyên tiếng Anh: không có gì để thuyết minh, bỏ qua lặng lẽ
+      // (pipeline coi "contains no speech" là bỏ qua, không phải lỗi hiển thị cho người dùng).
+      if (sourceText.trim().split(/\s+/).length <= 3) throw new Error('Translation contains no speech to dub');
       throw new Error('Translation provider returned text that does not appear to be Vietnamese');
     }
     return text;
@@ -165,7 +225,7 @@ export class TranslationEngine {
   reset(): void {
     this.resetVersion++;
     this.pendingBuffer = '';
-    this.pendingStartMs = 0;
+    this.pendingStartMs = null;
     this.provider.cancelPending?.();
     this.contextManager.reset();
   }

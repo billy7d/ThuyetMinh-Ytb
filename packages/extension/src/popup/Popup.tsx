@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, OperationMode, SessionState } from '@vietdub/shared';
 import { createStartSessionMessage } from './start-session-message.js';
+import { classifyRuntimeError } from '../errors/runtime-errors.js';
+
+// Cảnh báo cũ hơn ngưỡng này không còn phản ánh tình trạng hiện tại.
+const WARNING_VISIBLE_MS = 30_000;
 
 export const Popup: React.FC = () => {
   const configuredBackendUrl = new URLSearchParams(window.location.search).get('wsUrl') || undefined;
@@ -16,34 +20,11 @@ export const Popup: React.FC = () => {
   const [errorHint, setErrorHint] = useState<string | null>(null);
   const [canRetry, setCanRetry] = useState<boolean>(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [warningText, setWarningText] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<string>('Đang kiểm tra backend local...');
   const activeSessionIdRef = useRef<string | null>(null);
 
-  const classifyError = (rawError: string, code = ''): { message: string; hint: string } => {
-    const lower = `${code} ${rawError || ''}`.toLowerCase();
-    if (lower.includes('permission') || lower.includes('notallowed') || lower.includes('tab_capture')) {
-      return {
-        message: 'Không có quyền truy cập âm thanh tab.',
-        hint: 'Hãy cấp quyền thu âm tab rồi thử lại.'
-      };
-    }
-    if (lower.includes('video_not_found') || lower.includes('video') || lower.includes('không tìm thấy')) {
-      return {
-        message: 'Không tìm thấy thẻ video trên trang này.',
-        hint: 'Hãy mở video và bấm Play trước khi bắt đầu.'
-      };
-    }
-    if (lower.includes('websocket') || lower.includes('ws_') || lower.includes('timeout') || lower.includes('econnrefused') || lower.includes('máy chủ')) {
-      return {
-        message: 'Không thể kết nối máy chủ AI.',
-        hint: 'Kiểm tra backend rồi thử lại.'
-      };
-    }
-    return {
-      message: rawError || 'Đã xảy ra lỗi không xác định.',
-      hint: 'Hãy thử tải lại trang hoặc khởi động lại extension.'
-    };
-  };
+  const classifyError = classifyRuntimeError;
 
   const isRetryableError = (rawError: string, code: string, retryable: boolean): boolean => {
     const lower = `${code} ${rawError || ''}`.toLowerCase();
@@ -69,7 +50,7 @@ export const Popup: React.FC = () => {
     switch (state) {
       case 'INITIALIZING': return 'Đang chuẩn bị...';
       case 'READY': return 'Đã sẵn sàng';
-      case 'CONNECTING': return 'Đang kết nối...';
+      case 'CONNECTING': return 'Đang kết nối / nạp model...';
       case 'ACTIVE': return 'Đang thuyết minh';
       case 'STOPPING': return 'Đang dừng...';
       case 'ERROR': return 'Lỗi kết nối';
@@ -89,6 +70,13 @@ export const Popup: React.FC = () => {
       setTtsVolume(snapshot.mixerConfig.ttsVolume);
     }
     if (state !== 'ACTIVE') setLatencyMs(null);
+    const warning = snapshot?.warning;
+    if (state === 'ACTIVE' && warning && Date.now() - (warning.at || 0) < WARNING_VISIBLE_MS) {
+      const classified = classifyError(warning.message, warning.code);
+      setWarningText(`${classified.message} ${classified.hint}`);
+    } else {
+      setWarningText(null);
+    }
     if (snapshot?.error) {
       const classified = classifyError(snapshot.error.message, snapshot.error.code);
       setErrorMessage(classified.message);
@@ -116,8 +104,10 @@ export const Popup: React.FC = () => {
 
     const messageListener = (msg: any) => {
       if (msg.type === 'SESSION_STATE') applySnapshot(msg);
-      if (msg.type === 'LATENCY_METRIC' && msg.totalPipelineMs && (!msg.sessionId || msg.sessionId === activeSessionIdRef.current)) {
-        setLatencyMs(Math.round(msg.totalPipelineMs));
+      if (msg.type === 'LATENCY_METRIC' && (!msg.sessionId || msg.sessionId === activeSessionIdRef.current)) {
+        // Ưu tiên độ trễ thật so với video; totalPipelineMs không tính thời gian gom câu.
+        const lag = Number.isFinite(msg.videoLagMs) ? msg.videoLagMs : msg.totalPipelineMs;
+        if (Number.isFinite(lag) && lag > 0) setLatencyMs(Math.round(lag));
       }
       if (msg.type === 'ERROR' && msg.fatal && (!msg.sessionId || msg.sessionId === activeSessionIdRef.current)) {
         const classified = classifyError(msg.message, msg.code);
@@ -318,6 +308,12 @@ export const Popup: React.FC = () => {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {warningText && !errorMessage && (
+        <div style={styles.alertWarning} role="status">
+          ⚠️ {warningText}
         </div>
       )}
 

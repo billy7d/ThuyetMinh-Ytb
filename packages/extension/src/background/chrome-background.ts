@@ -17,6 +17,17 @@ import {
 } from './session-manager.js';
 import { ContentPingResponse, ContentScriptHandshake } from './content-handshake.js';
 import { relaySubtitleEvent } from './subtitle-relay.js';
+import { isRetryableServerError } from '../errors/runtime-errors.js';
+import { isSameVideo } from '../navigation/video-identity.js';
+
+// URL video lúc bắt đầu phiên, để phân biệt đổi video với việc trang tự sửa query.
+let sessionVideoUrl: string | null = null;
+
+function rememberSessionVideoUrl(tabId: number): void {
+  chrome.tabs.get(tabId, (tab) => {
+    if (!chrome.runtime.lastError) sessionVideoUrl = tab?.url || null;
+  });
+}
 
 interface RuntimeResponse {
   success?: boolean;
@@ -172,8 +183,17 @@ const runtime: SessionRuntime = {
   },
 
   async start(request: SessionStartRequest & { sessionId: string }, signal: AbortSignal): Promise<void> {
+    rememberSessionVideoUrl(request.tabId);
     await ensureOffscreenDocument();
     const streamId = await getTabCaptureStreamId(request.tabId, signal);
+    throwIfAborted(signal);
+    let initialVideoState: VideoPlaybackState | undefined;
+    try {
+      // Lấy mốc video sau khi Chrome đã cấp capture stream để giữ nguyên user gesture.
+      initialVideoState = (await pingContentScript(request.tabId)).videoState;
+    } catch {
+      // Các timeupdate tiếp theo sẽ cập nhật lại đồng hồ nếu trang vừa điều hướng.
+    }
     throwIfAborted(signal);
     const response = await sendOffscreen<RuntimeResponse>({
       target: 'offscreen',
@@ -182,7 +202,8 @@ const runtime: SessionRuntime = {
       sessionId: request.sessionId,
       mode: request.mode,
       mixerConfig: request.mixerConfig,
-      wsUrl: request.wsUrl
+      wsUrl: request.wsUrl,
+      initialVideoState
     });
     if (!response?.success) {
       throw new SessionRuntimeError(
@@ -356,7 +377,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender, sendResponse) => {
       if (msg.sessionId === sessionManager.getSnapshot().sessionId) {
         void sessionManager.handleRuntimeEvent({
           sessionId: msg.sessionId,
-          error: { code: msg.code, message: msg.message, retryable: false, fatal: msg.fatal }
+          error: { code: msg.code, message: msg.message, retryable: isRetryableServerError(msg.code), fatal: msg.fatal === true }
         });
       }
       sendResponse({ success: true });
@@ -376,9 +397,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (tabId === sessionManager.getSnapshot().tabId && (changeInfo.url || changeInfo.status === 'loading')) {
-    void sessionManager.stop('tab-navigation').catch((error) => {
-      console.error('[CHROME-BACKGROUND] navigation cleanup failed', JSON.stringify(toSessionError(error, 'NAVIGATION_CLEANUP_FAILED')));
-    });
+  const snapshot = sessionManager.getSnapshot();
+  if (tabId !== snapshot.tabId || !snapshot.sessionId || !changeInfo.url) return;
+  // YouTube tự sửa query (&t=, &pp=, sau quảng cáo…) khi vẫn phát cùng video; chỉ dừng khi thật sự đổi video.
+  if (!sessionVideoUrl || isSameVideo(sessionVideoUrl, changeInfo.url)) {
+    sessionVideoUrl = changeInfo.url;
+    return;
   }
+  sessionVideoUrl = null;
+  void sessionManager.stop('tab-navigation').catch((error) => {
+    console.error('[CHROME-BACKGROUND] navigation cleanup failed', JSON.stringify(toSessionError(error, 'NAVIGATION_CLEANUP_FAILED')));
+  });
 });

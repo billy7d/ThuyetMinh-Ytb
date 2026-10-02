@@ -45,6 +45,13 @@ describe('SentenceCompletionGuard', () => {
     expect(guard.check("Let's break it down.").isComplete).toBe(true);
     expect(guard.check("The market is pricing in a rate cut.").isComplete).toBe(true);
     expect(guard.check("It turns out we were wrong.").isComplete).toBe(true);
+    expect(guard.check('How are you?').isComplete).toBe(true);
+  });
+
+  it('coi mảnh chưa có dấu kết thúc câu là chưa hoàn chỉnh để không dịch câu cụt', () => {
+    expect(guard.check('There will be a').isComplete).toBe(false);
+    expect(guard.check("I'm").isComplete).toBe(false);
+    expect(guard.check('Hello, this is a locally generated English').isComplete).toBe(false);
   });
 });
 

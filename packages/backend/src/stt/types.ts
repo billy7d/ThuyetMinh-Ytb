@@ -18,7 +18,18 @@ export interface STTStreamCallbacks {
 
 export interface STTStreamSession {
   sendAudioChunk: (pcmData: Buffer, timestampMs: number) => void;
+  /** Kết thúc có chốt câu cuối. */
   endStream: () => void;
+  /** Hủy ngay (tua/dừng phiên): bỏ audio đang chờ và không nhận dạng phần còn lại. */
+  abort?: () => void;
+}
+
+/** Lỗi STT kèm mã để pipeline báo đúng loại cho extension. */
+export class STTStreamError extends Error {
+  constructor(readonly code: string, message: string, readonly fatal = false) {
+    super(message);
+    this.name = 'STTStreamError';
+  }
 }
 
 export interface STTProvider {

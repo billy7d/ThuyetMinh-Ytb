@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { LocalWorkerClientLike, abortError } from './worker-client.js';
 import { TTSProvider, TTSRequest, TTSResponse } from '../tts/types.js';
 import { parseWavMetadata } from '../tts/google-cloud-tts.js';
@@ -11,9 +12,10 @@ export interface LocalTTSConfig {
 
 export const DEFAULT_LOCAL_TTS_CONFIG: LocalTTSConfig = {
   modelPath: '',
-  timeoutMs: 30_000,
-  maxConcurrentRequests: 2,
-  sampleRate: 24_000
+  timeoutMs: 90_000,
+  maxConcurrentRequests: 1,
+  // VieNeu v3 Turbo xuất WAV mono 48 kHz.
+  sampleRate: 48_000
 };
 
 interface LocalTTSWorkerResponse {
@@ -28,8 +30,11 @@ interface LocalTTSWorkerResponse {
 export class LocalVietnameseTTSProvider implements TTSProvider {
   readonly name = 'LocalVietnameseTTS';
   private readonly config: LocalTTSConfig;
+  // Khóa riêng của adapter (một adapter cho mỗi phiên) để worker hủy đúng generation của phiên này.
+  private readonly instanceKey = `tts:${randomUUID()}`;
   private readonly cancelledGenerations = new Set<number>();
-  private readonly controllers = new Map<number, AbortController>();
+  private readonly controllers = new Map<number, Set<AbortController>>();
+  private readonly waiters: Array<() => void> = [];
   private activeGeneration = 1;
   private inFlight = 0;
 
@@ -45,21 +50,24 @@ export class LocalVietnameseTTSProvider implements TTSProvider {
 
   async synthesize(request: TTSRequest): Promise<TTSResponse> {
     if (this.isCancelled(request.generation)) return this.cancelledResponse(request);
-    if (this.inFlight >= this.config.maxConcurrentRequests) {
-      throw new Error(`Local TTS queue exceeded ${this.config.maxConcurrentRequests} concurrent requests`);
-    }
 
     const controller = new AbortController();
-    const previous = this.controllers.get(request.generation);
-    previous?.abort();
-    this.controllers.set(request.generation, controller);
-    this.inFlight++;
+    const generationControllers = this.controllers.get(request.generation) ?? new Set<AbortController>();
+    generationControllers.add(controller);
+    this.controllers.set(request.generation, generationControllers);
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    let acquired = false;
 
     try {
+      // Chờ lượt thay vì ném lỗi khi bận: lỗi "queue exceeded" trước đây làm extension dừng cả phiên.
+      await this.acquire(controller.signal);
+      acquired = true;
+      if (this.isCancelled(request.generation)) return this.cancelledResponse(request);
+
       const response = await this.worker.request<LocalTTSWorkerResponse>({
         op: 'synthesize',
         modelPath: this.config.modelPath,
+        sessionId: this.instanceKey,
         segmentId: request.segmentId,
         generation: request.generation,
         text: request.text,
@@ -87,25 +95,63 @@ export class LocalVietnameseTTSProvider implements TTSProvider {
         cancelled: false
       };
     } catch (error) {
-      if (controller.signal.aborted && this.isCancelled(request.generation)) {
-        return this.cancelledResponse(request);
-      }
+      if (this.isCancelled(request.generation)) return this.cancelledResponse(request);
       if (controller.signal.aborted) throw abortError(`Local TTS timed out after ${this.config.timeoutMs}ms`);
       throw error;
     } finally {
       clearTimeout(timeout);
-      this.inFlight--;
-      if (this.controllers.get(request.generation) === controller) this.controllers.delete(request.generation);
+      if (acquired) this.release();
+      generationControllers.delete(controller);
+      if (generationControllers.size === 0 && this.controllers.get(request.generation) === generationControllers) {
+        this.controllers.delete(request.generation);
+      }
     }
   }
 
   setGeneration(generation: number): void {
-    this.activeGeneration = generation;
+    this.activeGeneration = Math.max(this.activeGeneration, generation);
   }
 
   cancelGeneration(generation: number): void {
     this.cancelledGenerations.add(generation);
-    this.controllers.get(generation)?.abort();
+    this.activeGeneration = Math.max(this.activeGeneration, generation + 1);
+    for (const controller of this.controllers.get(generation) ?? []) controller.abort();
+    // Báo worker bỏ các request của generation cũ còn trong hàng đợi stdin.
+    void this.worker.request(
+      { op: 'cancel', sessionId: this.instanceKey, beforeGeneration: generation + 1 },
+      { bypassQueueLimit: true, timeoutMs: 5_000 }
+    ).catch(() => {});
+  }
+
+  private acquire(signal: AbortSignal): Promise<void> {
+    if (this.inFlight < this.config.maxConcurrentRequests) {
+      this.inFlight++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        const index = this.waiters.indexOf(grant);
+        if (index >= 0) this.waiters.splice(index, 1);
+        reject(abortError('Local TTS request was cancelled while waiting'));
+      };
+      const grant = () => {
+        signal.removeEventListener('abort', onAbort);
+        this.inFlight++;
+        resolve();
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.waiters.push(grant);
+    });
+  }
+
+  private release(): void {
+    this.inFlight--;
+    const next = this.waiters.shift();
+    next?.();
   }
 
   private isCancelled(generation: number): boolean {

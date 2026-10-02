@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   GeminiTranslationProvider,
   GoogleCloudTTSProvider,
@@ -16,10 +20,65 @@ describe('production provider contracts', () => {
   it('defaults to local mode and fails closed when the manifest/workers are missing', () => {
     const factory = createProductionProviderFactory({}, '/tmp/vietdub-test-no-models');
     expect(factory.mode).toBe('local');
-    expect(factory.missingConfiguration).toContain('LOCAL_MODEL_MANIFEST=/tmp/vietdub-test-no-models/models/manifest.json');
+    // Dùng đường dẫn đã resolve để kiểm thử đúng trên cả Windows và POSIX.
+    expect(factory.missingConfiguration).toContain(
+      `LOCAL_MODEL_MANIFEST=${path.resolve('/tmp/vietdub-test-no-models/models/manifest.json')}`
+    );
     expect(factory.missingConfiguration).toContain('LOCAL_STT_WORKER_COMMAND');
     expect(factory.missingConfiguration).not.toContain('DEEPGRAM_API_KEY');
     expect(() => factory.create()).toThrow(/Local AI is not ready/);
+  });
+
+  it('creates session-scoped local adapters while retaining the shared worker runtime', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vietdub-session-scoped-'));
+    const models: Record<string, unknown> = {};
+    for (const component of ['stt', 'translation', 'tts']) {
+      const modelDirectory = path.join(root, component);
+      mkdirSync(modelDirectory, { recursive: true });
+      const bytes = Buffer.from(`model-${component}`);
+      writeFileSync(path.join(modelDirectory, 'model.bin'), bytes);
+      models[component] = {
+        component,
+        modelId: `local/${component}`,
+        revision: 'a'.repeat(40),
+        upstreamUrl: `https://models.example.test/${component}`,
+        relativePath: component,
+        artifacts: [{
+          relativePath: 'model.bin',
+          sizeBytes: bytes.length,
+          sha256: createHash('sha256').update(bytes).digest('hex')
+        }],
+        license: {
+          model: 'MIT',
+          code: 'MIT',
+          tokenizer: 'MIT',
+          ...(component === 'tts' ? { codec: 'MIT', voice: 'MIT' } : {}),
+          distribution: 'verified',
+          commercialUse: 'verified'
+        }
+      };
+    }
+    const manifestPath = path.join(root, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify({ schemaVersion: 1, generatedAt: '2026-09-24T00:00:00Z', models }));
+    const factory = createProductionProviderFactory({
+      AI_MODE: 'local',
+      LOCAL_MODEL_MANIFEST: manifestPath,
+      LOCAL_MODEL_ROOT: root,
+      LOCAL_STT_WORKER_COMMAND: process.execPath,
+      LOCAL_TRANSLATION_WORKER_COMMAND: process.execPath,
+      LOCAL_TTS_WORKER_COMMAND: process.execPath
+    }, root);
+
+    try {
+      const firstSession = factory.create();
+      const secondSession = factory.create();
+      expect(secondSession.sttProvider).not.toBe(firstSession.sttProvider);
+      expect(secondSession.translationEngine).not.toBe(firstSession.translationEngine);
+      expect(secondSession.ttsProvider).not.toBe(firstSession.ttsProvider);
+    } finally {
+      await factory.close?.();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('requires an explicit opt-in before cloud adapters can be constructed', () => {

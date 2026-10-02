@@ -33,6 +33,18 @@ class FakeWorker implements LocalWorkerClientLike {
         }]
       } as T;
     }
+    if (payload.op === 'end_stream') {
+      return {
+        events: [{
+          kind: 'final',
+          segmentId: 'local_end',
+          text: 'Final utterance from stream flush.',
+          startMs: 2000,
+          endMs: 2600,
+          confidence: 0.9
+        }]
+      } as T;
+    }
     if (payload.op === 'translate') return { translatedText: 'Xin chào từ worker local.' } as T;
     if (payload.op === 'synthesize') {
       return {
@@ -66,6 +78,56 @@ describe('local runtime contracts', () => {
     await client.close();
   });
 
+  it('keeps a ready worker alive after the startup timeout window', async () => {
+    const workerScript = [
+      "const readline=require('node:readline');",
+      "console.log(JSON.stringify({event:'ready'}));",
+      "const rl=readline.createInterface({input:process.stdin});",
+      "rl.on('line', line => { const msg=JSON.parse(line); console.log(JSON.stringify({id:msg.id,ok:true,result:{value:msg.value}})); });"
+    ].join('');
+    const client = new JsonLineWorkerClient({
+      name: 'test-worker-startup-timeout',
+      command: { command: process.execPath, args: ['-e', workerScript] },
+      startupTimeoutMs: 1_000,
+      requestTimeoutMs: 2_000,
+      maxQueueSize: 1,
+      maxFrameBytes: 8_192
+    });
+    try {
+      await expect(client.request({ op: 'echo', value: 'before-timeout' })).resolves.toEqual({ value: 'before-timeout' });
+      await new Promise(resolve => setTimeout(resolve, 1_050));
+      expect(client.getStatus().state).toBe('ready');
+      await expect(client.request({ op: 'echo', value: 'after-timeout' })).resolves.toEqual({ value: 'after-timeout' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('preserves the first worker failure instead of replacing it with SIGTERM', async () => {
+    const workerScript = [
+      "setTimeout(() => process.stdout.write('not-json\\n'), 20);",
+      'process.stdin.resume();'
+    ].join('');
+    const client = new JsonLineWorkerClient({
+      name: 'test-worker-diagnostic',
+      command: { command: process.execPath, args: ['-e', workerScript] },
+      startupTimeoutMs: 2_000,
+      requestTimeoutMs: 2_000,
+      maxQueueSize: 1,
+      maxFrameBytes: 8_192
+    });
+    try {
+      await expect(client.start()).rejects.toThrow(/invalid JSON/);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(client.getStatus()).toMatchObject({
+        state: 'error',
+        error: 'test-worker-diagnostic worker emitted invalid JSON'
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it('verifies all model artifacts and licenses before readiness', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'vietdub-model-'));
     try {
@@ -85,8 +147,21 @@ describe('local runtime contracts', () => {
           artifacts: [{
             relativePath: 'model.bin',
             sizeBytes: content.length,
-            sha256: createHash('sha256').update(content).digest('hex')
+            sha256: createHash('sha256').update(content).digest('hex'),
+            sourceModelId: `local/${component}`,
+            sourceRevision: 'a'.repeat(40),
+            upstreamGitBlobSha1: 'b'.repeat(40)
           }],
+          ...(component === 'tts' ? {
+            dependencies: {
+              codec: {
+                modelId: 'local/codec',
+                revision: 'c'.repeat(40),
+                upstreamUrl: 'https://models.example.test/codec',
+                license: 'Apache-2.0'
+              }
+            }
+          } : {}),
           license: {
             model: 'MIT',
             code: 'MIT',
@@ -108,6 +183,8 @@ describe('local runtime contracts', () => {
       const status = manager.getStatus();
       expect(status.ready).toBe(true);
       expect(status.components.stt.readiness).toBe('ready');
+      expect(manager.getManifest()?.models.tts.dependencies?.codec.revision).toBe('c'.repeat(40));
+      expect(manager.getManifest()?.models.stt.artifacts[0]?.upstreamGitBlobSha1).toBe('b'.repeat(40));
       expect(manager.getModelPath('translation')).toBe(path.join(root, 'translation'));
 
       writeFileSync(path.join(root, 'tts', 'model.bin'), 'tampered');
@@ -128,13 +205,16 @@ describe('local runtime contracts', () => {
       onError: error => results.push(`error:${error.message}`)
     });
     stream.sendAudioChunk(Buffer.alloc(8000), 1000);
-    stream.sendAudioChunk(Buffer.alloc(8000), 1500);
+    stream.sendAudioChunk(Buffer.alloc(8000), 1250);
     stream.endStream();
     await new Promise(resolve => setTimeout(resolve, 10));
+    // Hai chunk liền mạch đến khi worker chưa sẵn sàng được gom thành một request 500 ms.
     expect(results).toEqual([
       'final:Hello from local worker.',
-      'final:Hello from local worker.'
+      'final:Final utterance from stream flush.'
     ]);
+    const audioRequest = worker.requests.find(request => request.op === 'audio_chunk');
+    expect(audioRequest).toMatchObject({ timestampMs: 1000, durationMs: 500 });
 
     const translation = new LocalTranslationProvider(worker, { modelPath: '/models/translation' });
     await expect(translation.translate({
@@ -160,10 +240,14 @@ describe('local runtime contracts', () => {
     expect(worker.requests.map(request => request.op)).toEqual([
       'start_stream',
       'audio_chunk',
-      'audio_chunk',
       'end_stream',
       'translate',
       'synthesize'
+    ]);
+    expect(worker.requests.slice(0, 3).map(request => request.modelPath)).toEqual([
+      '/models/stt',
+      '/models/stt',
+      '/models/stt'
     ]);
   });
 
@@ -191,6 +275,104 @@ describe('local runtime contracts', () => {
         fetchImpl: async () => new Response(body)
       });
       expect(readFileSync(path.join(root, 'model.bin')).equals(body)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks the pinned upstream Git blob while recording a separate local SHA-256', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vietdub-download-git-blob-'));
+    try {
+      const body = Buffer.from('pinned-upstream-file');
+      const gitBlobSha1 = createHash('sha1')
+        .update(`blob ${body.length}\0`)
+        .update(body)
+        .digest('hex');
+      const result = await downloadVerifiedModel({
+        url: 'https://models.example.test/rev/config.json',
+        destination: path.join(root, 'config.json'),
+        expectedSizeBytes: body.length,
+        expectedGitBlobSha1: gitBlobSha1,
+        consentAccepted: true,
+        allowedHosts: ['models.example.test'],
+        fetchImpl: async () => new Response(body)
+      });
+
+      expect(result.sha256).toBe(createHash('sha256').update(body).digest('hex'));
+      expect(readFileSync(path.join(root, 'config.json')).equals(body)).toBe(true);
+      await expect(downloadVerifiedModel({
+        url: 'https://models.example.test/rev/wrong.json',
+        destination: path.join(root, 'wrong.json'),
+        expectedSizeBytes: body.length,
+        expectedGitBlobSha1: '0'.repeat(40),
+        consentAccepted: true,
+        allowedHosts: ['models.example.test'],
+        fetchImpl: async () => new Response(body)
+      })).rejects.toThrow(/Git blob SHA-1 mismatch/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('follows only allow-listed HTTPS redirects and does not expose signed CDN URLs', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vietdub-download-redirect-'));
+    try {
+      const body = Buffer.from('redirected-model');
+      const sha256 = createHash('sha256').update(body).digest('hex');
+      const requested: string[] = [];
+      const result = await downloadVerifiedModel({
+        url: 'https://models.example.test/rev/model.bin?download=true',
+        destination: path.join(root, 'model.bin'),
+        expectedSizeBytes: body.length,
+        expectedSha256: sha256,
+        consentAccepted: true,
+        allowedHosts: ['models.example.test', 'cdn.example.test'],
+        fetchImpl: async input => {
+          const target = new URL(String(input));
+          requested.push(target.hostname);
+          if (target.hostname === 'models.example.test') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://cdn.example.test/model.bin?token=temporary-secret' }
+            });
+          }
+          return new Response(body);
+        }
+      });
+      expect(requested).toEqual(['models.example.test', 'cdn.example.test']);
+      expect(result.url).toBe('https://models.example.test/rev/model.bin');
+      expect(result.url).not.toContain('temporary-secret');
+      expect(readFileSync(path.join(root, 'model.bin')).equals(body)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unapproved and insecure model download redirects before fetching bytes', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vietdub-download-reject-'));
+    try {
+      const body = Buffer.from('model');
+      const request = {
+        url: 'https://models.example.test/rev/model.bin',
+        destination: path.join(root, 'model.bin'),
+        expectedSizeBytes: body.length,
+        expectedSha256: createHash('sha256').update(body).digest('hex'),
+        consentAccepted: true,
+        allowedHosts: ['models.example.test'],
+        fetchImpl: async () => new Response(null, {
+          status: 302,
+          headers: { location: 'https://cdn.example.test/model.bin' }
+        })
+      };
+      await expect(downloadVerifiedModel(request)).rejects.toThrow(/not allow-listed/);
+      await expect(downloadVerifiedModel({
+        ...request,
+        allowedHosts: ['models.example.test', 'cdn.example.test'],
+        fetchImpl: async () => new Response(null, {
+          status: 302,
+          headers: { location: 'http://cdn.example.test/model.bin' }
+        })
+      })).rejects.toThrow(/must use HTTPS/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

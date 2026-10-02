@@ -2,6 +2,7 @@ import { SubtitleRenderer, resolveSubtitleDisplayDurationMs } from './subtitle-r
 import { VideoSyncController } from '../sync/video-sync.js';
 import { AudioMixer, AudioSourceMode } from '../audio/mixer.js';
 import { PCMProcessor } from '../audio/pcm-processor.js';
+import { AudioContextBlockedError, ensureAudioContextRunning } from '../audio/audio-context-guard.js';
 import {
   AudioMixerConfig,
   ClientMessage,
@@ -12,6 +13,10 @@ import {
   diagnosticSessionRef,
   emitDiagnostic
 } from '@vietdub/shared';
+import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
+import { RelaySocket, SocketLike, WS_RELAY_PORT_NAME } from '../relay/ws-relay.js';
+import { isSameVideo } from '../navigation/video-identity.js';
+import { SyncedSubtitleRelease, TtsSubtitleSync } from '../sync/tts-subtitle-sync.js';
 
 interface FirefoxSession {
   sessionId: string;
@@ -23,7 +28,7 @@ interface FirefoxSession {
   captureStream: MediaStream | null;
   audioMixer: AudioMixer | null;
   pcmProcessor: PCMProcessor | null;
-  ws: WebSocket | null;
+  ws: SocketLike | null;
   generation: number;
   sequence: number;
   cancelled: boolean;
@@ -31,7 +36,17 @@ interface FirefoxSession {
   playbackEpoch: number;
   failureNotified: boolean;
   cleanupPromise: Promise<void> | null;
+  /** Số chunk PCM im lặng tuyệt đối liên tiếp trong lúc video đang phát. */
+  silentChunks: number;
+  lastRecaptureAt: number;
+  detachCaptureWatch: (() => void) | null;
+  /** Giữ phụ đề tới đúng lúc giọng đọc cùng câu bắt đầu phát. */
+  subtitleSync: TtsSubtitleSync | null;
 }
+
+// Video đang phát mà thu được ~3 s toàn số 0 nghĩa là track captureStream đã chết (trang đổi nguồn phát).
+const SILENT_CHUNKS_BEFORE_RECAPTURE = 12;
+const MIN_RECAPTURE_INTERVAL_MS = 3_000;
 
 // Guard bảo đảm inject thủ công không tạo thêm listener hoặc observer.
 if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
@@ -103,12 +118,29 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     const video = findVideoElement();
     if (!video) return false;
 
-    const videoChanged = activeVideo !== video || activeVideoUrl !== location.href || force;
-    if (!videoChanged && subtitleRenderer && syncController) return true;
+    // So theo danh tính video, không theo nguyên URL: YouTube tự sửa query khi vẫn phát cùng video.
+    const elementChanged = activeVideo !== video;
+    const identityChanged = Boolean(activeVideoUrl) && !isSameVideo(activeVideoUrl, location.href);
+    if (!elementChanged && !identityChanged && subtitleRenderer && syncController) {
+      activeVideoUrl = location.href;
+      return true;
+    }
+    emitDiagnostic('content', 'video_integration_changed', {
+      elementChanged,
+      identityChanged,
+      force,
+      hadSession: Boolean(firefoxSession)
+    });
 
     const previousSession = firefoxSession;
-    if (previousSession && videoChanged) {
-      void stopFirefoxSession(previousSession.sessionId, 'youtube-navigation');
+    if (previousSession && (elementChanged || identityChanged)) {
+      // Âm thanh đang thu gắn với thẻ video cũ: dừng và báo rõ cho popup thay vì dừng lặng lẽ (popup vẫn hiện "đang thuyết minh").
+      void failFirefoxSession(previousSession, createRuntimeError(
+        'VIDEO_NAVIGATION',
+        identityChanged ? 'Đã chuyển sang video khác.' : 'Trình phát đã thay thẻ video.',
+        true,
+        true
+      ));
     }
 
     if (syncController) {
@@ -133,7 +165,10 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         if (!session || session.video !== video || session.cancelled) return;
         session.generation += 1;
         session.playbackEpoch += 1;
+        session.subtitleSync?.clear();
         session.syncController?.stopActiveTTS();
+        // Dừng cả các câu TTS đã xếp lịch phát sau câu hiện tại.
+        session.audioMixer?.stopTTS();
         if (session.ws?.readyState === WebSocket.OPEN) {
           const message: ClientMessage = {
             type: 'SEEK_EVENT',
@@ -152,7 +187,11 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       },
       onPause: () => {
         const session = firefoxSession;
-        if (session && !session.cancelled) session.playbackEpoch += 1;
+        if (session && !session.cancelled) {
+          session.playbackEpoch += 1;
+          session.audioMixer?.stopTTS();
+          session.subtitleSync?.clear();
+        }
         syncController?.stopActiveTTS();
       },
       onResume: () => {}
@@ -174,7 +213,14 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
           hasVideo: !!video,
           videoTitle: document.title,
           currentTime: video?.currentTime || 0,
-          paused: video?.paused ?? true
+          paused: video?.paused ?? true,
+          videoState: video ? {
+            currentTime: video.currentTime,
+            duration: Number.isFinite(video.duration) ? video.duration : 0,
+            paused: video.paused,
+            playbackRate: video.playbackRate,
+            seeking: video.seeking
+          } : undefined
         });
         return false;
       }
@@ -186,12 +232,17 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
           textLength: typeof msg.text === 'string' ? msg.text.length : 0
         });
         if (subtitleRenderer && msg.text) {
-          const displayed = subtitleRenderer.showSubtitle(
-            msg.segmentId,
-            msg.text,
-            resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs),
-            msg.generation ?? 0
-          );
+          const timing = { startMs: msg.startMs, endMs: msg.endMs };
+          // Chrome: offscreen đã giữ phụ đề tới đúng lúc giọng đọc bắt đầu, nên hiện ngay theo thời lượng giọng đọc.
+          const displayed = msg.syncWithTts
+            ? subtitleRenderer.showSyncedSubtitle(msg.segmentId, msg.text, msg.ttsDurationMs, msg.generation ?? 0, timing)
+            : subtitleRenderer.showSubtitle(
+              msg.segmentId,
+              msg.text,
+              resolveSubtitleDisplayDurationMs(msg.startMs, msg.endMs),
+              msg.generation ?? 0,
+              timing
+            );
           emitDiagnostic('content', 'subtitle_event_rendered', {
             sessionRef: diagnosticSessionRef(msg.sessionId),
             displayed
@@ -236,7 +287,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     sessionId: string,
     mode: OperationMode,
     mixerConfig?: Partial<AudioMixerConfig>,
-    wsUrl = 'ws://localhost:8080'
+    wsUrl = 'ws://127.0.0.1:8080'
   ): Promise<void> {
     if (!sessionId) throw createRuntimeError('INVALID_START_REQUEST', 'Thiếu sessionId.');
     emitDiagnostic('firefox_capture', 'start_requested', { sessionRef: diagnosticSessionRef(sessionId), mode });
@@ -264,8 +315,13 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       ready: false,
       playbackEpoch: 1,
       failureNotified: false,
-      cleanupPromise: null
+      cleanupPromise: null,
+      silentChunks: 0,
+      lastRecaptureAt: 0,
+      subtitleSync: null,
+      detachCaptureWatch: null
     };
+    session.subtitleSync = new TtsSubtitleSync(item => showReleasedSubtitle(session, item));
     firefoxSession = session;
 
     const flight = runFirefoxStart(session, mixerConfig);
@@ -284,7 +340,17 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
   async function runFirefoxStart(session: FirefoxSession, mixerConfig?: Partial<AudioMixerConfig>): Promise<void> {
     try {
       session.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (session.audioCtx.state === 'suspended') await session.audioCtx.resume();
+      try {
+        await ensureAudioContextRunning(session.audioCtx);
+      } catch (error) {
+        if (!(error instanceof AudioContextBlockedError)) throw error;
+        throw createRuntimeError(
+          'AUDIO_CONTEXT_BLOCKED',
+          'Firefox đang chặn âm thanh của trang cho tới khi bạn tương tác với trang.',
+          false,
+          true
+        );
+      }
       assertCurrent(session);
       emitDiagnostic('firefox_capture', 'audio_context_ready', {
         sessionRef: diagnosticSessionRef(session.sessionId),
@@ -315,15 +381,17 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       session.pcmProcessor = new PCMProcessor(
         session.audioCtx,
         session.audioMixer.getSTTTapNode(),
-        (pcmBase64, timestampMs) => {
+        (pcmBase64, timestampMs, audioTimeMs, rms) => {
           if (firefoxSession !== session || session.cancelled || session.ws?.readyState !== WebSocket.OPEN) return;
+          watchForDeadCapture(session, rms);
           const message: ClientMessage = {
             type: 'AUDIO_CHUNK',
             sessionId: session.sessionId,
             timestamp: Date.now(),
             sequence: session.sequence++,
             pcmBase64,
-            videoTimeMs: timestampMs
+            videoTimeMs: timestampMs,
+            audioTimeMs
           };
           try {
             session.ws?.send(JSON.stringify(message));
@@ -367,6 +435,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
             sourceMode: 'capture-stream',
             audioTracks: session.captureStream.getAudioTracks().length
           });
+          watchCaptureStream(session, session.captureStream);
           return {
             node: session.audioCtx.createMediaStreamSource(session.captureStream),
             mode: 'capture-stream'
@@ -400,6 +469,69 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     }
   }
 
+  /** Theo dõi track của captureStream: YouTube đổi nguồn phát thì track cũ kết thúc hoặc track mới được thêm. */
+  function watchCaptureStream(session: FirefoxSession, stream: MediaStream): void {
+    session.detachCaptureWatch?.();
+    const tracks = stream.getAudioTracks();
+    const onAddTrack = (event: MediaStreamTrackEvent) => {
+      if (event.track?.kind === 'audio') recaptureAudio(session, 'track-added');
+    };
+    const onEnded = () => recaptureAudio(session, 'track-ended');
+    stream.addEventListener('addtrack', onAddTrack);
+    for (const track of tracks) track.addEventListener('ended', onEnded);
+    session.detachCaptureWatch = () => {
+      stream.removeEventListener('addtrack', onAddTrack);
+      for (const track of tracks) track.removeEventListener('ended', onEnded);
+    };
+  }
+
+  function watchForDeadCapture(session: FirefoxSession, rms: number): void {
+    const video = session.video;
+    const playing = !video.paused && !video.ended && video.readyState >= 2 && !video.muted && video.volume > 0;
+    session.silentChunks = playing && rms === 0 ? session.silentChunks + 1 : 0;
+    if (session.silentChunks >= SILENT_CHUNKS_BEFORE_RECAPTURE) recaptureAudio(session, 'silence-watchdog');
+  }
+
+  /** Thu lại âm thanh video vào cùng đồ thị Web Audio, giữ nguyên phiên WebSocket và bộ trộn. */
+  function recaptureAudio(session: FirefoxSession, reason: string): void {
+    if (firefoxSession !== session || session.cancelled || !session.audioCtx || !session.audioMixer) return;
+    const now = Date.now();
+    if (now - session.lastRecaptureAt < MIN_RECAPTURE_INTERVAL_MS) return;
+    session.lastRecaptureAt = now;
+    session.silentChunks = 0;
+    const mediaVideo = session.video as HTMLVideoElement & {
+      captureStream?: () => MediaStream;
+      mozCaptureStream?: () => MediaStream;
+    };
+    const captureMethod = mediaVideo.captureStream || mediaVideo.mozCaptureStream;
+    if (!captureMethod) return;
+    try {
+      const fresh = captureMethod.call(session.video);
+      const liveTrack = fresh.getAudioTracks().find(track => track.readyState === 'live');
+      if (!liveTrack) {
+        for (const track of fresh.getTracks()) track.stop();
+        emitDiagnostic('firefox_capture', 'recapture_no_audio', { sessionRef: diagnosticSessionRef(session.sessionId), reason });
+        return;
+      }
+      // Gắn đúng track đang sống: MediaStreamSource của stream nhiều track có thể chọn nhầm track đã chết.
+      const node = session.audioCtx.createMediaStreamSource(new MediaStream([liveTrack]));
+      session.audioMixer.replaceCaptureSource(node);
+      const previous = session.captureStream;
+      session.captureStream = fresh;
+      watchCaptureStream(session, fresh);
+      if (previous && previous !== fresh) {
+        for (const track of previous.getTracks()) track.stop();
+      }
+      emitDiagnostic('firefox_capture', 'recaptured', { sessionRef: diagnosticSessionRef(session.sessionId), reason });
+    } catch (error) {
+      emitDiagnostic('firefox_capture', 'recapture_failed', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        reason,
+        errorLength: String(error).length
+      });
+    }
+  }
+
   async function connectFirefoxWebSocket(session: FirefoxSession): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -407,10 +539,11 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         if (settled) return;
         settled = true;
         reject(createRuntimeError('WS_CONNECTION_TIMEOUT', 'Hết thời gian chờ phản hồi từ máy chủ AI.', true, true));
-      }, 7000);
+      }, SESSION_READY_TIMEOUT_MS);
 
       try {
-        session.ws = new WebSocket(session.wsUrl);
+        // WebSocket mở từ content script mang Origin của trang (bị backend từ chối); đi qua relay ở background.
+        session.ws = new RelaySocket(session.wsUrl, chrome.runtime.connect({ name: WS_RELAY_PORT_NAME }) as any);
       } catch (error) {
         clearTimeout(timeout);
         reject(createRuntimeError('WS_CONNECTION_FAILED', `Không thể kết nối máy chủ WebSocket: ${String(error)}`, true, true));
@@ -450,7 +583,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         } else if (firefoxSession === session && !session.cancelled) {
           void failFirefoxSession(session, error);
         }
-        console.error('[CONTENT] WebSocket error', JSON.stringify({ code: error.code, message: String(event) }));
+        const reason = (event as { reason?: unknown } | null)?.reason;
+        console.error('[CONTENT] WebSocket error', JSON.stringify({ code: error.code, message: typeof reason === 'string' ? reason : String(event) }));
       };
 
       socket.onclose = (event) => {
@@ -476,6 +610,12 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
             session.ready = true;
             emitDiagnostic('firefox_ws', 'session_ready_received', { sessionRef: diagnosticSessionRef(session.sessionId) });
             resolve();
+          } else if (message.type === 'ERROR' && message.fatal && !settled) {
+            // Backend từ chối phiên: báo đúng mã lỗi thay vì chờ timeout rồi báo mất kết nối.
+            settled = true;
+            clearTimeout(timeout);
+            reject(createRuntimeError(message.code, message.message, isRetryableServerError(message.code), true));
+            return;
           }
           emitDiagnostic('firefox_ws', 'server_event_received', {
             sessionRef: diagnosticSessionRef(session.sessionId),
@@ -490,13 +630,32 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     });
   }
 
+  function showReleasedSubtitle(session: FirefoxSession, item: SyncedSubtitleRelease): void {
+    if (firefoxSession !== session || session.cancelled || !subtitleRenderer) return;
+    const { message } = item;
+    const displayed = subtitleRenderer.showSyncedSubtitle(
+      message.segmentId,
+      message.text,
+      item.ttsDurationMs,
+      message.generation,
+      { startMs: message.startMs, endMs: message.endMs }
+    );
+    emitDiagnostic('firefox_ws', 'subtitle_event_rendered', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      displayed,
+      syncedWithTts: item.ttsDurationMs !== undefined,
+      textLength: message.text.length
+    });
+  }
+
   async function handleFirefoxServerMessage(session: FirefoxSession, message: ServerMessage): Promise<void> {
     if (firefoxSession !== session || session.cancelled) return;
     if (message.type === 'LATENCY_METRIC') notifyBackground(message);
     if (message.type === 'ERROR') {
       notifyBackground(message);
-      if (message.fatal || session.ready) {
-        await failFirefoxSession(session, createRuntimeError(message.code, message.message, false, message.fatal));
+      // Chỉ lỗi nghiêm trọng mới dừng phiên; lỗi tạm thời được background hiển thị như cảnh báo.
+      if (message.fatal) {
+        await failFirefoxSession(session, createRuntimeError(message.code, message.message, isRetryableServerError(message.code), true));
       }
       return;
     }
@@ -509,12 +668,19 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         action: message.action
       });
     }
-    if (message.type === 'SUBTITLE_EVENT' && subtitleRenderer && message.action === 'show') {
+    if (message.type === 'SUBTITLE_EVENT' && message.action === 'show' && session.subtitleSync?.offer(message)) {
+      // Phụ đề chờ giọng đọc cùng câu (TTS_CHUNK tới ngay sau) để hiện đúng lúc giọng đọc bắt đầu.
+      emitDiagnostic('firefox_ws', 'subtitle_held_for_tts', {
+        sessionRef: diagnosticSessionRef(session.sessionId),
+        segmentId: message.segmentId
+      });
+    } else if (message.type === 'SUBTITLE_EVENT' && subtitleRenderer && message.action === 'show') {
       const displayed = subtitleRenderer.showSubtitle(
         message.segmentId,
         message.text,
         resolveSubtitleDisplayDurationMs(message.startMs, message.endMs),
-        message.generation
+        message.generation,
+        { startMs: message.startMs, endMs: message.endMs }
       );
       emitDiagnostic('firefox_ws', 'subtitle_event_rendered', {
         sessionRef: diagnosticSessionRef(session.sessionId),
@@ -530,15 +696,28 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
         const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
         if (firefoxSession === session && !session.cancelled && message.generation === session.generation && playbackEpochAtDecodeStart === session.playbackEpoch && session.audioMixer) {
-          const source = session.audioMixer.playTTSBuffer(audioBuffer);
-          session.syncController?.setActiveTTSSource(source);
+          const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, message.endMs - message.startMs);
+          if (scheduled) {
+            session.syncController?.setActiveTTSSource(scheduled.source);
+            session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs);
+          } else {
+            session.subtitleSync?.ttsDropped(message.segmentId);
+          }
+          const videoMs = Math.round(session.video.currentTime * 1000);
           emitDiagnostic('firefox_tts', 'decoded_and_played', {
             sessionRef: diagnosticSessionRef(session.sessionId),
+            segmentId: message.segmentId,
             generation: message.generation,
-            durationMs: Math.round(audioBuffer.duration * 1000)
+            durationMs: Math.round(audioBuffer.duration * 1000),
+            scheduled: Boolean(scheduled),
+            delayMs: scheduled?.delayMs,
+            // Độ trễ giọng đọc so với câu gốc trên video tại thời điểm giọng đọc bắt đầu.
+            lagFromStartMs: scheduled ? videoMs + scheduled.delayMs - message.startMs : undefined,
+            lagFromEndMs: scheduled ? videoMs + scheduled.delayMs - message.endMs : undefined
           });
         }
       } catch (error) {
+        session.subtitleSync?.ttsDropped(message.segmentId);
         emitDiagnostic('firefox_tts', 'decoder_or_playback_error', {
           sessionRef: diagnosticSessionRef(session.sessionId),
           generation: message.generation
@@ -614,6 +793,8 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         session.audioMixer.disconnect();
         session.audioMixer = null;
       }
+      session.detachCaptureWatch?.();
+      session.detachCaptureWatch = null;
       if (session.captureStream) {
         for (const track of session.captureStream.getTracks()) track.stop();
         session.captureStream = null;
@@ -648,6 +829,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         session.ws = null;
       }
       session.ready = false;
+      session.subtitleSync?.clear();
       session.syncController?.stopActiveTTS();
       if (session.video === activeVideo) subtitleRenderer?.hideSubtitle();
       emitDiagnostic('firefox_capture', 'cleanup_finished', { sessionRef: diagnosticSessionRef(session.sessionId) });

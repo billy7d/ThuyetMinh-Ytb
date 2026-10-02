@@ -19,20 +19,27 @@ interface ActiveSession {
   pipeline: RealtimePipeline;
   ws: WebSocket;
 }
+// Phải nhỏ hơn thời gian extension chờ SESSION_READY (60 s) để extension nhận được lỗi rõ ràng thay vì timeout.
+const DEFAULT_RUNTIME_READY_TIMEOUT_MS = 45_000;
+
 export class WebSocketGateway {
   private readonly activeSessions = new Map<string, ActiveSession>();
+  private readonly startingSessions = new Map<string, WebSocket>();
   private readonly providerFactory: ProductionProviderFactory;
   private readonly maxConcurrentSessions: number;
+  private readonly runtimeReadyTimeoutMs: number;
 
   constructor(
     private readonly wss: WebSocketServer,
     options: {
       providerFactory?: ProductionProviderFactory;
       maxConcurrentSessions?: number;
+      runtimeReadyTimeoutMs?: number;
     } = {}
   ) {
     this.providerFactory = options.providerFactory || createProductionProviderFactory();
     this.maxConcurrentSessions = options.maxConcurrentSessions || 4;
+    this.runtimeReadyTimeoutMs = options.runtimeReadyTimeoutMs || DEFAULT_RUNTIME_READY_TIMEOUT_MS;
     this.setupConnectionHandler();
     void this.providerFactory.warmup?.().catch(error => {
       const message = error instanceof Error ? error.message : String(error);
@@ -62,14 +69,22 @@ export class WebSocketGateway {
             this.sendError(ws, typeof msg.sessionId === 'string' ? msg.sessionId : 'unknown', 'INVALID_MESSAGE', validationError, false);
             return;
           }
+          if (msg.type !== 'SESSION_START' && !ownedSessionId && this.startingSessions.get(msg.sessionId) === ws) {
+            // Phiên của chính kết nối này còn đang chờ model: bỏ qua trạng thái video/tua thay vì trả lỗi hàng loạt.
+            return;
+          }
           if (msg.type !== 'SESSION_START' && (!ownedSessionId || msg.sessionId !== ownedSessionId)) {
             this.sendError(ws, msg.sessionId, 'SESSION_OWNERSHIP_ERROR', 'Phiên không thuộc kết nối này.', false);
             return;
           }
-          this.handleClientMessage(ws, msg);
-          if (msg.type === 'SESSION_START' && this.activeSessions.get(msg.sessionId)?.ws === ws) {
-            ownedSessionId = msg.sessionId;
+          if (msg.type === 'SESSION_START') {
+            // Khởi tạo phiên là bất đồng bộ vì phải chờ worker local nạp model xong.
+            void this.startSession(ws, msg).then(started => {
+              if (started && this.activeSessions.get(msg.sessionId)?.ws === ws) ownedSessionId = msg.sessionId;
+            });
+            return;
           }
+          this.handleClientMessage(ws, msg);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Invalid message';
           this.sendSafe(ws, {
@@ -83,83 +98,126 @@ export class WebSocketGateway {
         }
       });
 
-      ws.on('close', () => {
+      const releaseConnection = () => {
         if (ownedSessionId) this.terminateSession(ownedSessionId, ws);
-      });
-
-      ws.on('error', () => {
-        if (ownedSessionId) this.terminateSession(ownedSessionId, ws);
-      });
+        // Kết nối đóng khi phiên còn đang chờ model: hủy lượt khởi tạo để không tạo pipeline mồ côi.
+        for (const [sessionId, startingWs] of this.startingSessions) {
+          if (startingWs === ws) this.startingSessions.delete(sessionId);
+        }
+      };
+      ws.on('close', releaseConnection);
+      ws.on('error', releaseConnection);
     });
+  }
+
+  private async startSession(ws: WebSocket, msg: Extract<ClientMessage, { type: 'SESSION_START' }>): Promise<boolean> {
+    const existing = this.activeSessions.get(msg.sessionId);
+    const starting = this.startingSessions.get(msg.sessionId);
+    if ((existing && existing.ws !== ws) || (starting && starting !== ws)) {
+      this.sendError(ws, msg.sessionId, 'SESSION_OWNERSHIP_ERROR', 'Session ID đang được sử dụng bởi kết nối khác.', true);
+      return false;
+    }
+    if (starting) return false;
+    if (existing) this.terminateSession(msg.sessionId, ws);
+    const sessionRef = diagnosticSessionRef(msg.sessionId);
+    emitDiagnostic('gateway', 'session_start_received', {
+      sessionRef,
+      mode: msg.mode || DEFAULT_MODE,
+      audioSampleRate: msg.audioSampleRate,
+      hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
+    });
+    if (this.activeSessions.size + this.startingSessions.size >= this.maxConcurrentSessions) {
+      this.sendError(ws, msg.sessionId, 'CONCURRENT_SESSION_LIMIT', 'Số phiên đang hoạt động đã đạt giới hạn.', true);
+      return false;
+    }
+    if (msg.audioSampleRate !== 16000) {
+      this.sendError(ws, msg.sessionId, 'UNSUPPORTED_AUDIO_FORMAT', 'Backend yêu cầu PCM mono 16 kHz.', true);
+      return false;
+    }
+
+    this.startingSessions.set(msg.sessionId, ws);
+    try {
+      // Chỉ báo SESSION_READY khi cả ba worker đã nạp model; nếu không audio sẽ dồn ngay từ những giây đầu.
+      const readiness = await this.waitForRuntimeReady();
+      if (readiness) {
+        this.sendError(ws, msg.sessionId, readiness.code, readiness.message, true);
+        return false;
+      }
+      if (ws.readyState !== WebSocket.OPEN || this.startingSessions.get(msg.sessionId) !== ws) return false;
+
+      let dependencies;
+      try {
+        dependencies = this.providerFactory.create();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Production provider configuration is missing';
+        this.sendError(ws, msg.sessionId, 'PROVIDER_NOT_CONFIGURED', message, true);
+        return false;
+      }
+
+      const pipeline = new RealtimePipeline(
+        msg.sessionId,
+        msg.mode || DEFAULT_MODE,
+        dependencies.sttProvider,
+        dependencies.translationEngine,
+        dependencies.ttsProvider,
+        { sendMessage: serverMsg => this.sendSafe(ws, serverMsg) },
+        dependencies.budgetConfig
+      );
+      this.activeSessions.set(msg.sessionId, { pipeline, ws });
+      pipeline.start();
+      const providers = pipeline.getProviderNames();
+      const ready: SessionReadyMessage = {
+        type: 'SESSION_READY',
+        sessionId: msg.sessionId,
+        timestamp: Date.now(),
+        sessionConfig: {
+          audioSampleRate: msg.audioSampleRate,
+          chunkDurationMs: 250,
+          sttProvider: providers.stt,
+          translationProvider: providers.translation,
+          ttsProvider: providers.tts
+        }
+      };
+      this.sendSafe(ws, ready);
+      emitDiagnostic('gateway', 'session_ready_emitted', {
+        sessionRef,
+        audioSampleRate: ready.sessionConfig.audioSampleRate,
+        chunkDurationMs: ready.sessionConfig.chunkDurationMs
+      });
+      return true;
+    } finally {
+      if (this.startingSessions.get(msg.sessionId) === ws) this.startingSessions.delete(msg.sessionId);
+    }
+  }
+
+  private async waitForRuntimeReady(): Promise<{ code: string; message: string } | null> {
+    const warmup = this.providerFactory.warmup;
+    if (!warmup) return null;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const timedOut = await Promise.race([
+        warmup.call(this.providerFactory).then(() => false),
+        new Promise<boolean>(resolve => {
+          timer = setTimeout(() => resolve(true), this.runtimeReadyTimeoutMs);
+        })
+      ]);
+      if (timedOut) {
+        return {
+          code: 'LOCAL_RUNTIME_WARMING',
+          message: 'Model AI local vẫn đang khởi động; hãy thử lại sau ít giây.'
+        };
+      }
+      return null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { code: 'LOCAL_RUNTIME_NOT_READY', message: `Model AI local chưa sẵn sàng: ${message.slice(0, 240)}` };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private handleClientMessage(ws: WebSocket, msg: ClientMessage): void {
     switch (msg.type) {
-      case 'SESSION_START': {
-        const existing = this.activeSessions.get(msg.sessionId);
-        if (existing && existing.ws !== ws) {
-          this.sendError(ws, msg.sessionId, 'SESSION_OWNERSHIP_ERROR', 'Session ID đang được sử dụng bởi kết nối khác.', true);
-          return;
-        }
-        if (existing) this.terminateSession(msg.sessionId, ws);
-        const sessionRef = diagnosticSessionRef(msg.sessionId);
-        emitDiagnostic('gateway', 'session_start_received', {
-          sessionRef,
-          mode: msg.mode || DEFAULT_MODE,
-          audioSampleRate: msg.audioSampleRate,
-          hasVideoMetadata: Boolean(msg.videoUrl || msg.videoTitle)
-        });
-        if (this.activeSessions.size >= this.maxConcurrentSessions) {
-          this.sendError(ws, msg.sessionId, 'CONCURRENT_SESSION_LIMIT', 'Số phiên đang hoạt động đã đạt giới hạn.', true);
-          return;
-        }
-        if (msg.audioSampleRate !== 16000) {
-          this.sendError(ws, msg.sessionId, 'UNSUPPORTED_AUDIO_FORMAT', 'Backend yêu cầu PCM mono 16 kHz.', true);
-          return;
-        }
-
-        let dependencies;
-        try {
-          dependencies = this.providerFactory.create();
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Production provider configuration is missing';
-          this.sendError(ws, msg.sessionId, 'PROVIDER_NOT_CONFIGURED', message, true);
-          return;
-        }
-
-        const pipeline = new RealtimePipeline(
-          msg.sessionId,
-          msg.mode || DEFAULT_MODE,
-          dependencies.sttProvider,
-          dependencies.translationEngine,
-          dependencies.ttsProvider,
-          { sendMessage: serverMsg => this.sendSafe(ws, serverMsg) },
-          dependencies.budgetConfig
-        );
-        this.activeSessions.set(msg.sessionId, { pipeline, ws });
-        pipeline.start();
-        const providers = pipeline.getProviderNames();
-        const ready: SessionReadyMessage = {
-          type: 'SESSION_READY',
-          sessionId: msg.sessionId,
-          timestamp: Date.now(),
-          sessionConfig: {
-            audioSampleRate: msg.audioSampleRate,
-            chunkDurationMs: 250,
-            sttProvider: providers.stt,
-            translationProvider: providers.translation,
-            ttsProvider: providers.tts
-          }
-        };
-        this.sendSafe(ws, ready);
-        emitDiagnostic('gateway', 'session_ready_emitted', {
-          sessionRef,
-          audioSampleRate: ready.sessionConfig.audioSampleRate,
-          chunkDurationMs: ready.sessionConfig.chunkDurationMs
-        });
-        break;
-      }
-
       case 'AUDIO_CHUNK': {
         const session = this.activeSessions.get(msg.sessionId);
         if (session?.ws === ws) {
@@ -169,6 +227,7 @@ export class WebSocketGateway {
             sessionRef: diagnosticSessionRef(msg.sessionId),
             sequence: msg.sequence,
             videoTimeMs: msg.videoTimeMs,
+            audioTimeMs: msg.audioTimeMs,
             pcmBytes: pcmBuffer.length,
             sampleCount: stats.sampleCount,
             rms: Math.round(stats.rms * 10000) / 10000,

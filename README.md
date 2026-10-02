@@ -2,7 +2,7 @@
 
 > **Tiện ích mở rộng trình duyệt (Google Chrome & Mozilla Firefox) cho pipeline thuyết minh tiếng Việt và phụ đề video tiếng Anh theo thời gian thực.**
 
-> **VietDub Local AI Foundation — Source Integrated, Inference Setup Pending.** Source foundation đã được tích hợp để clone trực tiếp từ `main`; backend mặc định local/offline và fail-closed. Chưa có model weights hoặc inference workers thật trong repository, nên backend trả `503` khi chưa cấu hình và không fallback cloud. Xem [hướng dẫn bàn giao máy đích](docs/TARGET_MACHINE_SETUP.md) và [PRD execution status](docs/PRD_EXECUTION_STATUS.md).
+> **VietDub Local AI — model local đã cài trên target; browser acceptance còn chờ thao tác operator.** Ba worker JSONL STT/dịch en→vi/TTS đã chạy inference CPU và gateway smoke bằng tiếng Anh do VieNeu tổng hợp; chưa nghiệm thu giọng người/video thật trên Chrome/Firefox. Model/cache/evidence ở `E:\VietDub-AI`, ngoài repo. Mặc định không gọi cloud, không fallback. Xem [hướng dẫn máy đích](docs/TARGET_MACHINE_SETUP.md), [runtime](docs/LOCAL_RUNTIME.md) và [trạng thái PRD](docs/PRD_EXECUTION_STATUS.md).
 
 VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên trình duyệt (YouTube, tài liệu khoa học, tin tức, khóa học trực tuyến) với phụ đề đồng bộ và đường truyền audio thời gian thực, không cần tải video về máy hay tạo video mới.
 
@@ -27,7 +27,7 @@ VietDub AI cung cấp pipeline để xem trực tiếp video tiếng Anh trên t
 
 4. **Pipeline AI cục bộ, không phí API:**
    - **Streaming STT local:** Worker chạy trên máy người dùng, có Voice Activity Detection (VAD) và bounded queue.
-   - **Context-aware Translation local:** Worker dịch `en → vi` offline, duy trì bộ nhớ ngữ cảnh 5 câu gần nhất và đảm bảo tính nhất quán thuật ngữ trong phạm vi model.
+   - **Translation local:** Worker dịch `en → vi` offline bằng OPUS-MT. Hiện worker chỉ đưa `sourceText` vào model; context/terminology chưa được áp dụng hoặc nghiệm thu.
    - **Vietnamese TTS local:** Worker phát audio WAV thật, kiểm tra metadata và hủy (`cancelGeneration`) khi người dùng tua video hoặc tạm dừng.
 
 5. **Đo lường & Kiểm chứng Thực tế:**
@@ -70,7 +70,7 @@ vietdub-ai/
 ### 1. Yêu cầu Hệ thống
 - **Node.js:** Phiên bản >= 20.x (CI source integration dùng Node.js v24.18.0).
 - **Trình duyệt:** Google Chrome hoặc Mozilla Firefox để nghiệm thu live; artifact build không cần model weights.
-- **Local AI runtime:** cài ba worker STT/dịch/TTS tương thích JSONL và model weights đã được kiểm SHA-256 theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md). Không có worker/model thì backend giữ trạng thái `503`, không fallback sang cloud.
+- **Local AI runtime:** cài ba worker STT/dịch/TTS tương thích JSONL và model weights đã được kiểm SHA-256 theo [LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md). Target hiện tại chạy tại `E:\VietDub-AI`; một máy mới chưa có manifest/worker hợp lệ phải giữ `503`, không fallback sang cloud.
 - Kiểm tra chi tiết CPU/GPU/RAM/disk, Python, browser và các bước clean-clone trong [TARGET_MACHINE_SETUP.md](docs/TARGET_MACHINE_SETUP.md).
 
 ### 2. Cài đặt Phụ thuộc & Biên dịch Dự án
@@ -113,7 +113,7 @@ curl http://127.0.0.1:8080/health
 
 Khi Terminal xuất hiện thông báo:
 > `[VietDub Backend] WebSocket AI Gateway listening on port 8080`
-> tức là Backend đã sẵn sàng nhận luồng âm thanh **chỉ sau khi** manifest và cả ba worker local đã sẵn sàng. Khi chưa cài inference runtime, HTTP `503` là trạng thái fail-closed mong đợi.
+> thông báo chỉ xác nhận server đã listen. Hãy kiểm tra `/health`: target hiện tại cần `HTTP 200`, mode `local`, manifest và ba worker `ready`; clone/máy mới chưa cài inference phải fail-closed ở `HTTP 503`.
 
 ---
 

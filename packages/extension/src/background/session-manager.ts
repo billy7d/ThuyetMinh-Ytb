@@ -15,6 +15,11 @@ export interface SessionError {
   fatal: boolean;
 }
 
+export interface SessionWarning extends SessionError {
+  /** Thời điểm nhận cảnh báo (epoch ms) để popup ẩn cảnh báo cũ. */
+  at: number;
+}
+
 export interface SessionSnapshot {
   state: SessionState;
   sessionId: string | null;
@@ -23,6 +28,8 @@ export interface SessionSnapshot {
   mixerConfig: AudioMixerConfig;
   generation: number;
   error: SessionError | null;
+  /** Lỗi không nghiêm trọng gần nhất; phiên vẫn tiếp tục chạy. */
+  warning: SessionWarning | null;
   isCapturing: boolean;
 }
 
@@ -124,7 +131,8 @@ function cloneSnapshot(snapshot: SessionSnapshot): SessionSnapshot {
   return {
     ...snapshot,
     mixerConfig: cloneMixerConfig(snapshot.mixerConfig),
-    error: snapshot.error ? { ...snapshot.error } : null
+    error: snapshot.error ? { ...snapshot.error } : null,
+    warning: snapshot.warning ? { ...snapshot.warning } : null
   };
 }
 
@@ -162,6 +170,7 @@ export class SessionManager {
       },
       generation: 0,
       error: null,
+      warning: null,
       isCapturing: false
     };
   }
@@ -244,7 +253,8 @@ export class SessionManager {
       mode: normalizedRequest.mode,
       mixerConfig: cloneMixerConfig(normalizedRequest.mixerConfig),
       generation: record.generation,
-      error: null
+      error: null,
+      warning: null
     });
 
     const startPromise = this.runStart(record, sessionId);
@@ -340,7 +350,7 @@ export class SessionManager {
     record.cancelled = true;
     record.controller.abort();
     ++this.lifecycleGeneration;
-    this.updateSnapshot({ state: 'STOPPING', error: null, isCapturing: false });
+    this.updateSnapshot({ state: 'STOPPING', error: null, warning: null, isCapturing: false });
 
     const stopPromise = (async () => {
       let cleanupError: SessionError | null = null;
@@ -398,6 +408,13 @@ export class SessionManager {
     const record = this.currentRecord;
     if (!record || this.snapshot.sessionId !== event.sessionId || record.cancelled) return;
 
+    if (event.error && event.error.fatal === false) {
+      // Lỗi không nghiêm trọng (quá tải tạm thời, một câu dịch lỗi…) chỉ là cảnh báo; không được dừng phiên.
+      const warning = toSessionError({ ...event.error, fatal: false }, 'RUNTIME_WARNING');
+      this.updateSnapshot({ warning: { ...warning, at: Date.now() } });
+      return;
+    }
+
     if (event.error) {
       if (record.runtimeFailureHandled) return;
       record.runtimeFailureHandled = true;
@@ -410,7 +427,7 @@ export class SessionManager {
         retryable: event.error.retryable,
         fatal: event.error.fatal
       }, 'RUNTIME_ERROR');
-      this.updateSnapshot({ state: 'ERROR', error: sessionError, isCapturing: false });
+      this.updateSnapshot({ state: 'ERROR', error: sessionError, warning: null, isCapturing: false });
       await this.cleanupRecord(record, 'runtime-failure').catch((cleanupError) => {
         console.error('[SessionManager] runtime cleanup failed', JSON.stringify(toSessionError(cleanupError, 'CLEANUP_FAILED')));
       });

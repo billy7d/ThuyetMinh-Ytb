@@ -1,10 +1,10 @@
 # VietDub — Target Machine Setup and Acceptance
 
-Tài liệu này dành cho máy đích sau khi source foundation đã được merge vào
-`main`. Merge source không có nghĩa là VietDub đã có model weights, inference
-workers hoặc đã đạt live browser acceptance. Không copy `node_modules`, virtual
-environment, binary worker hay model weights từ máy phát triển; cài trực tiếp
-trên máy đích.
+Tài liệu này dành cho máy VietDub đang chạy trên Windows. Trên target hiện tại,
+ba worker đã chạy inference với model local đã được operator xác nhận; model,
+cache và evidence nằm trên E: ngoài repository. Browser live acceptance vẫn
+pending. Không copy `node_modules`, virtual environment hay model weights từ máy
+khác; một máy mới phải tự cài và xác minh theo pinned revisions.
 
 ## 1. Kiểm tra máy đích trước khi cài
 
@@ -48,8 +48,24 @@ git --version
 & "$env:ProgramFiles\Mozilla Firefox\firefox.exe" --version
 ```
 
-Source gate đã được kiểm tra với Node.js `>=20`. Python version, GPU backend,
-RAM/disk profile và browser live support phải được xác nhận trên máy thực tế.
+### Audit đã ghi nhận trên máy hiện tại
+
+- Windows registry báo `ProductName=Windows 10 Pro`, `DisplayVersion=25H2`,
+  `CurrentBuild=26200`; nhãn sản phẩm và build không nhất quán nên giữ nguyên
+  các giá trị thô thay vì suy diễn phiên bản marketing. `Get-CimInstance` bị
+  giới hạn quyền trong phiên audit này.
+- CPU: Intel Core i5-9400F, 6C/6T, 2.90 GHz; GPU: GTX 1660 SUPER 6 GiB,
+  driver 591.86. RAM đọc được 17,122,738,176 bytes (~16 GiB).
+- Dung lượng trống gần nhất: C: 13,459,668,992 bytes (~12.54 GiB), E:
+  336,242,540,544 bytes (~313.2 GiB). Runtime/model đặt trên E:;
+  tránh cài thêm artifact lớn vào C:.
+- Node 24.18.0, npm 11.16.0, Python 3.11.9; Chrome file version 153.0.8010.54.
+  Profile Chrome acceptance đã chờ operator 30 phút nhưng chưa nạp extension và
+  đã đóng khi timeout. Firefox chưa cài; không cài khi chưa có xác nhận riêng.
+
+Với CPU không có VNNI, TTS dùng ONNX fp32; STT chạy CPU int8, cả hai trên CPU.
+Benchmark worker thật được ghi ở `E:\VietDub-AI\evidence`; đây chưa phải browser
+acceptance với tiếng người.
 
 ## 2. Clone đúng source từ `main`
 
@@ -81,9 +97,11 @@ npm run start:backend
 curl -i http://127.0.0.1:8080/health
 ```
 
-Khi chưa có `models/manifest.json`, model files hoặc worker commands, HTTP `503`
-với JSON an toàn là **mong đợi**. Backend không được crash loop, tạo transcript
-giả, phát beep, hoặc gọi cloud. Mặc định phải giữ:
+Với clone/máy mới chưa có `models/manifest.json`, model files hoặc worker
+commands, HTTP `503` với JSON an toàn là **mong đợi**. Target hiện tại dùng
+manifest tại `E:\VietDub-AI\models\manifest.json` và health trả HTTP 200.
+Backend không được crash loop, tạo transcript giả, phát beep, hoặc gọi cloud.
+Mặc định phải giữ:
 
 ```env
 AI_MODE=local
@@ -94,13 +112,28 @@ MAX_EXTERNAL_API_COST_USD=0
 
 ## 4. Cài local inference runtime
 
-Ba worker thật chưa được đóng gói trong source handoff:
+Source có một entrypoint Python với ba role; dependency lock được đặt tại
+`runtime/requirements-lock.txt`. Trạng thái của lần audit máy hiện tại:
 
-| Thành phần | Trạng thái sau merge | Điều kiện để chuyển sang READY |
+| Thành phần | Trạng thái trên target hiện tại | Bằng chứng tiếp theo |
 |---|---|---|
-| STT | `NOT READY` | Worker JSONL thật, model đã pin/checksum/license, kiểm tra 3 video |
-| Translation | `NOT READY` | Worker en→vi thật, revision/tokenizer đã pin, benchmark 30 mẫu |
-| Vietnamese TTS | `NOT READY` | Worker phát WAV tiếng Việt thật, codec/voice terms đã xác minh |
+| STT | Worker/model ready; 3/3 mẫu tiếng Anh tổng hợp có kết quả, RTF p50 0.1319/p95 0.1333 | Test ít nhất 3 video/giọng người trong browser |
+| Translation | Worker/model ready; 30/30 output tiếng Việt, p50 169 ms/p95 204 ms | Kiểm tra 30 mẫu theo ngữ cảnh/thuật ngữ |
+| Vietnamese TTS | Worker/model/codec ready; 20/20 WAV hợp lệ, p50 1,375 ms/p95 1,620 ms | Audibility và đồng bộ trên video thật |
+
+Khởi tạo môi trường nếu cài lại máy:
+
+```powershell
+E:\DevTools\Python311\python.exe -m venv .venv
+.venv\Scripts\python.exe -m pip install --no-deps -r runtime\requirements-lock.txt
+```
+
+Ba worker đã chạy inference thật. Dependency lock chủ động cài đường preset
+ONNX thay vì UI/voice-cloning extras của SDK; `pip check` vì vậy còn cảnh báo
+các gói `gradio`, `librosa`, `soundfile`, `soxr` và `kaldi-native-fbank` theo
+metadata chung của VieNeu. TTS dùng ONNX fp32 mono 48 kHz. Xem
+[MODEL_SELECTION.md](../runtime/MODEL_SELECTION.md) để biết revision/license và
+digest upstream; manifest/hash thực tế nằm ở `E:\VietDub-AI`.
 
 Đọc [LOCAL_RUNTIME.md](LOCAL_RUNTIME.md) và [MODEL_LICENSE_REPORT.md](MODEL_LICENSE_REPORT.md)
 trước khi tải bất kỳ artifact nào. Với mỗi model/code/tokenizer/codec/voice:
