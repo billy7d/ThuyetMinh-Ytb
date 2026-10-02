@@ -987,7 +987,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--vad-threshold", type=float, default=0.006)
-    parser.add_argument("--silence-ms", type=int, default=300)
+    parser.add_argument("--silence-ms", type=int, default=500)
     parser.add_argument("--soft-max-utterance-ms", type=int, default=3500)
     parser.add_argument("--max-utterance-ms", type=int, default=5000)
     parser.add_argument("--whisper-vad", dest="whisper_vad", action="store_true", default=True)
