@@ -8,6 +8,8 @@ export interface STTResult {
   confidence: number;
   /** Wall-clock time at which the backend received this provider result. */
   receivedAtMs?: number;
+  /** Đoạn bị cắt vì quá dài khi người nói chưa ngừng: câu còn tiếp ở đoạn sau, dấu câu cuối không đáng tin. */
+  endedMidSpeech?: boolean;
 }
 
 export interface STTStreamCallbacks {

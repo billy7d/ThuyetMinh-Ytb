@@ -10,7 +10,10 @@ const FRAGMENT_END_WORDS = new Set([
   'a', 'an', 'the', 'of', 'in', 'on', 'at', 'by', 'from', 'my', 'your', 'our', 'their', 'his', 'her', 'its',
   'this', 'these', 'those', 'is', 'are', 'was', 'were', 'be', 'been', 'will', 'would', 'can', 'could',
   'should', 'must', 'have', 'has', 'had', 'do', 'does', 'did', 'not', 'very', 'really', 'more', 'most',
-  "i'm", "it's", "we're", "you're", "they're", "there's", 'i', 'we', 'you', 'they', 'he', 'she', 'it'
+  "i'm", "it's", "we're", "you're", "they're", "there's", 'i', 'we', 'you', 'they', 'he', 'she', 'it',
+  // Từ hạn định/nghi vấn luôn cần từ đi sau ("every time", "each of", "what we"): đứng cuối là câu còn dở.
+  'every', 'each', 'all', 'some', 'any', 'no', 'another', 'other', 'many', 'much', 'few', 'both', 'either', 'neither',
+  'what', 'how', 'why', 'whose', 'which', 'one', 'two', 'three'
 ]);
 
 /** Số từ tối thiểu để một đoạn không dấu câu vẫn đủ nghĩa để dịch ngay (không chờ câu sau). */
@@ -26,14 +29,22 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+/** Liên từ/giới từ ở cuối câu cho thấy câu còn tiếp. */
+const DANGLING_WORDS = new Set([
+  'and', 'but', 'or', 'so', 'because', 'although', 'though', 'even',
+  'which', 'that', 'who', 'whom', 'whose', 'where', 'when', 'while',
+  'if', 'unless', 'since', 'whether', 'as', 'than', 'to', 'for', 'with',
+  'about', 'like', 'such', 'into', 'onto', 'upon', 'every', 'each'
+]);
+
+/** Mảnh kết thúc ở từ nối/mạo từ/giới từ: câu chắc chắn còn tiếp, không được chèn dấu phẩy sau từ đó. */
+export function endsWithOpenWord(text: string): boolean {
+  const last = text.trim().toLowerCase().replace(/[^a-z'\s]/g, ' ').split(/\s+/).filter(Boolean).pop() ?? '';
+  return FRAGMENT_END_WORDS.has(last) || DANGLING_WORDS.has(last);
+}
+
 export class SentenceCompletionGuard {
-  // Conjunctions and prepositions at the end of a sentence indicating continuation
-  private trailingDanglingWords = new Set([
-    'and', 'but', 'or', 'so', 'because', 'although', 'though', 'even',
-    'which', 'that', 'who', 'whom', 'whose', 'where', 'when', 'while',
-    'if', 'unless', 'since', 'whether', 'as', 'than', 'to', 'for', 'with',
-    'about', 'like', 'such', 'into', 'onto', 'upon'
-  ]);
+  private trailingDanglingWords = DANGLING_WORDS;
 
   private trailingPhrases = [
     'not only', 'but also', 'as well as', 'in order to', 'so that',

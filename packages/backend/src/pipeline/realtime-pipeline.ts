@@ -28,9 +28,10 @@ export interface PipelineTimingConfig {
   /** Khoảng cách tối thiểu giữa hai cảnh báo không nghiêm trọng cùng mã gửi cho extension (ms). */
   warningIntervalMs: number;
   /**
-   * Mảnh câu chưa trọn được giữ chờ câu nối tiếp; nếu không có câu mới trong khoảng này (ms)
-   * thì dịch luôn mảnh đó để phụ đề không treo tới lượt nói sau. Đo thực tế: lượt nói sau luôn tới
-   * muộn hơn ≥1 s nên chỉ ghép các câu Whisper trả về cùng một lần; chờ lâu hơn chỉ làm tăng độ trễ.
+   * Mảnh câu chưa trọn (không có dấu câu cuối, hoặc bị cắt giữa lúc người nói chưa ngừng) được giữ chờ phần nối tiếp;
+   * nếu không có đoạn mới trong khoảng này (ms) thì dịch luôn mảnh đó để phụ đề không treo. Phải đủ dài để đoạn nối tiếp
+   * (tối đa ~3.5 s âm thanh + thời gian nhận dạng) kịp tới; dịch riêng mảnh dở làm giọng đọc ngắt sai chỗ và đổi nghĩa
+   * ("every | time we simplified" -> "…là" + "thời gian chúng tôi đơn giản hóa").
    */
   pendingFlushMs: number;
 }
@@ -39,7 +40,7 @@ const DEFAULT_TIMING: PipelineTimingConfig = {
   ttsMaxLagMs: 6_000,
   maxPendingTts: 3,
   warningIntervalMs: 10_000,
-  pendingFlushMs: 150
+  pendingFlushMs: 4_000
 };
 
 interface TtsJob {
@@ -305,7 +306,9 @@ export class RealtimePipeline {
     });
 
     const translationStartedAt = Date.now();
-    const transResult = await this.translationEngine.translate(sourceText, result.startMs, result.endMs);
+    const transResult = await this.translationEngine.translate(
+      sourceText, result.startMs, result.endMs, result.endedMidSpeech ? { endedMidSpeech: true } : {}
+    );
     const translationDurationMs = Date.now() - translationStartedAt;
 
     if (transResult.buffered || !transResult.translatedText) {

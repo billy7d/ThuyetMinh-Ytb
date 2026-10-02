@@ -376,3 +376,15 @@ VieNeu vốn phiên âm từ tiếng Anh bằng âm tiếng Anh (`Kubernetes` ->
 Chưa thêm luật sửa lỗi mới vào `text_rules.py` vì chưa có câu sai thực tế từ người dùng; các lỗi còn lại trong tập mẫu
 (ví dụ "Prometheus cạo các số liệu", "dấu chân bộ nhớ") là cách dùng từ của model, có thể thêm vào `translations` khi cần.
 Bằng chứng: `E:\VietDub-AI\evidence\translation-decode-exp.json`, `translation-protect-e2e.json`.
+
+## Giọng đọc tăng tốc không còn the thé: co giãn thời gian giữ cao độ (2026-10-02)
+
+Nguyên nhân: mixer rút ngắn câu bằng `AudioBufferSourceNode.playbackRate`, đổi cả cao độ (1.3x = cao hơn ~4.5 nửa cung, nghe như
+hoạt hình). Nay câu cần tăng tốc (>1.02x) được co giãn bằng WSOLA (`extension/src/audio/time-stretch.ts`) rồi phát ở
+`playbackRate = 1`; thời lượng và lịch phát giữ như trước (tốc độ đọc không giảm). Môi trường thiếu `getChannelData`/`createBuffer`
+hoặc lỗi thì tự lùi về `playbackRate`.
+
+Đo trên 3 câu VieNeu thật (cao độ trung vị F0 bằng tự tương quan): gốc 166–168 Hz; WSOLA 1.3x: 168–170 Hz (giữ nguyên);
+`playbackRate` 1.3x: 211–218 Hz (+27%). Xử lý ~60–90 ms cho câu 5 s (thỉnh thoảng 220–350 ms ở lần chạy đầu/GC), chạy ở luồng
+của trang trước khi phát. Mẫu nghe so sánh: `E:\VietDub-AI\evidence\tts-stretch\` (`*_goc`, `*_wsola`, `*_playbackRate_cu`).
+Chưa nghe nhận xét của người dùng và chưa chạy trên trình duyệt thật.
