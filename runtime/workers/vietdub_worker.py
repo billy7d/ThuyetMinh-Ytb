@@ -568,7 +568,7 @@ class SttRuntime(RuntimeBase):
         if utterance_ms >= self._soft_max_utterance_ms:
             cut_frame = self._find_cut_frame(session, utterance_ms >= self._max_utterance_ms)
             if cut_frame is not None:
-                return self._flush(session, cut_frame * FRAME_BYTES)
+                return self._flush(session, cut_frame * FRAME_BYTES, mid_speech=True)
         return []
 
     def _find_cut_frame(self, session: AudioSession, force: bool) -> int | None:
@@ -591,7 +591,7 @@ class SttRuntime(RuntimeBase):
         reference = float(np.median(speech_energies)) if speech_energies.size else 0.0
         return index if float(smoothed[index]) <= reference * 0.6 else None
 
-    def _flush(self, session: AudioSession, cut_bytes: int) -> list[dict[str, Any]]:
+    def _flush(self, session: AudioSession, cut_bytes: int, mid_speech: bool = False) -> list[dict[str, Any]]:
         if session.start_ms is None or not session.buffer:
             self._reset_utterance(session)
             return []
@@ -615,7 +615,12 @@ class SttRuntime(RuntimeBase):
 
         if not head or speech_ms < MIN_SPEECH_MS:
             return []
-        return self._transcribe(head, start_ms)
+        events = self._transcribe(head, start_ms)
+        if mid_speech and events:
+            # Cắt vì quá dài chứ không phải vì người nói ngừng: câu còn tiếp ở đoạn sau. Dấu chấm Whisper tự thêm vào cuối
+            # đoạn này không đáng tin; bên dịch dùng cờ này để chờ phần nối tiếp rồi mới dịch.
+            events[-1]["endedMidSpeech"] = True
+        return events
 
     @staticmethod
     def _reset_utterance(session: AudioSession) -> None:

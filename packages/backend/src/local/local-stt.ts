@@ -36,6 +36,7 @@ interface LocalSTTEvent {
   startMs: number;
   endMs: number;
   confidence?: number;
+  endedMidSpeech?: boolean;
 }
 
 interface LocalSTTResponse {
@@ -289,7 +290,8 @@ class LocalSTTStreamSession implements STTStreamSession {
       endMs: Math.max(0, Math.round(event.endMs)),
       isFinal: event.kind === 'final',
       confidence: typeof event.confidence === 'number' ? event.confidence : 0,
-      receivedAtMs: Date.now()
+      receivedAtMs: Date.now(),
+      ...(event.endedMidSpeech ? { endedMidSpeech: true } : {})
     };
     if (event.kind === 'final') this.callbacks.onFinal(result);
     else this.callbacks.onInterim(result);

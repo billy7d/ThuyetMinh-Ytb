@@ -94,6 +94,20 @@ class SegmentationTests(unittest.TestCase):
         for _, duration in runtime.transcribed:
             self.assertLessEqual(duration, 7000 + 1)
 
+    def test_marks_utterance_cut_for_length_but_not_cut_by_silence(self) -> None:
+        # Cắt vì quá dài (người nói chưa ngừng): câu còn tiếp ở đoạn sau nên phải báo cho bên dịch chờ phần nối tiếp.
+        runtime = FakeStt()
+        audio = tone(16000, 0.25) * (1.0 + 0.3 * np.sin(np.arange(int(SAMPLE_RATE * 16)) / SAMPLE_RATE * 2 * math.pi * 0.7)).astype(np.float32)
+        events = feed(runtime, audio)
+        self.assertTrue(events)
+        self.assertTrue(all(event.get("endedMidSpeech") is True for event in events))
+        # Người nói ngừng thật (khoảng lặng dài) thì không phải cắt giữa chừng.
+        runtime = FakeStt()
+        audio = np.concatenate([tone(1500, 0.2), np.zeros(int(SAMPLE_RATE * 0.8), dtype=np.float32)])
+        events = feed(runtime, audio)
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("endedMidSpeech", events[0])
+
     def test_cuts_at_quiet_gap_near_soft_limit(self) -> None:
         runtime = FakeStt()
         loud = tone(4400, 0.3)
