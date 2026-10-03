@@ -1,4 +1,5 @@
 import { AudioMixerConfig, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, emitDiagnostic } from '@vietdub/shared';
+import { stretchAudioBuffer } from './time-stretch.js';
 
 export type AudioSourceMode = 'media-element' | 'capture-stream' | 'media-stream';
 
@@ -21,8 +22,10 @@ export interface ScheduledTTS {
   /** Thời lượng phát thực tế sau khi tính tốc độ (ms). */
   durationMs: number;
 }
-/** Tốc độ phát tối đa; cao hơn mức này giọng đọc (đổi cao độ theo tốc độ) khó nghe. */
+/** Tốc độ phát tối đa; cao hơn mức này giọng đọc bị nuốt âm khó nghe (đã co giãn giữ cao độ, xem time-stretch.ts). */
 export const MAX_TTS_PLAYBACK_RATE = 1.3;
+/** Dưới ngưỡng này chênh lệch cao độ không nghe được, khỏi tốn công co giãn. */
+const MIN_STRETCH_RATE = 1.02;
 
 /**
  * Tốc độ phát TTS theo độ dài hàng chờ: 1.0 khi không trễ, tăng dần từ 0.5 s tới trần 1.3 khi trễ ~3 s.
@@ -188,30 +191,48 @@ export class AudioMixer {
       return null;
     }
     const source = this.audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
     // Câu tiếng Việt thường dài hơn câu gốc; khi bắt đầu trễ thì phát nhanh hơn một chút để bắt kịp video.
-    const rate = Math.max(
+    const requestedRate = Math.max(
       ttsPlaybackRateForBacklog(this.getTTSBacklogMs()),
       ttsPlaybackRateForSlot(audioBuffer.duration * 1000, sourceDurationMs)
     );
+    // Rút ngắn bằng co giãn thời gian giữ cao độ; playbackRate của nguồn phát đổi cả cao độ (giọng the thé như hoạt hình).
+    const stretchStartedAt = Date.now();
+    const stretched = requestedRate > MIN_STRETCH_RATE ? this.tryStretch(audioBuffer, requestedRate) : null;
+    const stretchMs = Date.now() - stretchStartedAt;
+    const playable = stretched ?? audioBuffer;
+    const rate = stretched ? 1 : requestedRate;
+    source.buffer = playable;
     if (source.playbackRate) source.playbackRate.value = rate;
     source.connect(this.ttsGainNode);
     this.ttsSources.add(source);
     source.onended = () => this.ttsSources.delete(source);
     const startAt = Math.max(this.audioCtx.currentTime, this.nextTTSStartTime);
     source.start(startAt);
-    this.nextTTSStartTime = startAt + audioBuffer.duration / rate;
+    this.nextTTSStartTime = startAt + playable.duration / rate;
     const delayMs = Math.max(0, Math.round((startAt - this.audioCtx.currentTime) * 1000));
-    const durationMs = Math.round((audioBuffer.duration / rate) * 1000);
+    const durationMs = Math.round((playable.duration / rate) * 1000);
     // AudioContext bị trình duyệt tạm dừng (chính sách autoplay) thì câu được lên lịch nhưng không phát ra loa.
     emitDiagnostic('tts_mixer', 'scheduled', {
       contextState: this.audioCtx.state,
       delayMs,
       durationMs,
-      rate: Math.round(rate * 100) / 100,
+      rate: Math.round(requestedRate * 100) / 100,
+      pitchPreserved: Boolean(stretched),
+      stretchMs,
       ttsGain: Math.round(this.config.ttsVolume)
     });
     return { source, delayMs, durationMs };
+  }
+
+  /** Co giãn giữ cao độ; null nếu môi trường không hỗ trợ hoặc lỗi (khi đó dùng playbackRate như trước). */
+  private tryStretch(audioBuffer: AudioBuffer, rate: number): AudioBuffer | null {
+    if (typeof audioBuffer.getChannelData !== 'function' || typeof this.audioCtx.createBuffer !== 'function') return null;
+    try {
+      return stretchAudioBuffer(this.audioCtx, audioBuffer, rate);
+    } catch {
+      return null;
+    }
   }
 
   stopTTS(): void {
