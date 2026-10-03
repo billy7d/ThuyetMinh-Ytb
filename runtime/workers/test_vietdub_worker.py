@@ -621,5 +621,26 @@ class TtsStreamTests(unittest.TestCase):
         self.assertEqual(emitted[-1].get("ok"), False)
 
 
+class TtsGpuOptionTests(unittest.TestCase):
+    def test_only_the_heavy_sessions_are_eligible_for_the_gpu(self) -> None:
+        for name in ("vieneu_prefill.onnx", "vieneu_decode_step.onnx", "moss_audio_tokenizer_decode_full.onnx", "moss_audio_tokenizer_decode_step.onnx"):
+            self.assertTrue(worker.tts_session_runs_on_gpu("E:/models/" + name), name)
+        # acoustic chạy từng khung với nhiều phép tính nhỏ nên giữ trên CPU, cùng bộ mã hóa tham chiếu.
+        for name in ("vieneu_acoustic_cached.onnx", "moss_audio_tokenizer_encode.onnx"):
+            self.assertFalse(worker.tts_session_runs_on_gpu("E:/models/" + name), name)
+
+    def test_missing_or_wrong_gpu_libs_fall_back_to_cpu_without_raising(self) -> None:
+        import tempfile
+
+        self.assertFalse(worker.enable_tts_gpu(Path("/definitely/not/here")))
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(worker.enable_tts_gpu(Path(directory)))
+
+    def test_flag_is_optional_and_parsed(self) -> None:
+        args = worker.parse_args(["--role", "tts", "--model-path", "x", "--codec-path", "y"])
+        self.assertEqual(args.tts_gpu_libs, "")
+        self.assertEqual(worker.parse_args(["--role", "tts", "--model-path", "x", "--codec-path", "y", "--tts-gpu-libs", "E:/gpu"]).tts_gpu_libs, "E:/gpu")
+
+
 if __name__ == "__main__":
     unittest.main()

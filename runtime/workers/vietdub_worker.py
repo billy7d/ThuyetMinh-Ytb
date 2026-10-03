@@ -112,6 +112,57 @@ def enable_cuda_libraries() -> None:
                 os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
 
 
+# Phần của VieNeu chạy trên GPU: prefill, bước giải mã của mô hình ngôn ngữ và bộ giải mã âm thanh (codec) đầy đủ + từng bước. Đo trên GTX 1660 SUPER:
+# RAM đỉnh của tiến trình TTS 1.40 -> 0.95 GB, sinh nhanh hơn ~23% (RTF 0.59 -> 0.45), tốn ~1.5 GB VRAM. Bước acoustic chạy từng khung với rất nhiều
+# phép tính nhỏ nên đưa lên GPU lại chậm gần gấp đôi (RTF 0.89): giữ trên CPU, cùng bộ mã hóa tham chiếu.
+TTS_GPU_MODEL_PREFIXES = ("vieneu_prefill", "vieneu_decode_step", "moss_audio_tokenizer_decode")
+
+
+def tts_session_runs_on_gpu(model_path: Any) -> bool:
+    """File ONNX này có nên chạy trên GPU khi bật --tts-gpu-libs không."""
+    return os.path.basename(str(model_path)).startswith(TTS_GPU_MODEL_PREFIXES)
+
+
+def enable_tts_gpu(libs_dir: Path) -> bool:
+    """Bật onnxruntime-gpu cho VieNeu: thư mục libs_dir chứa gói onnxruntime-gpu và các DLL CUDA 12 (cufft, curand, cudart) cài bằng
+    `pip install --target`. Chỉ đổi nhà cung cấp của các phiên trong TTS_GPU_MODEL_PREFIXES; mọi lỗi (thiếu thư mục, không có CUDA, nạp lỗi)
+    đều lùi về CPU. Trả True nếu đã bật."""
+    try:
+        if not (libs_dir / "onnxruntime").is_dir():
+            log_info(f"tts gpu: {libs_dir} không chứa gói onnxruntime, dùng CPU")
+            return False
+        if "onnxruntime" in sys.modules:
+            log_info("tts gpu: onnxruntime đã được nạp bản khác, dùng CPU")
+            return False
+        enable_cuda_libraries()
+        for directory in sorted(libs_dir.glob("nvidia/*/bin")):
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(str(directory))
+            os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+        sys.path.insert(0, str(libs_dir))
+        import onnxruntime as ort
+
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            log_info("tts gpu: onnxruntime không có CUDAExecutionProvider, dùng CPU")
+            return False
+        original = ort.InferenceSession
+
+        def session(path: Any, sess_options: Any = None, providers: Any = None, **kwargs: Any) -> Any:
+            if tts_session_runs_on_gpu(path):
+                try:
+                    return original(path, sess_options, providers=[("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"], **kwargs)
+                except Exception:
+                    log_info(f"tts gpu: không tạo được phiên CUDA cho {os.path.basename(str(path))}, dùng CPU")
+            return original(path, sess_options, providers=["CPUExecutionProvider"], **kwargs)
+
+        ort.InferenceSession = session
+        log_info("tts gpu: prefill/decode/codec chạy trên GPU")
+        return True
+    except Exception:
+        log_info("tts gpu: bật thất bại, dùng CPU")
+        return False
+
+
 def load_on_best_device(requested: str, load_cuda: Any, load_cpu: Any) -> str:
     """Nạp model trên GPU khi được yêu cầu/khả dụng; "auto" lùi về CPU nếu GPU lỗi. Trả về nhãn backend đã chọn."""
     if requested in ("auto", "cuda"):
@@ -855,9 +906,16 @@ class TranslationRuntime(RuntimeBase):
 
 class TtsRuntime(RuntimeBase):
     def __init__(
-        self, model_path: Path, codec_path: Path, threads: int, voice: str, pronunciations: dict[str, str] | None = None
+        self,
+        model_path: Path,
+        codec_path: Path,
+        threads: int,
+        voice: str,
+        pronunciations: dict[str, str] | None = None,
+        gpu_libs: Path | None = None,
     ) -> None:
         super().__init__(model_path)
+        self.gpu_enabled = enable_tts_gpu(gpu_libs) if gpu_libs is not None else False
         self._pronunciation_patterns = compile_term_patterns(pronunciations or {})
         # Ngăn SDK truy cập Hub trong quá trình nạp model hoặc kiểm tra file tùy chọn.
         try:
@@ -1100,6 +1158,7 @@ def build_runtime(args: argparse.Namespace) -> RuntimeBase:
     return TtsRuntime(
         model_path, codec_path, args.threads, args.voice,
         pronunciations=load_glossary_section(args.glossary_file, "pronunciations"),
+        gpu_libs=Path(args.tts_gpu_libs).expanduser() if args.tts_gpu_libs else None,
     )
 
 
@@ -1126,6 +1185,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Đã đo và KHÔNG dùng initial_prompt (ngữ cảnh câu trước làm Whisper lặp lại câu trước: 9.4% lỗi so với 5.0%) hay hotwords
     # (sửa đúng thuật ngữ nhưng chèn từ thừa ở chỗ khác); xem docs/TEST_REPORT.md. Thuật ngữ được sửa sau nhận dạng.
     parser.add_argument("--glossary-file", default="", help="từ điển thuật ngữ chuyên ngành để sửa lỗi nghe nhầm (JSON hoặc mỗi dòng một thuật ngữ)")
+    parser.add_argument("--tts-gpu-libs", default="", help="TTS: thư mục chứa onnxruntime-gpu + DLL CUDA 12 để chạy prefill/decode/codec trên GPU (trống = CPU)")
     parser.add_argument("--translate-names", action="store_true", help="dịch cả tên riêng (mặc định giữ nguyên tiếng Anh)")
     parser.add_argument("--cpu-model-path", default="", help="STT: model dùng khi phải chạy CPU (mặc định = --model-path)")
     args = parser.parse_args(argv)

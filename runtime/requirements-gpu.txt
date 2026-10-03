@@ -2,3 +2,9 @@
 # Khoảng 1.3 GB; chỉ cài khi operator đồng ý. Worker tự thêm thư mục DLL vào PATH (enable_cuda_libraries).
 nvidia-cublas-cu12==12.9.2.10
 nvidia-cudnn-cu12==9.27.0.42
+
+# Tùy chọn: giọng đọc VieNeu (ONNX) chạy một phần trên GPU (--tts-gpu-libs). KHÔNG cài vào venv (onnxruntime-gpu trùng tên gói với onnxruntime CPU);
+# cài riêng vào một thư mục rồi truyền đường dẫn cho worker TTS, thiếu hoặc lỗi thì worker tự dùng CPU:
+#   venv/Scripts/python.exe -m pip install onnxruntime-gpu==1.22.0 --target E:/VietDub-AI/runtime/ort-gpu --no-deps
+#   venv/Scripts/python.exe -m pip install nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cuda-runtime-cu12 --target E:/VietDub-AI/runtime/ort-gpu --no-deps
+# (cuBLAS/cuDNN lấy từ hai gói nvidia-*-cu12 ở trên). Tốn ~1.5 GB VRAM, giảm RAM tiến trình TTS 1.40 -> 0.95 GB và sinh giọng nhanh hơn ~23%.

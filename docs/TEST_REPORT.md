@@ -487,3 +487,28 @@ có `partIndex`, bản tin rỗng `partFinal` ở cuối) -> extension `TtsStrea
   engine ngay) còn 1/16 câu hở (81 ms; một câu khác 25 ms).
 Mẫu nghe: `E:\VietDub-AI\evidence\tts-stream\` (`worker_nonstream.wav` cả câu, `worker_stream.wav` ghép các đoạn, `stream_x1.3_giu_cao_do.wav` qua bộ co giãn luồng,
 `stream_x1.3_cach_cu_cao_do_tang.wav` cách cũ). Hai bản đọc cùng câu nhưng khác nhau chút do mô hình sinh có ngẫu nhiên. Chưa nghe bằng tai; chưa chạy Chrome thật.
+
+## Giọng đọc chạy một phần trên GPU (2026-10-03)
+
+Tùy chọn mới `--tts-gpu-libs <thư mục onnxruntime-gpu>` cho worker TTS: chạy prefill, bước giải mã của mô hình ngôn ngữ và bộ giải mã âm thanh (codec) trên GPU;
+bước acoustic và bộ mã hóa tham chiếu giữ trên CPU (acoustic chạy từng khung với nhiều phép tính nhỏ, lên GPU lại chậm gần gấp đôi). Lỗi hay thiếu thư viện thì tự dùng CPU.
+
+| Cấu hình (tiến trình riêng, dạng luồng) | RAM đỉnh | VRAM thêm | Tổng thời gian câu (trung vị) | RTF |
+| --- | --- | --- | --- | --- |
+| CPU, đọc cả câu | 1.79 GB | 0 | 2.91 s | 0.56 |
+| CPU | 1.40 GB | 0 | 3.06 s | 0.59 |
+| CPU, tắt arena bộ nhớ ORT | 1.23 GB | 0 | 3.42 s | 0.68 |
+| GPU: prefill + decode + codec | **0.95 GB** | 1.49 GB | **2.36 s** | **0.45** |
+| GPU: toàn bộ (kể cả acoustic) | 0.95 GB | 1.51 GB | 4.57 s | 0.89 |
+
+Cả backend (Whisper + vinai + TTS GPU): VRAM đỉnh 3.47 GB / 6.14 GB (gồm ~0.85 GB desktop), tiến trình TTS ~940 MB RAM. A/B xen kẽ qua gateway (gpu,cpu,gpu,cpu; 26 câu mỗi chế độ):
+
+| | TTS GPU | TTS CPU |
+| --- | --- | --- |
+| Nhận dạng Whisper trung vị / p90 | 853 / 1148 ms | 861 / 1093 ms |
+| Dịch trung vị | 178 ms | 179 ms |
+| Từ lúc dịch xong tới tiếng đầu tiên | 212 ms | 371 ms |
+| Giọng bắt đầu sau khi câu gốc kết thúc | 1.29 s | 1.42 s |
+| Lỗi | 0 | 0 |
+
+Chưa nghe riêng chất lượng giọng GPU (cùng mô hình, chỉ khác nơi chạy; kết quả số học có thể lệch rất nhỏ).
