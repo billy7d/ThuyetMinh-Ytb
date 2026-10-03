@@ -246,7 +246,7 @@ def restore_terms(translated: str, placeholders: list[tuple[str, str]]) -> tuple
             complete = False
             continue
         value = target
-        if _SENTENCE_START.search(restored[: match.start()]) and value[:1].islower():
+        if _SENTENCE_START.search(restored[: match.start()]) and value[:1].islower() and not any(c.isupper() for c in value[1:]):
             value = value[:1].upper() + value[1:]
         restored = restored[: match.start()] + value + restored[match.end():]
     return restored, complete
@@ -258,3 +258,146 @@ def apply_pronunciations(text: str, patterns: list[tuple[re.Pattern[str], str]])
     for pattern, target in patterns:
         spoken = pattern.sub(target, spoken)
     return spoken
+
+
+# ---- Tên riêng giữ nguyên tiếng Anh ----
+# Model dịch hay dịch sát chữ tên riêng gồm từ thường ("Silicon Valley" -> "Thung lũng Silicon", "Harvard University" -> "Đại học Harvard",
+# "Eiffel Tower" -> "Tháp Eiffel"). Nhận diện tên riêng bằng chữ viết hoa rồi giữ chỗ bằng ký hiệu X<n> như thuật ngữ, đặt lại nguyên văn sau khi dịch.
+# Không dùng từ điển tên: viết hoa giữa câu, cụm nhiều từ viết hoa liền nhau (nối bằng of/the), tên dạng camelCase (YouTube, iPhone) và viết tắt
+# toàn chữ hoa. Tên đã có cách gọi quen thuộc trong tiếng Việt (Liên Hợp Quốc, Nhà Trắng...) khai báo trong mục "translations" của từ điển
+# (áp dụng trước bước này) hoặc nằm trong danh sách bỏ qua dưới đây.
+_NAME_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:['\u2019-][A-Za-z0-9]+)*")
+_SENTENCE_BOUNDARY_BEFORE = re.compile(r"(?:^|[.!?]['\"\u201d\u2019)\]]*\s+)$")
+_PLACEHOLDER_TOKEN = re.compile(r"^X\d+$")
+_POSSESSIVE = re.compile(r"(?:'s|\u2019s)$", re.IGNORECASE)
+
+# Từ viết hoa nhưng không phải tên riêng (đầu câu/đầu lời thoại, đại từ, từ nối...).
+_COMMON_CAPITALIZED = frozenset(
+    """a an the i i'm i've i'll i'd we you he she it they this that these those there here what when where why how who whom whose which
+    and but or so if then than because although though while since until unless once as at by for from in into of on onto to with without about
+    after before over under between among through during against around not no yes ok okay oh well hello hi hey thanks thank please sorry look now let let's
+    do does did can could would should will shall may might must have has had be is are was were am been being get got go going come
+    my our your his her their its mine ours yours theirs me us him them also just still even only very really maybe perhaps however
+    all some any every each both either neither one two three first second third last next many much more most few less other another such same
+    good great new old big small long short high low right left true false today tomorrow yesterday tonight morning evening night
+    mr mrs ms miss dr prof sir madam""".split()
+)
+# Tên có cách gọi tiếng Việt thông dụng hoặc không phải tên riêng cần giữ: dịch bình thường.
+_TRANSLATE_NORMALLY = frozenset(
+    """january february march april may june july august september october november december
+    monday tuesday wednesday thursday friday saturday sunday
+    english vietnamese french german spanish italian chinese japanese korean russian portuguese arabic hindi thai latin greek
+    american british european asian african canadian australian indian mexican brazilian russian swiss dutch swedish
+    america usa us uk england britain france germany spain italy china japan korea russia vietnam india canada australia mexico brazil
+    africa europe asia antarctica pacific atlantic
+    god christmas easter internet""".split()
+)
+# Chức danh đứng trước tên người: dịch chức danh ("Tiến sĩ Smith"), chỉ giữ tên.
+_PERSON_TITLES = frozenset(
+    """mr mrs ms miss dr prof professor doctor president prince princess king queen senator mayor governor captain general
+    sir lord lady saint pope minister chancellor judge""".split()
+)
+_NAME_CONNECTORS = frozenset({"of", "the", "de", "van", "von", "la", "del"})
+# Tính từ thường mở đầu tên riêng nhiều từ ("New York", "Great Wall", "Big Ben"); chỉ tính khi từ kế tiếp cũng viết hoa.
+_NAME_ADJECTIVE_STARTERS = frozenset({"new", "great", "big", "old", "little", "high", "long", "red", "white", "black", "blue", "green", "golden", "south", "north", "east", "west"})
+_TITLE_ABBREVIATION_BEFORE = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt)\.\s+$")
+
+
+def _is_capitalized_name_word(token: str) -> bool:
+    return token[:1].isupper() and not _PLACEHOLDER_TOKEN.match(token) and not token.startswith(LIKE_TOKEN)
+
+
+def _is_camel_case(token: str) -> bool:
+    return any(c.isupper() for c in token[1:]) and any(c.islower() for c in token) and not token.isupper()
+
+
+def _is_acronym(token: str) -> bool:
+    return len(token) >= 2 and token.isupper() and token.isalpha()
+
+
+def protect_names(
+    text: str, start_index: int = 0, only: frozenset[str] | None = None
+) -> tuple[str, list[tuple[str, str]]]:
+    """Thay tên riêng trong câu tiếng Anh bằng ký hiệu giữ chỗ X<n> (đánh số tiếp từ start_index). Trả (câu mới, [(ký hiệu, tên gốc)]).
+
+    only: chỉ thay những tên có trong tập này (dùng khi chỉ cần sửa các tên model đã dịch mất); None = mọi tên nhận diện được."""
+    tokens = list(_NAME_TOKEN.finditer(text))
+    if not tokens:
+        return text, []
+    placeholders: list[tuple[str, str]] = []
+    replacements: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        word = token.group(0)
+        stem = _POSSESSIVE.sub("", word)
+        lowered = stem.lower()
+        before = text[: token.start()]
+        sentence_start = bool(_SENTENCE_BOUNDARY_BEFORE.search(before)) and not _TITLE_ABBREVIATION_BEFORE.search(before)
+        camel = _is_camel_case(stem)
+        acronym = _is_acronym(stem)
+        if not (_is_capitalized_name_word(stem) or camel):
+            index += 1
+            continue
+        if lowered in _TRANSLATE_NORMALLY or lowered in _PERSON_TITLES or stem.startswith(LIKE_TOKEN):
+            index += 1
+            continue
+        starts_name = camel or acronym or lowered not in _COMMON_CAPITALIZED
+        if not starts_name and lowered in _NAME_ADJECTIVE_STARTERS and index + 1 < len(tokens) and text[token.end(): tokens[index + 1].start()] == " ":
+            following = _POSSESSIVE.sub("", tokens[index + 1].group(0))
+            starts_name = _is_capitalized_name_word(following) and following.lower() not in _COMMON_CAPITALIZED and following.lower() not in _TRANSLATE_NORMALLY
+        if not starts_name:
+            index += 1
+            continue
+        # Mở rộng thành cụm: các từ viết hoa liền nhau (cách nhau đúng một dấu cách), có thể nối bằng of/the.
+        end = index
+        while end + 1 < len(tokens):
+            nxt = tokens[end + 1]
+            gap = text[tokens[end].end(): nxt.start()]
+            if gap != " ":
+                break
+            nxt_stem = _POSSESSIVE.sub("", nxt.group(0))
+            if _is_capitalized_name_word(nxt_stem) and nxt_stem.lower() not in _COMMON_CAPITALIZED and nxt_stem.lower() not in _PERSON_TITLES \
+                    and nxt_stem.lower() not in _TRANSLATE_NORMALLY:
+                end += 1
+                continue
+            if nxt_stem.lower() in _NAME_CONNECTORS and end + 2 < len(tokens) and text[nxt.end(): tokens[end + 2].start()] == " ":
+                after = tokens[end + 2].group(0)
+                if _is_capitalized_name_word(after) and after.lower() not in _COMMON_CAPITALIZED:
+                    end += 2
+                    continue
+                # "of the Rings": một từ nối nữa rồi mới tới từ viết hoa.
+                if after.lower() == "the" and end + 3 < len(tokens) and text[tokens[end + 2].end(): tokens[end + 3].start()] == " " \
+                        and _is_capitalized_name_word(tokens[end + 3].group(0)):
+                    end += 3
+                    continue
+            break
+        multi_word = end > index
+        # Đầu câu, từ đơn viết hoa chưa chắc là tên (đầu câu nào cũng viết hoa): chỉ nhận cụm nhiều từ, camelCase hoặc viết tắt.
+        if sentence_start and not (multi_word or camel or acronym):
+            index += 1
+            continue
+        span_start = token.start()
+        span_end = tokens[end].end()
+        name = text[span_start:span_end]
+        suffix = ""
+        possessive = _POSSESSIVE.search(name)
+        if possessive:
+            suffix = name[possessive.start():]
+            name = name[: possessive.start()]
+            span_end = span_start + len(name)
+        if name and (only is None or name in only):
+            replacements.append((span_start, span_end, name))
+        index = end + 1
+    if not replacements:
+        return text, []
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, name in replacements:
+        token_id = f"X{start_index + len(placeholders) + 1}"
+        placeholders.append((token_id, name))
+        pieces.append(text[cursor:start])
+        pieces.append(token_id)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces), placeholders

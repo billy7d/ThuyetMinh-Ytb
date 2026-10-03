@@ -29,6 +29,7 @@ from text_rules import (
     compile_term_patterns,
     correct_terms,
     fix_vietnamese,
+    protect_names,
     protect_terms,
     restore_terms,
     rewrite_source_for_translation,
@@ -405,6 +406,12 @@ def load_glossary_section(path: str, key: str) -> dict[str, str]:
     return dict(list(cleaned.items())[:MAX_TERM_TRANSLATIONS])
 
 
+def _looks_like_placeholder(token: str) -> bool:
+    """Câu nguồn đã chứa chuỗi giống ký hiệu giữ chỗ (X1, X2...): không bảo vệ tên để khỏi nhầm khi đặt lại."""
+    stripped = token.strip(".,;:!?\"'()[]")
+    return len(stripped) >= 2 and stripped[0] == "X" and stripped[1:].isdigit()
+
+
 class SttRuntime(RuntimeBase):
     def __init__(
         self,
@@ -568,7 +575,7 @@ class SttRuntime(RuntimeBase):
         if utterance_ms >= self._soft_max_utterance_ms:
             cut_frame = self._find_cut_frame(session, utterance_ms >= self._max_utterance_ms)
             if cut_frame is not None:
-                return self._flush(session, cut_frame * FRAME_BYTES)
+                return self._flush(session, cut_frame * FRAME_BYTES, mid_speech=True)
         return []
 
     def _find_cut_frame(self, session: AudioSession, force: bool) -> int | None:
@@ -591,7 +598,7 @@ class SttRuntime(RuntimeBase):
         reference = float(np.median(speech_energies)) if speech_energies.size else 0.0
         return index if float(smoothed[index]) <= reference * 0.6 else None
 
-    def _flush(self, session: AudioSession, cut_bytes: int) -> list[dict[str, Any]]:
+    def _flush(self, session: AudioSession, cut_bytes: int, mid_speech: bool = False) -> list[dict[str, Any]]:
         if session.start_ms is None or not session.buffer:
             self._reset_utterance(session)
             return []
@@ -615,7 +622,12 @@ class SttRuntime(RuntimeBase):
 
         if not head or speech_ms < MIN_SPEECH_MS:
             return []
-        return self._transcribe(head, start_ms)
+        events = self._transcribe(head, start_ms)
+        if mid_speech and events:
+            # Cắt vì quá dài chứ không phải vì người nói ngừng: câu còn tiếp ở đoạn sau. Dấu chấm Whisper tự thêm vào cuối
+            # đoạn này không đáng tin; bên dịch dùng cờ này để chờ phần nối tiếp rồi mới dịch.
+            events[-1]["endedMidSpeech"] = True
+        return events
 
     @staticmethod
     def _reset_utterance(session: AudioSession) -> None:
@@ -687,9 +699,11 @@ class TranslationRuntime(RuntimeBase):
         device: str = "cpu",
         gpu_compute_type: str = "int8_float16",
         term_translations: dict[str, str] | None = None,
+        keep_names: bool = True,
     ) -> None:
         super().__init__(model_path)
         self._term_patterns = compile_term_patterns(term_translations or {})
+        self._keep_names = keep_names
         try:
             from transformers import AutoTokenizer
         except ImportError as exc:
@@ -780,6 +794,36 @@ class TranslationRuntime(RuntimeBase):
         text = self._tokenizer.batch_decode(generated, skip_special_tokens=True)[0].strip()
         return text, int(encoded["input_ids"].numel() + generated.numel())
 
+    def _translate_prepared(self, prepared: str) -> tuple[str, int]:
+        """Dịch một câu, giữ thuật ngữ trong từ điển và tên riêng đúng nguyên văn tiếng Anh.
+
+        Dịch bình thường trước (model đã giữ nguyên phần lớn tên như Berlin, Tesla; thay tên bằng ký hiệu giữ chỗ làm câu xung quanh
+        kém tự nhiên: "ở Paris" -> "trong Paris"). Chỉ khi tên nào bị dịch mất ("Harvard University" -> "Đại học Harvard") mới dịch lại
+        câu đó với riêng các tên ấy được giữ chỗ."""
+        protected, placeholders = protect_terms(prepared, self._term_patterns)
+        translated, token_count = self._generate(protected)
+        if placeholders:
+            restored, complete = restore_terms(translated, placeholders)
+            if complete:
+                translated = restored
+            else:
+                # Model bỏ mất ký hiệu giữ chỗ: dịch lại không bảo vệ còn hơn mất thuật ngữ khỏi câu.
+                protected, placeholders = prepared, []
+                translated, token_count = self._generate(prepared)
+        if not self._keep_names or any(_looks_like_placeholder(token) for token in prepared.split()):
+            return translated, token_count
+        _, candidates = protect_names(protected)
+        lowered = translated.casefold()
+        missing = frozenset(name for _, name in candidates if name.casefold() not in lowered)
+        if not missing:
+            return translated, token_count
+        name_protected, name_placeholders = protect_names(protected, len(placeholders), only=missing)
+        retranslated, retranslated_tokens = self._generate(name_protected)
+        restored, complete = restore_terms(retranslated, placeholders + name_placeholders)
+        if complete:
+            return restored, retranslated_tokens
+        return translated, token_count
+
     def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.check_model(payload)
         if payload.get("op") != "translate":
@@ -789,13 +833,7 @@ class TranslationRuntime(RuntimeBase):
             prepared = rewrite_source_for_translation(strip_fillers(source_text), self._rewrite_profile)
             if not prepared:
                 raise WorkerInputError("translation contains no speech")
-            protected, placeholders = protect_terms(prepared, self._term_patterns)
-            translated, token_count = self._generate(protected)
-            if placeholders:
-                translated, complete = restore_terms(translated, placeholders)
-                if not complete:
-                    # Model bỏ mất ký hiệu giữ chỗ: dịch lại không bảo vệ còn hơn mất thuật ngữ khỏi câu.
-                    translated, token_count = self._generate(prepared)
+            translated, token_count = self._translate_prepared(prepared)
             translated = fix_vietnamese(translated, source_text)
             translated = truncate_words(collapse_repetitions(strip_non_speech(translated)), translation_char_limit(source_text))
             if not translated:
@@ -966,6 +1004,7 @@ def build_runtime(args: argparse.Namespace) -> RuntimeBase:
         return TranslationRuntime(
             model_path, args.threads, ct2_path, args.device, args.gpu_compute_type,
             term_translations=load_glossary_section(args.glossary_file, "translations"),
+            keep_names=not args.translate_names,
         )
     codec_path = resolve_existing_directory(args.codec_path, "codec")
     return TtsRuntime(
@@ -997,6 +1036,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Đã đo và KHÔNG dùng initial_prompt (ngữ cảnh câu trước làm Whisper lặp lại câu trước: 9.4% lỗi so với 5.0%) hay hotwords
     # (sửa đúng thuật ngữ nhưng chèn từ thừa ở chỗ khác); xem docs/TEST_REPORT.md. Thuật ngữ được sửa sau nhận dạng.
     parser.add_argument("--glossary-file", default="", help="từ điển thuật ngữ chuyên ngành để sửa lỗi nghe nhầm (JSON hoặc mỗi dòng một thuật ngữ)")
+    parser.add_argument("--translate-names", action="store_true", help="dịch cả tên riêng (mặc định giữ nguyên tiếng Anh)")
     parser.add_argument("--cpu-model-path", default="", help="STT: model dùng khi phải chạy CPU (mặc định = --model-path)")
     args = parser.parse_args(argv)
     if (

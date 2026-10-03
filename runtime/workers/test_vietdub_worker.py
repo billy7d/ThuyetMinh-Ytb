@@ -94,6 +94,20 @@ class SegmentationTests(unittest.TestCase):
         for _, duration in runtime.transcribed:
             self.assertLessEqual(duration, 7000 + 1)
 
+    def test_marks_utterance_cut_for_length_but_not_cut_by_silence(self) -> None:
+        # Cắt vì quá dài (người nói chưa ngừng): câu còn tiếp ở đoạn sau nên phải báo cho bên dịch chờ phần nối tiếp.
+        runtime = FakeStt()
+        audio = tone(16000, 0.25) * (1.0 + 0.3 * np.sin(np.arange(int(SAMPLE_RATE * 16)) / SAMPLE_RATE * 2 * math.pi * 0.7)).astype(np.float32)
+        events = feed(runtime, audio)
+        self.assertTrue(events)
+        self.assertTrue(all(event.get("endedMidSpeech") is True for event in events))
+        # Người nói ngừng thật (khoảng lặng dài) thì không phải cắt giữa chừng.
+        runtime = FakeStt()
+        audio = np.concatenate([tone(1500, 0.2), np.zeros(int(SAMPLE_RATE * 0.8), dtype=np.float32)])
+        events = feed(runtime, audio)
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("endedMidSpeech", events[0])
+
     def test_cuts_at_quiet_gap_near_soft_limit(self) -> None:
         runtime = FakeStt()
         loud = tone(4400, 0.3)
@@ -393,6 +407,91 @@ class TermTranslationTests(unittest.TestCase):
             self.assertEqual(worker.load_glossary_section(str(path), "translations"), {"token": "token"})
             self.assertEqual(worker.load_glossary_section(str(path), "pronunciations"), {})
             self.assertEqual(worker.load_glossary_section("", "translations"), {})
+
+
+class ProperNameTests(unittest.TestCase):
+    def names(self, text: str) -> list[str]:
+        return [name for _, name in text_rules.protect_names(text)[1]]
+
+    def test_detects_people_places_organisations_and_products(self) -> None:
+        self.assertEqual(self.names("Elon Musk said that Tesla will open a factory in Berlin."), ["Elon Musk", "Tesla", "Berlin"])
+        self.assertEqual(self.names("She studied at Harvard University and then worked for the United Nations."), ["Harvard University", "United Nations"])
+        self.assertEqual(self.names("We visited the Eiffel Tower in New York."), ["Eiffel Tower", "New York"])
+        self.assertEqual(self.names("We thought it was a good idea, but the Great Wall of China was closed."), ["Great Wall of China"])
+        self.assertEqual(self.names("Bank of America and Wells Fargo reported earnings."), ["Bank of America", "Wells Fargo"])
+
+    def test_sentence_initial_single_words_are_not_names_but_camel_case_and_acronyms_are(self) -> None:
+        self.assertEqual(self.names("Today we talk about it. Then Frank sent this."), ["Frank"])
+        self.assertEqual(self.names("YouTube and iPhone are popular, said NASA."), ["YouTube", "iPhone", "NASA"])
+        self.assertEqual(self.names("Stable Diffusion creates images."), ["Stable Diffusion"])
+
+    def test_months_days_languages_countries_and_common_words_are_translated_normally(self) -> None:
+        self.assertEqual(self.names("Last Monday in January he spoke English in France."), [])
+        self.assertEqual(self.names("Thank you very much, everyone. Yes, I think so."), [])
+        self.assertEqual(self.names("The first boy said, I bring you gold."), [])
+
+    def test_person_titles_are_translated_but_the_name_is_kept(self) -> None:
+        self.assertEqual(self.names("Dr. Smith moved here. Prince Harry and President Biden met."), ["Smith", "Harry", "Biden"])
+
+    def test_possessive_suffix_stays_outside_the_placeholder(self) -> None:
+        protected, placeholders = text_rules.protect_names("This is Frank's book.")
+        self.assertEqual(placeholders, [("X1", "Frank")])
+        self.assertEqual(protected, "This is X1's book.")
+
+    def test_only_filter_protects_just_the_requested_names(self) -> None:
+        protected, placeholders = text_rules.protect_names(
+            "Harvard University is in Cambridge.", 2, only=frozenset({"Harvard University"})
+        )
+        self.assertEqual(protected, "X3 is in Cambridge.")
+        self.assertEqual(placeholders, [("X3", "Harvard University")])
+
+    def test_placeholder_lookalikes_and_like_marker_are_never_names(self) -> None:
+        self.assertEqual(self.names("Point X1 and the VDLIKE button."), [])
+
+    def test_camel_case_names_keep_their_case_at_sentence_start(self) -> None:
+        restored, complete = text_rules.restore_terms("X1 rất phổ biến.", [("X1", "iPhone")])
+        self.assertTrue(complete)
+        self.assertEqual(restored, "iPhone rất phổ biến.")
+
+
+class FakeNameTranslator(worker.TranslationRuntime):
+    """TranslationRuntime không nạp model: `_generate` giả lập một model hay dịch mất tên riêng."""
+
+    def __init__(self, keep_names: bool = True) -> None:
+        self._term_patterns = text_rules.compile_term_patterns({})
+        self._keep_names = keep_names
+        self.calls: list[str] = []
+
+    def _generate(self, prepared: str):
+        self.calls.append(prepared)
+        text = prepared.replace("Harvard University", "Đại học Harvard").replace("She studied at", "Cô học tại")
+        return text, 10
+
+
+class NameVerificationTests(unittest.TestCase):
+    def test_translates_once_when_the_model_already_kept_every_name(self) -> None:
+        runtime = FakeNameTranslator()
+        translated, _ = runtime._translate_prepared("She studied at Berlin.")
+        self.assertEqual(translated, "Cô học tại Berlin.")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_retranslates_with_the_lost_name_protected_and_restores_it_verbatim(self) -> None:
+        runtime = FakeNameTranslator()
+        translated, _ = runtime._translate_prepared("She studied at Harvard University.")
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(runtime.calls[1], "She studied at X1.")
+        self.assertEqual(translated, "Cô học tại Harvard University.")
+
+    def test_keep_names_off_never_retranslates(self) -> None:
+        runtime = FakeNameTranslator(keep_names=False)
+        translated, _ = runtime._translate_prepared("She studied at Harvard University.")
+        self.assertEqual(len(runtime.calls), 1)
+        self.assertEqual(translated, "Cô học tại Đại học Harvard.")
+
+    def test_translate_names_flag_is_parsed(self) -> None:
+        args = worker.parse_args(["--role", "translation", "--model-path", "x"])
+        self.assertFalse(args.translate_names)
+        self.assertTrue(worker.parse_args(["--role", "translation", "--model-path", "x", "--translate-names"]).translate_names)
 
 
 if __name__ == "__main__":
