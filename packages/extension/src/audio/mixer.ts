@@ -21,6 +21,8 @@ export interface ScheduledTTS {
   delayMs: number;
   /** Thời lượng phát thực tế sau khi tính tốc độ (ms). */
   durationMs: number;
+  /** Chỉ giọng đọc dạng luồng: đoạn tới trễ bao lâu so với lúc đoạn trước phát xong (ms). */
+  lateByMs?: number;
 }
 /** Tốc độ phát tối đa; cao hơn mức này giọng đọc bị nuốt âm khó nghe (đã co giãn giữ cao độ, xem time-stretch.ts). */
 export const MAX_TTS_PLAYBACK_RATE = 1.3;
@@ -64,6 +66,7 @@ export class AudioMixer {
   private readonly ttsSources = new Set<AudioBufferSourceNode>();
   private nextTTSStartTime = 0;
   private disconnected = false;
+  private readonly ttsStopListeners = new Set<() => void>();
 
   private config: AudioMixerConfig = {
     originalVolume: DEFAULT_ORIGINAL_VOLUME,
@@ -235,7 +238,53 @@ export class AudioMixer {
     }
   }
 
+  /** Nghe sự kiện dừng toàn bộ giọng đọc (tua, tạm dừng, dừng phiên) để các bộ nhận giọng đọc dạng luồng dọn trạng thái. */
+  onTtsStopped(listener: () => void): () => void {
+    this.ttsStopListeners.add(listener);
+    return () => this.ttsStopListeners.delete(listener);
+  }
+
+  /** Hàng chờ phát đã dài tới mức nên bỏ giọng đọc của câu mới (phụ đề câu đó vẫn hiện). */
+  isTtsBacklogTooLong(maxBacklogMs = DEFAULT_MAX_TTS_BACKLOG_MS): boolean {
+    return this.getTTSBacklogMs() > maxBacklogMs;
+  }
+
+  /**
+   * Tốc độ cho cả câu đọc dạng luồng, quyết định một lần ở đoạn đầu (chưa biết câu dài bao nhiêu nên dùng thời lượng ước tính):
+   * lớn hơn của tốc độ theo hàng chờ và tốc độ để vừa khung thời gian câu gốc.
+   */
+  chooseTtsRate(estimatedAudioMs: number, sourceDurationMs: number | undefined): number {
+    return Math.max(ttsPlaybackRateForBacklog(this.getTTSBacklogMs()), ttsPlaybackRateForSlot(estimatedAudioMs, sourceDurationMs));
+  }
+
+  /** Xếp một đoạn giọng đọc dạng luồng (đã co giãn nếu cần) phát liền ngay sau đoạn trước, ở tốc độ 1.0. */
+  scheduleStreamPiece(audioBuffer: AudioBuffer): ScheduledTTS | null {
+    if (this.disconnected) return null;
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    if (source.playbackRate) source.playbackRate.value = 1;
+    source.connect(this.ttsGainNode);
+    this.ttsSources.add(source);
+    source.onended = () => this.ttsSources.delete(source);
+    const expectedStart = this.nextTTSStartTime;
+    const startAt = Math.max(this.audioCtx.currentTime, expectedStart);
+    source.start(startAt);
+    this.nextTTSStartTime = startAt + audioBuffer.duration;
+    return {
+      source,
+      delayMs: Math.max(0, Math.round((startAt - this.audioCtx.currentTime) * 1000)),
+      durationMs: Math.round(audioBuffer.duration * 1000),
+      // Đoạn tới muộn hơn lúc đoạn trước phát xong: khoảng trống nghe được giữa hai đoạn của cùng một câu.
+      lateByMs: Math.max(0, Math.round((this.audioCtx.currentTime - expectedStart) * 1000))
+    };
+  }
+
   stopTTS(): void {
+    for (const listener of this.ttsStopListeners) {
+      try {
+        listener();
+      } catch {}
+    }
     for (const source of this.ttsSources) {
       try {
         source.stop();

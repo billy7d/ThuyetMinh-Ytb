@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { LocalWorkerClientLike, abortError } from './worker-client.js';
-import { TTSProvider, TTSRequest, TTSResponse } from '../tts/types.js';
+import { TTSProvider, TTSRequest, TTSResponse, TTSStreamPart, TTSStreamResult } from '../tts/types.js';
 import { parseWavMetadata } from '../tts/google-cloud-tts.js';
 
 export interface LocalTTSConfig {
@@ -104,6 +104,65 @@ export class LocalVietnameseTTSProvider implements TTSProvider {
       };
     } catch (error) {
       if (this.isCancelled(request.generation)) return this.cancelledResponse(request);
+      if (controller.signal.aborted) throw abortError(`Local TTS timed out after ${this.config.timeoutMs}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      if (acquired) this.release();
+      generationControllers.delete(controller);
+      if (generationControllers.size === 0 && this.controllers.get(request.generation) === generationControllers) {
+        this.controllers.delete(request.generation);
+      }
+    }
+  }
+
+  /**
+   * Tổng hợp dạng luồng: worker gửi từng đoạn PCM ngay khi sinh ra nên có tiếng đầu tiên sau ~0.5 s thay vì đợi cả câu
+   * (đo: câu 9 s giọng 5.3 s -> 0.54 s). Lệnh hủy dừng được việc sinh âm thanh giữa chừng.
+   */
+  async synthesizeStream(request: TTSRequest, onPart: (part: TTSStreamPart) => void): Promise<TTSStreamResult> {
+    if (this.isCancelled(request.generation)) return { cancelled: true, durationMs: 0 };
+
+    const controller = new AbortController();
+    const generationControllers = this.controllers.get(request.generation) ?? new Set<AbortController>();
+    generationControllers.add(controller);
+    this.controllers.set(request.generation, generationControllers);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    let acquired = false;
+    try {
+      await this.acquire(controller.signal);
+      acquired = true;
+      if (this.isCancelled(request.generation)) return { cancelled: true, durationMs: 0 };
+      const result = await this.worker.request<{ durationMs?: number }>({
+        op: 'synthesize',
+        stream: true,
+        modelPath: this.config.modelPath,
+        sessionId: this.instanceKey,
+        segmentId: request.segmentId,
+        generation: request.generation,
+        text: request.text,
+        startMs: request.startMs,
+        endMs: request.endMs
+      }, {
+        signal: controller.signal,
+        onPartial: value => {
+          if (this.isCancelled(request.generation)) return;
+          const part = value as Partial<TTSStreamPart> | null;
+          if (!part?.audioBase64 || part.mimeType !== 'audio/pcm') return;
+          onPart({
+            audioBase64: part.audioBase64,
+            mimeType: 'audio/pcm',
+            sampleRate: part.sampleRate || this.config.sampleRate,
+            channels: part.channels || 1,
+            durationMs: part.durationMs || 0,
+            index: part.index ?? 0
+          });
+        }
+      });
+      if (this.isCancelled(request.generation)) return { cancelled: true, durationMs: 0 };
+      return { cancelled: false, durationMs: result?.durationMs ?? 0 };
+    } catch (error) {
+      if (this.isCancelled(request.generation)) return { cancelled: true, durationMs: 0 };
       if (controller.signal.aborted) throw abortError(`Local TTS timed out after ${this.config.timeoutMs}ms`);
       throw error;
     } finally {

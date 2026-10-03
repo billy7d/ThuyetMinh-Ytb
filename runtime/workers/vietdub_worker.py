@@ -46,12 +46,20 @@ SAMPLE_RATE_STT = 16_000
 SAMPLE_RATE_TTS = 48_000
 # 20 s WAV mono 48 kHz ≈ 2.6 MB base64; backend cho worker TTS khung 8 MB nên luôn còn dư.
 MAX_TTS_SECONDS = 20
+# Tạo giọng dạng luồng: chuyển tiếp từng đoạn engine sinh ra ngay (0.3–2 s, kích thước tăng dần theo nhịp engine). Gộp đoạn nhỏ thành đoạn
+# lớn (bản đầu: >=1.2 s) làm đoạn thứ hai tới muộn hơn lúc đoạn đầu phát xong (6/18 câu có khoảng trống 300–460 ms khi phát tăng tốc).
+STREAM_FIRST_PIECE_SECONDS = 0.0
+STREAM_NEXT_PIECE_SECONDS = 0.0
 TRANSLATION_BEAMS = 4
 
 # Cố định chế độ offline trước khi nạp thư viện có khả năng dùng Hugging Face Hub.
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+
+class RequestCancelled(Exception):
+    """Request đang chạy bị hủy giữa chừng (tua/dừng phiên): dừng sinh âm thanh ngay."""
 
 
 class WorkerInputError(ValueError):
@@ -962,6 +970,88 @@ class TtsRuntime(RuntimeBase):
         except Exception as exc:
             raise RuntimeError("TTS inference failed") from exc
 
+    def handle_stream(self, payload: dict[str, Any], emit_part: Any, is_cancelled: Any) -> dict[str, Any]:
+        """Tạo giọng dạng luồng: gọi emit_part(dict) cho từng đoạn PCM 16-bit mono 48 kHz ngay khi sinh ra (đoạn đầu ~0.45 s,
+        các đoạn sau ~1.2 s), thay vì đợi cả câu. Mô hình cho kết quả giống hệt bản không luồng (bộ giải mã luồng khớp bộ giải mã đầy đủ).
+
+        Trả về thống kê; ném RequestCancelled nếu is_cancelled() báo hủy giữa chừng."""
+        self.check_model(payload)
+        if payload.get("op") != "synthesize":
+            raise WorkerInputError("unsupported TTS operation")
+        text = safe_text(payload.get("text"), "text")
+        np = self._np
+        try:
+            chunks, gaps = self._normalize_chunks(apply_pronunciations(text, self._pronunciation_patterns), max_chars=256)
+            silences = self._gaps_to_silence(gaps)
+            pending: list[Any] = []
+            pending_samples = 0
+            total_samples = 0
+            pieces = 0
+
+            def flush() -> None:
+                nonlocal pending, pending_samples, pieces
+                if not pending_samples:
+                    return
+                audio = np.clip(np.concatenate(pending), -1.0, 1.0)
+                pcm = (audio * 32767.0).astype("<i2").tobytes()
+                emit_part({
+                    "audioBase64": base64.b64encode(pcm).decode("ascii"),
+                    "mimeType": "audio/pcm",
+                    "sampleRate": SAMPLE_RATE_TTS,
+                    "channels": 1,
+                    "durationMs": round(audio.size / SAMPLE_RATE_TTS * 1000),
+                    "index": pieces,
+                })
+                pieces += 1
+                pending, pending_samples = [], 0
+
+            def add(samples: Any) -> None:
+                nonlocal pending_samples, total_samples
+                pending.append(samples)
+                pending_samples += samples.size
+                total_samples += samples.size
+                target = STREAM_FIRST_PIECE_SECONDS if pieces == 0 else STREAM_NEXT_PIECE_SECONDS
+                if pending_samples >= int(target * SAMPLE_RATE_TTS):
+                    flush()
+
+            for index, chunk in enumerate(chunks):
+                if total_samples >= MAX_TTS_SECONDS * SAMPLE_RATE_TTS:
+                    break
+                phonemes = self._phonemize(chunk)
+                max_frames = min(300, int(self._max_expected_frames(phonemes)))
+                if max_frames <= 0:
+                    continue
+                if index > 0 and index - 1 < len(silences) and silences[index - 1] > 0:
+                    add(np.zeros(int(silences[index - 1] * SAMPLE_RATE_TTS), dtype=np.float32))
+                stream = self._engine.infer_stream(
+                    phonemes=phonemes,
+                    speaker_emb=self._speaker_embedding,
+                    ref_codes=self._reference_codes,
+                    use_ref_codes=True,
+                    max_new_frames=max_frames,
+                    temperature=0.8,
+                    top_k=25,
+                    top_p=0.95,
+                    repetition_penalty=1.2,
+                )
+                try:
+                    for audio in stream:
+                        add(np.asarray(audio, dtype=np.float32).reshape(-1))
+                        if is_cancelled():
+                            raise RequestCancelled()
+                        if total_samples >= MAX_TTS_SECONDS * SAMPLE_RATE_TTS:
+                            break
+                finally:
+                    stream.close()
+            flush()
+            if total_samples == 0:
+                raise RuntimeError("TTS generated no audio")
+            return {"durationMs": round(total_samples / SAMPLE_RATE_TTS * 1000), "pieces": pieces, "sampleRate": SAMPLE_RATE_TTS}
+        except (WorkerInputError, RequestCancelled):
+            raise
+        except Exception as exc:
+            raise RuntimeError("TTS inference failed") from exc
+
     def _wav_response(self, audio: Any) -> dict[str, Any]:
         samples = self._np.asarray(audio, dtype=self._np.float32).reshape(-1)
         samples = self._np.clip(samples, -1.0, 1.0)
@@ -1094,8 +1184,18 @@ def handle_request(runtime: RuntimeBase, cancellations: CancellationRegistry, pa
                 runtime.discard_session(payload["sessionId"])
             emit({"id": identifier, "ok": False, "error": "request was cancelled", "cancelled": True})
             return
-        result = runtime.handle(payload)
+        if payload.get("stream") is True and isinstance(runtime, TtsRuntime):
+            result = runtime.handle_stream(
+                payload,
+                lambda part: emit({"id": identifier, "partial": True, "result": part}),
+                lambda: cancellations.is_cancelled(payload),
+            )
+        else:
+            result = runtime.handle(payload)
         emit({"id": identifier, "ok": True, "result": result})
+    except RequestCancelled:
+        identifier = payload.get("id") if isinstance(payload, dict) and isinstance(payload.get("id"), str) else "unknown"
+        emit({"id": identifier, "ok": False, "error": "request was cancelled", "cancelled": True})
     except Exception as exc:
         identifier = payload.get("id") if isinstance(payload, dict) and isinstance(payload.get("id"), str) else "unknown"
         if isinstance(exc, WorkerInputError):

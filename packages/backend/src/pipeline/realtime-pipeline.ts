@@ -37,6 +37,8 @@ export interface PipelineTimingConfig {
   pendingFlushMs: number;
   /** Câu dài được tổng hợp và phát từng vế (ở dấu phẩy) để giọng đọc bắt đầu sớm hơn. */
   streamTtsParts: boolean;
+  /** Giọng đọc dạng luồng khi provider hỗ trợ (có tiếng sau ~0.5 s thay vì đợi cả câu). */
+  streamTtsAudio: boolean;
   /** Câu thuyết minh ngắn hơn ngưỡng này (ký tự) đọc nguyên câu. */
   streamPartMinChars: number;
 }
@@ -47,8 +49,12 @@ const DEFAULT_TIMING: PipelineTimingConfig = {
   warningIntervalMs: 10_000,
   pendingFlushMs: 4_000,
   streamTtsParts: true,
+  streamTtsAudio: true,
   streamPartMinChars: 90
 };
+
+/** Thời lượng giọng đọc trung bình mỗi ký tự tiếng Việt (ms) của giọng VieNeu hiện dùng: 148 ký tự ≈ 9.1 s, 59 ≈ 4.0 s, 27 ≈ 1.8 s. */
+const TTS_ESTIMATED_MS_PER_CHAR = 64;
 
 interface TtsJob {
   segmentId: string;
@@ -533,6 +539,10 @@ export class RealtimePipeline {
     }
 
     const ttsStartedAt = Date.now();
+    if (this.timing.streamTtsAudio && this.ttsEngine.synthesizeStream) {
+      await this.synthesizeJobStreaming(job, previous, ttsStartedAt);
+      return;
+    }
     const parts = this.timing.streamTtsParts
       ? splitForStreaming(job.text, { minTotalChars: this.timing.streamPartMinChars })
       : [job.text];
@@ -603,6 +613,97 @@ export class RealtimePipeline {
       // Độ trễ ghi nhận là thời điểm có tiếng đầu tiên (vế đầu), không phải lúc xong cả câu.
       if (isFirst) this.emitLatency(job, ttsLatencyMs);
     }
+  }
+
+  /**
+   * Giọng đọc dạng luồng: gửi từng đoạn PCM ngay khi worker sinh ra. Phụ đề đi ngay trước đoạn đầu với thời lượng ước tính
+   * (≈64 ms mỗi ký tự, đo trên giọng hiện tại); đoạn cuối là bản tin rỗng partFinal để bên phát xả nốt phần còn lại.
+   */
+  private async synthesizeJobStreaming(job: TtsJob, previous: Promise<void>, ttsStartedAt: number): Promise<void> {
+    const engine = this.ttsEngine;
+    if (!engine.synthesizeStream) return;
+    const estimatedTotalMs = Math.max(400, Math.round(job.text.length * TTS_ESTIMATED_MS_PER_CHAR));
+    const queued: Array<() => void> = [];
+    let released = false;
+    let delivered = 0;
+    let cancelledOrStale = false;
+    void previous.then(() => {
+      released = true;
+      for (const send of queued.splice(0)) send();
+    });
+    const deliver = (send: () => void): void => {
+      if (released) send();
+      else queued.push(send);
+    };
+    const makeChunk = (fields: Partial<TTSChunkMessage>): TTSChunkMessage => ({
+      type: 'TTS_CHUNK',
+      sessionId: this.sessionId,
+      timestamp: Date.now(),
+      segmentId: job.segmentId,
+      audioBase64: '',
+      mimeType: 'audio/pcm',
+      sampleRate: 48_000,
+      channels: 1,
+      durationMs: 0,
+      generation: job.generation,
+      translatedText: job.text,
+      startMs: job.startMs,
+      endMs: job.endMs,
+      ...fields
+    });
+    let firstLatencyMs = 0;
+    try {
+      const result = await engine.synthesizeStream(
+        { segmentId: job.segmentId, text: job.text, generation: job.generation, startMs: job.startMs, endMs: job.endMs },
+        part => {
+          const index = part.index;
+          if (index === 0) firstLatencyMs = Date.now() - ttsStartedAt;
+          deliver(() => {
+            if (!this.isJobCurrent(job)) {
+              cancelledOrStale = true;
+              return;
+            }
+            if (index === 0 && job.subtitlePending) this.emitSubtitle(job, { durationMs: estimatedTotalMs });
+            this.callbacks.sendMessage(makeChunk({
+              audioBase64: part.audioBase64,
+              sampleRate: part.sampleRate,
+              channels: part.channels,
+              durationMs: part.durationMs,
+              partIndex: index,
+              ...(index === 0 ? { totalDurationMs: estimatedTotalMs } : {})
+            }));
+            delivered++;
+            if (index === 0) {
+              this.costTracker.recordTTS(job.text.length);
+              emitDiagnostic('pipeline', 'tts_chunk_emitted', {
+                sessionRef: this.sessionRef,
+                segmentId: job.segmentId,
+                generation: job.generation,
+                audioBytesApprox: Math.floor((part.audioBase64.length * 3) / 4),
+                durationMs: part.durationMs,
+                textLength: job.text.length,
+                part: 0,
+                streaming: true
+              });
+              this.emitLatency(job, firstLatencyMs);
+            }
+          });
+        }
+      );
+      await previous;
+      if (!this.isJobCurrent(job)) return;
+      if (result.cancelled && delivered === 0) {
+        if (job.subtitlePending && !cancelledOrStale) this.emitSubtitle(job);
+        return;
+      }
+    } finally {
+      // Dù lỗi giữa chừng, bên phát vẫn cần bản tin cuối để xả bộ co giãn và dọn trạng thái của câu.
+      await previous;
+      if (delivered > 0 && this.isJobCurrent(job)) {
+        this.callbacks.sendMessage(makeChunk({ partFinal: true, partIndex: delivered }));
+      }
+    }
+    if (delivered === 0 && job.subtitlePending) this.emitSubtitle(job);
   }
 
   private isJobCurrent(job: TtsJob): boolean {

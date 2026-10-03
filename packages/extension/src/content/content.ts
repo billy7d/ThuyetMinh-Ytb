@@ -16,6 +16,7 @@ import {
 import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
 import { RelaySocket, SocketLike, WS_RELAY_PORT_NAME } from '../relay/ws-relay.js';
 import { isSameVideo } from '../navigation/video-identity.js';
+import { TtsStreamReceiver } from '../audio/tts-stream-receiver.js';
 import { SyncedSubtitleRelease, TtsSubtitleSync, ttsSlotMs, ttsTotalDisplayMs } from '../sync/tts-subtitle-sync.js';
 
 interface FirefoxSession {
@@ -42,6 +43,8 @@ interface FirefoxSession {
   detachCaptureWatch: (() => void) | null;
   /** Giữ phụ đề tới đúng lúc giọng đọc cùng câu bắt đầu phát. */
   subtitleSync: TtsSubtitleSync | null;
+  /** Nhận giọng đọc dạng luồng (TTS_CHUNK audio/pcm); tạo khi có đoạn đầu tiên. */
+  ttsReceiver: TtsStreamReceiver | null;
 }
 
 // Video đang phát mà thu được ~3 s toàn số 0 nghĩa là track captureStream đã chết (trang đổi nguồn phát).
@@ -319,6 +322,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       silentChunks: 0,
       lastRecaptureAt: 0,
       subtitleSync: null,
+      ttsReceiver: null,
       detachCaptureWatch: null
     };
     session.subtitleSync = new TtsSubtitleSync(item => showReleasedSubtitle(session, item));
@@ -687,6 +691,17 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         displayed,
         textLength: message.text.length
       });
+    }
+    if (message.type === 'TTS_CHUNK' && message.generation === session.generation && session.audioCtx && session.audioMixer && TtsStreamReceiver.handles(message)) {
+      session.ttsReceiver ??= new TtsStreamReceiver({
+        audioCtx: session.audioCtx,
+        mixer: session.audioMixer,
+        getSubtitleSync: () => session.subtitleSync ?? undefined,
+        onSource: source => session.syncController?.setActiveTTSSource(source),
+        diagScope: 'firefox_tts'
+      });
+      session.ttsReceiver.handle(message);
+      return;
     }
     if (message.type === 'TTS_CHUNK' && message.generation === session.generation && session.audioCtx && session.audioMixer) {
       const playbackEpochAtDecodeStart = session.playbackEpoch;

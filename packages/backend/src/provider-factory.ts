@@ -108,7 +108,9 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
         pipelineTiming: {
           ...(holdFragments ? {} : { pendingFlushMs: 150 }),
           // LOCAL_TTS_STREAM_PARTS=false: đọc nguyên câu dài một đoạn (không đọc từng vế ở dấu phẩy).
-          streamTtsParts: env.LOCAL_TTS_STREAM_PARTS?.trim().toLowerCase() !== 'false'
+          streamTtsParts: env.LOCAL_TTS_STREAM_PARTS?.trim().toLowerCase() !== 'false',
+          // LOCAL_TTS_STREAM_AUDIO=false: tổng hợp cả câu rồi mới gửi (không phát dạng luồng).
+          streamTtsAudio: env.LOCAL_TTS_STREAM_AUDIO?.trim().toLowerCase() !== 'false'
         },
         budgetConfig: {
           costMode: 'local',

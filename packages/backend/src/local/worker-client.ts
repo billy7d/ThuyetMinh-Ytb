@@ -28,6 +28,8 @@ export interface LocalWorkerRequestOptions {
   timeoutMs?: number;
   /** Lệnh điều khiển (cancel) phải đi được cả khi hàng đợi suy luận đã đầy. */
   bypassQueueLimit?: boolean;
+  /** Nhận từng phần kết quả của request dạng luồng (worker gửi {id, partial:true, result}). */
+  onPartial?: (value: unknown) => void;
 }
 
 export interface LocalWorkerClientLike {
@@ -50,6 +52,8 @@ interface WorkerResponse {
   error?: string;
   event?: string;
   cancelled?: boolean;
+  /** Kết quả từng phần của request dạng luồng; request kết thúc ở phản hồi cuối (ok/lỗi). */
+  partial?: boolean;
 }
 
 interface PendingRequest {
@@ -58,6 +62,7 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
   signal?: AbortSignal;
   abortListener?: () => void;
+  onPartial?: (value: unknown) => void;
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
@@ -153,7 +158,8 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
         resolve: value => resolve(value as T),
         reject,
         timer,
-        signal: options.signal
+        signal: options.signal,
+        onPartial: options.onPartial
       };
       if (options.signal) {
         pending.abortListener = () => {
@@ -299,6 +305,14 @@ export class JsonLineWorkerClient implements LocalWorkerClientLike {
     }
     const pending = this.pending.get(response.id);
     if (!pending) return;
+    if (response.partial) {
+      try {
+        pending.onPartial?.(response.result);
+      } catch {
+        // Lỗi của bên nhận từng phần không được làm hỏng kết nối worker.
+      }
+      return;
+    }
     this.pending.delete(response.id);
     clearTimeout(pending.timer);
     if (pending.signal && pending.abortListener) {

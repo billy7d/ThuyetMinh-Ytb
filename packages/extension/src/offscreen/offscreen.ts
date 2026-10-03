@@ -13,6 +13,7 @@ import {
   emitDiagnostic
 } from '@vietdub/shared';
 import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
+import { TtsStreamReceiver } from '../audio/tts-stream-receiver.js';
 import { TtsSubtitleSync, ttsSlotMs, ttsTotalDisplayMs } from '../sync/tts-subtitle-sync.js';
 
 interface RuntimeResponse {
@@ -41,6 +42,8 @@ interface OffscreenSession {
   cleanupPromise: Promise<void> | null;
   /** Giữ phụ đề tới đúng lúc giọng đọc cùng câu bắt đầu phát rồi mới chuyển cho tab hiển thị. */
   subtitleSync: TtsSubtitleSync | null;
+  /** Nhận giọng đọc dạng luồng (TTS_CHUNK audio/pcm); tạo khi có đoạn đầu tiên. */
+  ttsReceiver: TtsStreamReceiver | null;
 }
 
 let currentSession: OffscreenSession | null = null;
@@ -178,7 +181,8 @@ async function startCapture(
       ? Math.max(0, Math.round(initialVideoState!.currentTime * 1000))
       : 0,
     cleanupPromise: null,
-    subtitleSync: null
+    subtitleSync: null,
+    ttsReceiver: null
   };
   session.subtitleSync = new TtsSubtitleSync(({ message, ttsDurationMs }) => {
     if (!isCurrent(session)) return;
@@ -404,6 +408,16 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
     return;
   }
 
+  if (message.type === 'TTS_CHUNK' && message.generation === session.generation && session.audioCtx && session.audioMixer && TtsStreamReceiver.handles(message)) {
+    session.ttsReceiver ??= new TtsStreamReceiver({
+      audioCtx: session.audioCtx,
+      mixer: session.audioMixer,
+      getSubtitleSync: () => session.subtitleSync ?? undefined,
+      diagScope: 'chrome_tts'
+    });
+    session.ttsReceiver.handle(message);
+    return;
+  }
   if (message.type === 'TTS_CHUNK' && message.generation === session.generation && session.audioCtx && session.audioMixer) {
     const playbackEpochAtDecodeStart = session.playbackEpoch;
     try {

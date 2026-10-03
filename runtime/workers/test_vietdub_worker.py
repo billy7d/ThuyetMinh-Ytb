@@ -494,5 +494,132 @@ class NameVerificationTests(unittest.TestCase):
         self.assertTrue(worker.parse_args(["--role", "translation", "--model-path", "x", "--translate-names"]).translate_names)
 
 
+class FakeStreamEngine:
+    """Engine giả: infer_stream trả các mảng 0.25 s như bản thật trả theo khung."""
+
+    def __init__(self, seconds: float = 3.0, frame_seconds: float = 0.25) -> None:
+        self.frames = int(seconds / frame_seconds)
+        self.frame_samples = int(frame_seconds * worker.SAMPLE_RATE_TTS)
+        self.produced = 0
+        self.closed = False
+
+    def infer_stream(self, **kwargs: object):
+        try:
+            for index in range(self.frames):
+                self.produced += 1
+                yield np.full(self.frame_samples, 0.1 * ((index % 3) + 1), dtype=np.float32)
+        finally:
+            self.closed = True
+
+
+class FakeStreamTts(worker.TtsRuntime):
+    def __init__(self, engine: FakeStreamEngine, chunks: list[str] | None = None, gaps: list[float] | None = None) -> None:
+        self._np = np
+        self._engine = engine
+        self._pronunciation_patterns = []
+        self._speaker_embedding = None
+        self._reference_codes = None
+        self._chunks = chunks or ["xin chào"]
+        self._gaps = gaps or []
+        self.model_path = Path("/model")
+        self._normalize_chunks = lambda text, max_chars=256: (self._chunks, ["minor"] * len(self._gaps))
+        self._gaps_to_silence = lambda gaps: list(self._gaps)
+        self._phonemize = lambda text: text
+        self._max_expected_frames = lambda phonemes: 100
+
+    def check_model(self, payload: dict) -> None:
+        return None
+
+
+class TtsStreamTests(unittest.TestCase):
+    def run_stream(self, runtime: FakeStreamTts, is_cancelled=lambda: False) -> tuple[list[dict], dict]:
+        parts: list[dict] = []
+        result = runtime.handle_stream({"op": "synthesize", "text": "xin chào"}, parts.append, is_cancelled)
+        return parts, result
+
+    def test_every_engine_chunk_is_forwarded_immediately_and_they_sum_to_the_whole_sentence(self) -> None:
+        engine = FakeStreamEngine(seconds=5.0)
+        parts, result = self.run_stream(FakeStreamTts(engine))
+        durations = [part["durationMs"] for part in parts]
+        # Không gộp: gộp làm đoạn kế tiếp tới muộn hơn lúc đoạn trước phát xong (khoảng trống khi phát tăng tốc).
+        self.assertEqual(durations, [250] * 20)
+        self.assertEqual(sum(durations), result["durationMs"])
+        self.assertEqual(result["durationMs"], 5000)
+        self.assertEqual([part["index"] for part in parts], list(range(len(parts))))
+        self.assertTrue(engine.closed)
+
+    def test_pieces_are_16_bit_mono_pcm_at_48khz(self) -> None:
+        parts, _ = self.run_stream(FakeStreamTts(FakeStreamEngine(seconds=1.0)))
+        first = parts[0]
+        self.assertEqual((first["mimeType"], first["sampleRate"], first["channels"]), ("audio/pcm", 48000, 1))
+        raw = base64.b64decode(first["audioBase64"])
+        samples = np.frombuffer(raw, dtype="<i2")
+        self.assertEqual(len(samples), int(first["durationMs"] / 1000 * 48000))
+        self.assertAlmostEqual(float(samples[0]) / 32767, 0.1, places=3)
+
+    def test_silence_between_text_chunks_is_inserted_between_the_audio(self) -> None:
+        runtime = FakeStreamTts(FakeStreamEngine(seconds=0.5), chunks=["một", "hai"], gaps=[0.3])
+        parts, result = self.run_stream(runtime)
+        self.assertEqual(result["durationMs"], 500 + 300 + 500)
+
+    def test_cancel_stops_generation_early_and_closes_the_engine_stream(self) -> None:
+        engine = FakeStreamEngine(seconds=10.0)
+        runtime = FakeStreamTts(engine)
+        calls = {"n": 0}
+
+        def cancelled() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 3
+
+        with self.assertRaises(worker.RequestCancelled):
+            self.run_stream(runtime, cancelled)
+        self.assertLess(engine.produced, 10)
+        self.assertTrue(engine.closed)
+
+    def test_no_audio_is_an_error_and_unsupported_ops_are_rejected(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self.run_stream(FakeStreamTts(FakeStreamEngine(seconds=0.0)))
+        with self.assertRaises(worker.WorkerInputError):
+            FakeStreamTts(FakeStreamEngine()).handle_stream({"op": "other", "text": "x"}, lambda part: None, lambda: False)
+
+    def test_handle_request_emits_partial_frames_then_the_final_result(self) -> None:
+        emitted: list[dict] = []
+        original = worker.emit
+        worker.emit = emitted.append
+        try:
+            runtime = FakeStreamTts(FakeStreamEngine(seconds=2.0))
+            registry = worker.CancellationRegistry()
+            worker.handle_request(runtime, registry, {"id": "r1", "op": "synthesize", "text": "xin chào", "stream": True, "sessionId": "s", "generation": 1})
+        finally:
+            worker.emit = original
+        self.assertTrue(all(frame.get("partial") for frame in emitted[:-1]))
+        self.assertGreaterEqual(len(emitted), 3)
+        self.assertEqual(emitted[-1]["ok"], True)
+        self.assertEqual(emitted[-1]["result"]["durationMs"], 2000)
+        self.assertTrue(all(frame["id"] == "r1" for frame in emitted))
+
+    def test_handle_request_reports_cancellation_with_the_cancelled_flag(self) -> None:
+        emitted: list[dict] = []
+        original = worker.emit
+        worker.emit = emitted.append
+        try:
+            runtime = FakeStreamTts(FakeStreamEngine(seconds=10.0))
+            registry = worker.CancellationRegistry()
+            payload = {"id": "r2", "op": "synthesize", "text": "xin chào", "stream": True, "sessionId": "s", "generation": 1}
+            original_flush_emit = emitted.append
+
+            def cancel_after_first_partial(frame: dict) -> None:
+                original_flush_emit(frame)
+                if frame.get("partial"):
+                    registry.cancel({"sessionId": "s", "beforeGeneration": 2})
+
+            worker.emit = cancel_after_first_partial
+            worker.handle_request(runtime, registry, payload)
+        finally:
+            worker.emit = original
+        self.assertEqual(emitted[-1].get("cancelled"), True)
+        self.assertEqual(emitted[-1].get("ok"), False)
+
+
 if __name__ == "__main__":
     unittest.main()

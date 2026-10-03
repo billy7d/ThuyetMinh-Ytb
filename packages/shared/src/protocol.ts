@@ -131,6 +131,8 @@ export interface TTSChunkMessage extends BaseMessage {
   totalDurationMs?: number;
   /** Tỉ lệ khung thời gian của câu gốc dành cho vế này (0–1) để tính tốc độ phát. */
   slotShare?: number;
+  /** Giọng đọc dạng luồng (mimeType audio/pcm, PCM 16-bit little-endian mono): đoạn cuối cùng, audioBase64 có thể rỗng. */
+  partFinal?: boolean;
 }
 
 export interface SubtitleEventMessage extends BaseMessage {

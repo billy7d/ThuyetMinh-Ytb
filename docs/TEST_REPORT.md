@@ -463,3 +463,27 @@ chức danh (dịch "Tiến sĩ", giữ tên). Dịch bình thường trước; 
 Tên đã có cách gọi quen thuộc trong tiếng Việt muốn dịch (Liên Hợp Quốc, Nhà Trắng, Vạn Lý Trường Thành…) thêm vào mục `translations` của từ điển
 (áp dụng trước bước này), ví dụ `"United Nations": "Liên Hợp Quốc"`. Hạn chế: không có từ điển tên nên từ viết hoa ở đầu câu không nhận diện được trừ khi là cụm
 nhiều từ/camelCase/viết tắt; tên viết thường hoặc Whisper không viết hoa sẽ không được giữ.
+
+## Giọng đọc dạng luồng (streaming TTS) (2026-10-03)
+
+Khâu chậm nhất của độ trễ thuyết minh là tổng hợp giọng (trung vị ~3 s, câu dài 5–8 s) vì phải đợi cả câu. VieNeu có sẵn `infer_stream` (bộ giải mã luồng
+`decode_step` đã nằm trong thư mục codec và đã được nạp), nên worker nay gửi từng đoạn PCM 16-bit mono 48 kHz ngay khi engine sinh ra.
+
+Luồng dữ liệu: worker (`stream:true` -> các khung `{id, partial:true, result}` rồi kết quả cuối; kiểm tra hủy giữa các đoạn) -> `JsonLineWorkerClient.onPartial` ->
+`LocalVietnameseTTSProvider.synthesizeStream` -> pipeline (phụ đề trước đoạn đầu với thời lượng ước tính 64 ms/ký tự, mỗi đoạn một `TTS_CHUNK audio/pcm`
+có `partIndex`, bản tin rỗng `partFinal` ở cuối) -> extension `TtsStreamReceiver`: tốc độ quyết định một lần ở đoạn đầu, cả câu đi qua một `StreamingTimeStretcher`
+(WSOLA giữ trạng thái giữa các đoạn nên đầu ra giống hệt co giãn cả câu, không có lỗ ở mối nối), các đoạn xếp phát liền nhau theo thời gian mẫu. Tắt bằng
+`LOCAL_TTS_STREAM_AUDIO=false` (khi đó dùng đường cũ, gồm cả đọc từng vế ở dấu phẩy).
+
+Đo (i5-9400F, 4 luồng TTS):
+- Worker: câu 9.2 s giọng: đoạn đầu sau 0.37 s (đọc cả câu: 5.4 s), tổng thời gian sinh 5.35 s so với 5.42 s; hủy giữa chừng dừng sau 0.86 s (trước đây phải chờ xong cả câu).
+- Chi phí máy: CPU-giây 107.1 so với 110.0 (không tăng), thời gian thực +3%, không dùng GPU. RAM: đo mỗi cấu hình trong tiến trình riêng
+  (`E:\VietDub-AI\runtime\bench_tts_mem.py`, 4 câu x 2 lượt) dạng luồng 1.40 GB đỉnh so với 1.79 GB khi đọc cả câu, tức **giảm** ~390 MB
+  (lần đo đầu chạy cả hai kiểu trong cùng một tiến trình nên báo nhầm +260 MB).
+- A/B xen kẽ qua gateway (on,off,on,off; 26 câu mỗi chế độ, bài giảng 50 s): từ lúc dịch xong tới tiếng đầu tiên 0.37 s so với 3.66 s (câu >=100 ký tự: 0.35 s so với 5.30 s);
+  giọng bắt đầu sau khi câu gốc kết thúc 1.46 s so với 4.56 s (trung vị).
+- Firefox thật (bài giảng 70 s): PASS, 16 câu, cao độ giữ ở 15/16 (câu còn lại không cần tăng tốc), co giãn tổng cộng <=37 ms mỗi câu, sai số ước tính thời lượng
+  3.2% (trung vị). Khoảng trống nghe được giữa các đoạn: bản gộp đoạn >=1.2 s có 6/18 câu hở 320–460 ms vì đoạn thứ hai tới muộn khi phát tăng tốc; bỏ gộp (chuyển tiếp từng đoạn
+  engine ngay) còn 1/16 câu hở (81 ms; một câu khác 25 ms).
+Mẫu nghe: `E:\VietDub-AI\evidence\tts-stream\` (`worker_nonstream.wav` cả câu, `worker_stream.wav` ghép các đoạn, `stream_x1.3_giu_cao_do.wav` qua bộ co giãn luồng,
+`stream_x1.3_cach_cu_cao_do_tang.wav` cách cũ). Hai bản đọc cùng câu nhưng khác nhau chút do mô hình sinh có ngẫu nhiên. Chưa nghe bằng tai; chưa chạy Chrome thật.
