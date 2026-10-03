@@ -109,11 +109,6 @@ async function injectContentScript(tabId: number): Promise<void> {
       await scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
       return;
     }
-    const executeScript = (chrome.tabs as any).executeScript;
-    if (executeScript) {
-      await executeScript.call(chrome.tabs, tabId, { file: 'content/content.js' });
-      return;
-    }
     throw new SessionRuntimeError('INJECTION_UNSUPPORTED', 'Firefox không hỗ trợ API nạp content script.', false, true);
   } catch (error) {
     throw classifyContentError(error, 'Không thể nạp content script vào tab.');

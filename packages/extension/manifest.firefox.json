@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "VietDub AI - Thuyết minh tiếng Việt thời gian thực",
+  "name": "VietDub AI - Thuyết minh tiếng Việt",
   "version": "1.0.0",
   "description": "Thuyết minh và phụ đề video tiếng Anh sang tiếng Việt theo thời gian thực cho trình duyệt.",
   "permissions": [
@@ -32,7 +32,10 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "vietdub-ai@vietdub.local",
-      "strict_min_version": "109.0"
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   }
 }

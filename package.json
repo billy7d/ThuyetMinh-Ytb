@@ -12,6 +12,8 @@
     "validate:build": "node scripts/validate-extension-build.mjs --target all",
     "build:chrome": "npm run build:chrome -w @vietdub/extension && node scripts/validate-extension-build.mjs --target chrome",
     "build:firefox": "npm run build:firefox -w @vietdub/extension && node scripts/validate-extension-build.mjs --target firefox",
+    "lint:firefox": "npm run build:firefox && node scripts/firefox-package.mjs lint",
+    "sign:firefox": "npm run build:firefox && node scripts/firefox-package.mjs sign",
     "build:backend": "npm run build -w @vietdub/backend",
     "test": "npm run test -w @vietdub/tests",
     "test:unit": "npm run test:unit -w @vietdub/tests",
@@ -24,6 +26,7 @@
     "dev:server": "npm run start -w @vietdub/backend"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "web-ext": "^10.7.0"
   }
 }

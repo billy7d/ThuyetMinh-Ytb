@@ -131,7 +131,36 @@ http://127.0.0.1:8080/health
 
 > Chrome nhớ extension này sau khi tắt mở lại, bạn chỉ nạp một lần. Sau khi **build lại**, vào `chrome://extensions` và bấm nút ⟳ trên thẻ VietDub AI.
 
-#### 🟠 Firefox
+#### 🟠 Firefox — cài cố định (nên dùng)
+
+Firefox bản thường chỉ giữ lại sau khi tắt mở những tiện ích **đã được Mozilla ký**. Ký miễn phí, tự động, ở kênh *unlisted*: tiện ích **không** hiện công khai trên
+addons.mozilla.org (AMO), chỉ bạn có tệp `.xpi`. Mã của bản build được gửi lên AMO để kiểm tra tự động.
+
+**Lần đầu (một lần):**
+
+1. Đăng nhập (hoặc tạo tài khoản Firefox) ở <https://addons.mozilla.org/developers/>, chấp nhận thỏa thuận nhà phát triển.
+2. Mở <https://addons.mozilla.org/developers/addon/api/key/>, bấm **Generate new credentials**.
+3. Thêm hai dòng vào tệp `.env` ở gốc repo (tệp này không được commit; đừng chia sẻ secret):
+
+   ```
+   WEB_EXT_API_KEY=<JWT issuer, dạng user:12345:678>
+   WEB_EXT_API_SECRET=<JWT secret>
+   ```
+
+**Ký và cài:**
+
+```bash
+npm run sign:firefox
+```
+
+Lệnh này build bản Firefox, kiểm tra bằng bộ kiểm tra của AMO, gửi đi ký (thường vài phút) rồi lưu tệp đã ký vào
+`packages/extension/dist/firefox-signed/vietdub-ai-firefox.xpi`. Sau đó trong Firefox: `about:addons` → biểu tượng bánh răng ⚙ →
+**Install Add-on From File...** → chọn tệp `.xpi` trên → **Add**. Nếu đang có bản tạm thời ở `about:debugging`, bấm **Remove** bản đó trước.
+
+> **Cập nhật sau khi sửa code:** chạy lại `npm run sign:firefox` rồi cài tệp `.xpi` mới theo cách trên. Mỗi lần ký tự đóng dấu một số phiên bản mới
+> (theo ngày giờ) nên Firefox cập nhật đè lên bản cũ, giữ nguyên cài đặt. Muốn kiểm tra trước mà không gửi gì đi: `npm run lint:firefox`.
+
+#### 🟠 Firefox — nạp tạm thời (khi đang sửa code)
 
 1. Gõ `about:debugging#/runtime/this-firefox` vào thanh địa chỉ rồi Enter.
 2. Bấm **Load Temporary Add-on...** (Tải phần bổ trợ tạm thời).
@@ -156,7 +185,7 @@ http://127.0.0.1:8080/health
 | Popup báo không kết nối được máy chủ / mãi ở "Đang kết nối" | Backend chưa chạy hoặc đang nạp model | Làm Bước 2, đợi `/health` trả `HTTP 200`, rồi bấm lại Bắt đầu. |
 | "Trình duyệt đang chặn âm thanh" | Chưa bấm vào trang | Bấm Play trên video (hoặc bấm vào trang), rồi bấm Bắt đầu lại. |
 | "Không tìm thấy video trong tab" | Video chưa tải xong hoặc nằm trong iframe khác nguồn | F5 tải lại trang, bấm Play, rồi mở popup. |
-| Vừa build hoặc sửa code nhưng không thấy khác | Trình duyệt vẫn dùng bản cũ | Chrome: bấm ⟳ ở `chrome://extensions`. Firefox: bấm Reload ở `about:debugging`. Rồi F5 trang video. |
+| Vừa build hoặc sửa code nhưng không thấy khác | Trình duyệt vẫn dùng bản cũ | Chrome: bấm ⟳ ở `chrome://extensions`. Firefox bản tạm thời: bấm Reload ở `about:debugging`; bản cài cố định: `npm run sign:firefox` rồi cài tệp `.xpi` mới. Rồi F5 trang video. |
 | Đã khởi động lại backend nhưng popup vẫn lỗi | Phiên cũ đã mất kết nối | F5 trang video, bấm Play, rồi Bắt đầu lại. |
 | Netflix, Spotify... không thu được âm thanh | Nội dung có DRM | Không hỗ trợ. |
 | Không nghe tiếng Việt | Âm lượng thuyết minh 0% hoặc đang ở chế độ "Chỉ phụ đề" | Chuyển sang *Thuyết minh + phụ đề* và kéo âm lượng thuyết minh lên. |
