@@ -124,6 +124,13 @@ export interface TTSChunkMessage extends BaseMessage {
   translatedText: string;
   startMs: number;
   endMs: number;
+  /** Câu dài được đọc từng vế: số thứ tự vế (0 = vế đầu) và tổng số vế. Thiếu = cả câu trong một đoạn. */
+  partIndex?: number;
+  partCount?: number;
+  /** Chỉ vế đầu: thời lượng ước tính của cả câu (ms, tốc độ 1.0x) để phụ đề hiện đủ lâu. */
+  totalDurationMs?: number;
+  /** Tỉ lệ khung thời gian của câu gốc dành cho vế này (0–1) để tính tốc độ phát. */
+  slotShare?: number;
 }
 
 export interface SubtitleEventMessage extends BaseMessage {

@@ -52,12 +52,14 @@ export class TtsSubtitleSync {
   }
 
   /** Giọng đọc của segmentId đã được lên lịch phát sau delayMs, kéo dài durationMs. */
-  ttsScheduled(segmentId: string, delayMs: number, durationMs: number): void {
+  ttsScheduled(segmentId: string, delayMs: number, durationMs: number, totalDurationMs?: number): void {
     const item = this.held.get(segmentId);
     if (!item) return;
     this.held.delete(segmentId);
     this.clock.clearTimer(item.timer);
-    const show = () => this.release({ message: item.message, ttsDurationMs: durationMs });
+    // Câu đọc từng vế: phụ đề phải hiện đủ lâu cho cả câu chứ không chỉ vế đầu.
+    const shown = Math.max(durationMs, totalDurationMs ?? 0);
+    const show = () => this.release({ message: item.message, ttsDurationMs: shown });
     if (delayMs <= 15) {
       show();
       return;
@@ -100,4 +102,16 @@ export class TtsSubtitleSync {
     this.clock.clearTimer(item.timer);
     this.held.delete(segmentId);
   }
+}
+
+/** Khung thời gian (ms) của câu gốc dành cho đoạn giọng đọc này; vế của câu dài chỉ chiếm một phần. */
+export function ttsSlotMs(message: { startMs: number; endMs: number; slotShare?: number }): number {
+  const share = Number.isFinite(message.slotShare) && (message.slotShare as number) > 0 ? Math.min(1, message.slotShare as number) : 1;
+  return (message.endMs - message.startMs) * share;
+}
+
+/** Thời lượng cả câu để hiện phụ đề (đã nhân tỉ lệ co giãn của vế đầu); undefined nếu câu đọc nguyên một đoạn. */
+export function ttsTotalDisplayMs(message: { durationMs: number; totalDurationMs?: number }, scheduledDurationMs: number): number | undefined {
+  if (!Number.isFinite(message.totalDurationMs) || !(message.totalDurationMs as number) || !(message.durationMs > 0)) return undefined;
+  return Math.round((message.totalDurationMs as number) * (scheduledDurationMs / message.durationMs));
 }

@@ -376,3 +376,90 @@ VieNeu vốn phiên âm từ tiếng Anh bằng âm tiếng Anh (`Kubernetes` ->
 Chưa thêm luật sửa lỗi mới vào `text_rules.py` vì chưa có câu sai thực tế từ người dùng; các lỗi còn lại trong tập mẫu
 (ví dụ "Prometheus cạo các số liệu", "dấu chân bộ nhớ") là cách dùng từ của model, có thể thêm vào `translations` khi cần.
 Bằng chứng: `E:\VietDub-AI\evidence\translation-decode-exp.json`, `translation-protect-e2e.json`.
+
+## Giọng đọc tăng tốc không còn the thé: co giãn thời gian giữ cao độ (2026-10-02)
+
+Nguyên nhân: mixer rút ngắn câu bằng `AudioBufferSourceNode.playbackRate`, đổi cả cao độ (1.3x = cao hơn ~4.5 nửa cung, nghe như
+hoạt hình). Nay câu cần tăng tốc (>1.02x) được co giãn bằng WSOLA (`extension/src/audio/time-stretch.ts`) rồi phát ở
+`playbackRate = 1`; thời lượng và lịch phát giữ như trước (tốc độ đọc không giảm). Môi trường thiếu `getChannelData`/`createBuffer`
+hoặc lỗi thì tự lùi về `playbackRate`.
+
+Đo trên 3 câu VieNeu thật (cao độ trung vị F0 bằng tự tương quan): gốc 166–168 Hz; WSOLA 1.3x: 168–170 Hz (giữ nguyên);
+`playbackRate` 1.3x: 211–218 Hz (+27%). Xử lý ~60–90 ms cho câu 5 s (thỉnh thoảng 220–350 ms ở lần chạy đầu/GC), chạy ở luồng
+của trang trước khi phát. Mẫu nghe so sánh: `E:\VietDub-AI\evidence\tts-stretch\` (`*_goc`, `*_wsola`, `*_playbackRate_cu`).
+Chưa nghe nhận xét của người dùng và chưa chạy trên trình duyệt thật.
+
+## Thuyết minh ngắt nghỉ sai làm đổi nghĩa: dịch mảnh câu dở (2026-10-03)
+
+Tái hiện bằng bài giảng dài (SAPI, câu phức) phát qua gateway thật (`E:\VietDub-AI\runtime\dump_segments.mjs`). Nguyên nhân: STT cắt
+đoạn khi quá dài (3.5–5 s) hoặc khi người nói ngừng 300 ms; mảnh dở bị dịch và đọc riêng sau 150 ms, kể cả khi Whisper tự thêm dấu
+chấm giả vào cuối đoạn bị cắt. Ví dụ trước sửa: "…is that every" -> "Điều thứ hai tôi muốn các bạn chú ý là" rồi "time we simplified…" ->
+"thời gian chúng tôi đơn giản hóa" (mất nghĩa "mỗi khi"); "…what to do with" -> "…phải làm gì với nó." rồi câu sau đứng riêng;
+"So instead of trying to fix everything at once" bị dịch thành mệnh đề phụ cụt.
+
+Sửa: (1) worker STT gắn `endedMidSpeech` cho đoạn bị cắt vì quá dài; (2) `TranslationEngine` coi đoạn đó là chưa trọn câu dù có dấu
+chấm, và không còn dịch riêng đoạn thiếu dấu câu cuối (`flushUnpunctuated=false`); (3) từ hạn định `every/each/what/how…` cuối đoạn là câu dở;
+(4) `joinFragments` bỏ dấu chấm giả, thêm dấu phẩy giữa mệnh đề phụ và chính, viết thường chữ đầu đoạn sau khi an toàn; (5) giới hạn giữ
+tăng từ 3 s lên 8 s và hết `pendingFlushMs` (150 ms -> 4 s) thì vẫn buộc dịch để không treo. Công tắc: `LOCAL_TRANSLATION_HOLD_FRAGMENTS=false` quay lại hành vi cũ.
+
+Sau sửa (cùng bài giảng): "…every time we simplified" -> "mỗi khi chúng ta đơn giản hóa kiến trúc"; "…what to do with the mistakes…" ->
+"quyết định phải làm gì với những sai lầm…"; "If you have a system… every day, even a tiny delay…" -> "…mỗi ngày, thậm chí một sự chậm trễ nhỏ…";
+"So instead of… at once, we decided…" -> "Vì vậy, thay vì…, chúng tôi quyết định…". Số đoạn dịch giảm vì ghép (soak 60 s: 20 -> 10).
+
+Cái giá là độ trễ (soak giọng VieNeu nói dày `--tempo 1.35 --gap 0.3`, 2 lần): trễ phụ đề p50 4.5–4.9 s (trước 3.1 s), p95 5.1–6.0 s
+(trước 3.6–4.0 s); giọng đọc bắt đầu sau khi hết câu p50 5.2–5.3 s (trước 4.7 s); backlog mixer tối đa 0.9–1.8 s (trước 2.8 s), không câu nào bị bỏ.
+Còn lại: đoạn bị cắt vì người nói ngừng giữa câu mà Whisper đã thêm dấu chấm thì vẫn dịch riêng (không phân biệt được với hết câu);
+câu dài hơn ~8 s vẫn bị cắt. Chưa kiểm chứng trên trình duyệt thật.
+
+## Phiên tự dừng "Trình duyệt gửi audio dồn dập" (2026-10-03)
+
+Log backend của người dùng: `pipeline.error BUDGET_OR_RATE_LIMIT fatal` ở 3 phiên liên tiếp, thường ngay sau các `tts_chunk_emitted` dài 8–14 s, kèm
+`STT_OVERLOADED` và có lúc `videoTimeMs` đứng yên trong khi hàng chục đoạn audio tới cùng lúc. Nguyên nhân (nhiều lớp):
+1. Giới hạn 10 đoạn/giây tính theo thời điểm backend xử lý, nên chỉ cần trang hoặc backend đứng hình >2.5 s là audio gửi đúng nhịp cũng bị tính là
+   "dồn dập" và phiên bị dừng. Nay chế độ local mặc định 200 đoạn/giây và không giới hạn thời lượng (`MAX_SESSION_MINUTES=0`); thông báo lỗi nêu rõ lý do.
+2. Co giãn giọng (WSOLA) bản đầu **không chạy được trong Firefox thật** (content script): diag `tts_mixer.scheduled` cho `pitchPreserved:false`, lùi về
+   `playbackRate`. Viết lại: sao chép kênh bằng `copyFromChannel`, tìm điểm ghép trên bản giảm mẫu, trần thời gian 250 ms rồi tự lùi. Đo trong Firefox thật:
+   `stretchMs` 17–38 ms cho câu 5–9 s, `pitchPreserved:true`.
+3. Câu ghép dài làm giọng đọc 12–14 s chiếm CPU (TTS 4 luồng) khiến nhận dạng bị quá tải: giới hạn giữ mảnh 8 s -> 6.5 s, 300 -> 240 ký tự.
+4. Thêm chẩn đoán `backend.event_loop_stall` khi vòng lặp backend đứng >1 s.
+Acceptance Firefox thật (bài giảng 70 s qua gateway): PASS, 16 giọng đọc, không `STT_OVERLOADED`, không `BUDGET_OR_RATE_LIMIT`.
+Lưu ý: ca lỗi gốc của người dùng (trang YouTube thật có quảng cáo) chưa tái hiện được 1:1.
+
+## Giảm độ trễ thuyết minh mà giữ nguyên ngắt nghỉ: đọc từng vế (2026-10-03)
+
+Phân rã độ trễ (lần chạy Firefox thật, bài giảng 70 s): trung vị ~4.9 s từ lúc câu nói xong tới lúc backend gửi giọng đọc = nhận dạng ~0.85 s
++ dịch ~0.2 s + chờ ghép mảnh dở 1–2.5 s + tổng hợp giọng ~2.9 s (câu dài tới 8 s: RTF 0.55–0.85 trên CPU).
+
+Thay đổi: (1) câu thuyết minh ≥90 ký tự được cắt ở dấu phẩy/chấm phẩy/hai chấm có sẵn (không cắt nếu không có dấu, không cắt số thập phân) thành 2–3 vế;
+vế đầu tổng hợp xong là gửi và phát ngay, vế sau tổng hợp trong lúc vế đầu đang phát. Phụ đề vẫn hiện một lần với tổng thời lượng ước tính; tốc độ phát của
+từng vế tính theo tỉ lệ khung thời gian (`slotShare`). Không tốn thêm RAM/CPU (tuần tự trên cùng worker). Tắt bằng `LOCAL_TTS_STREAM_PARTS=false`.
+(2) Đoạn STT bị cắt vì quá dài nhưng đã tự đủ ý (có dấu kết câu, ≥5 từ, không bắt đầu bằng mệnh đề phụ/chữ thường, không dừng ở từ nối) dịch ngay,
+không chờ phần sau; bản dịch ghép trên bài giảng thử không đổi.
+
+A/B xen kẽ (on,off,on,off; cùng âm thanh, backend mới khởi động mỗi lượt, 22–24 câu mỗi chế độ):
+
+| | Đọc từng vế | Đọc nguyên câu |
+| --- | --- | --- |
+| Từ lúc dịch xong tới tiếng đầu tiên (trung vị) | 3.1 s | 3.6 s |
+| Riêng câu ≥100 ký tự | 2.4 s (n=6) | 5.5 s (n=4) |
+| Giọng bắt đầu sau khi câu gốc kết thúc (trung vị) | 3.8 s | 4.8 s |
+
+Chưa nghe thử bằng tai: mỗi vế là một lần tổng hợp riêng nên chỗ nối (dấu phẩy) có thể nghe hơi khác so với đọc liền một hơi. Mẫu nhỏ, máy bận nên số đo
+dao động; xu hướng nhất quán. Bằng chứng: `E:\VietDub-AI\evidence\ab_parts.out`.
+
+## Giữ nguyên tên riêng tiếng Anh khi dịch (2026-10-03)
+
+Vinai giữ được phần lớn tên (Apple, Tesla, Elon Musk, Berlin…) nhưng vẫn dịch sát chữ các tên có từ thường: "Silicon Valley" -> "Thung lũng Silicon",
+"Harvard University" -> "Đại học Harvard", "Eiffel Tower" -> "Tháp Eiffel", "Mount Everest" -> "Núi Everest", "Supreme Court" -> "Tòa án Tối cao".
+
+Cách làm (worker dịch, `--translate-names` để tắt): nhận diện tên bằng chữ viết hoa — từ viết hoa giữa câu, cụm nhiều từ viết hoa liền nhau (nối được bằng of/the,
+mở đầu được bằng New/Great/…), tên camelCase (YouTube, iPhone) và viết tắt chữ hoa; bỏ qua đại từ/từ nối viết hoa, tháng, thứ, ngôn ngữ, quốc tịch, tên nước,
+chức danh (dịch "Tiến sĩ", giữ tên). Dịch bình thường trước; chỉ khi tên nào không còn nguyên văn trong bản dịch mới dịch lại câu đó với riêng các tên ấy
+được giữ chỗ (`X<n>`) rồi đặt lại đúng nguyên văn. Lý do: bảo vệ mọi tên làm câu quanh đó kém tự nhiên ("ở Paris" -> "trong Paris", "thành lập Apple" -> "tạo ra Apple").
+
+Đo (24 câu tên riêng mới + 64 câu cũ): 9/24 câu tên riêng đổi, đúng là các câu có tên bị dịch (nay giữ "Silicon Valley", "Harvard University", "United Nations",
+"Eiffel Tower", "Mount Everest/Mount Fuji", "Supreme Court", "Great Wall of China", "Red Cross", "World Health Organization", "White House"), 15 câu còn lại không đổi;
+64 câu cũ chỉ đổi 1 ("API REST" -> "REST API"); độ trễ dịch p50 152 ms -> 146 ms (chỉ câu có tên bị dịch mất mới thêm một lượt dịch ~+130 ms).
+Tên đã có cách gọi quen thuộc trong tiếng Việt muốn dịch (Liên Hợp Quốc, Nhà Trắng, Vạn Lý Trường Thành…) thêm vào mục `translations` của từ điển
+(áp dụng trước bước này), ví dụ `"United Nations": "Liên Hợp Quốc"`. Hạn chế: không có từ điển tên nên từ viết hoa ở đầu câu không nhận diện được trừ khi là cụm
+nhiều từ/camelCase/viết tắt; tên viết thường hoặc Whisper không viết hoa sẽ không được giữ.

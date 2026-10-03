@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import { config } from 'dotenv';
 import { WebSocketGateway } from './gateway/ws-gateway.js';
 import { ProductionProviderFactory, ProviderFactoryStatus } from './provider-factory.js';
+import { emitDiagnostic } from '@vietdub/shared';
 
 // Nạp .env ở root trước để lệnh npm workspace không làm lệch cấu hình local.
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -65,6 +66,19 @@ if (process.argv[1] && process.argv[1].endsWith('server.js')) {
   server.listen(port, '127.0.0.1', () => {
     console.log(`[VietDub Backend] WebSocket AI Gateway listening on port ${port}`);
   });
+  watchEventLoopStalls();
+}
+
+/** Ghi chẩn đoán khi vòng lặp sự kiện bị đứng >1 s (thường do tác vụ nặng chạy cùng luồng); audio gửi tới lúc đó sẽ bị xử lý dồn cục. */
+function watchEventLoopStalls(): void {
+  const interval = 250;
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - interval;
+    last = now;
+    if (lag > 1000) emitDiagnostic('backend', 'event_loop_stall', { lagMs: lag });
+  }, interval).unref();
 }
 
 function isAllowedLocalOrigin(origin?: string): boolean {

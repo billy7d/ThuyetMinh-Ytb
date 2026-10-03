@@ -50,3 +50,12 @@ describe('AudioContext bị Firefox chặn (autoplay policy)', () => {
     expect(classified.hint.toLowerCase()).not.toContain('model');
   });
 });
+
+describe('thông báo giới hạn phiên nói rõ lý do', () => {
+  it('phân biệt hết thời lượng với gửi audio dồn dập', () => {
+    expect(classifyRuntimeError('[CostTracker] Session duration limit of 30 minutes exceeded', 'BUDGET_OR_RATE_LIMIT').message).toContain('thời lượng');
+    const rate = classifyRuntimeError('[CostTracker] Rate limit exceeded: 11 chunks/sec', 'BUDGET_OR_RATE_LIMIT');
+    expect(rate.message).toContain('dồn dập');
+    expect(rate.hint).toContain('MAX_AUDIO_CHUNKS_PER_SECOND');
+  });
+});

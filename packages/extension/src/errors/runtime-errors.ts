@@ -64,6 +64,12 @@ export function classifyRuntimeError(rawError: string, code = ''): ClassifiedErr
   if (upperCode === 'PIPELINE_ERROR' || upperCode === 'STT_ERROR') {
     return { message: 'Một câu không xử lý được và đã được bỏ qua.', hint: 'Phiên vẫn tiếp tục chạy.' };
   }
+  if (upperCode === 'BUDGET_OR_RATE_LIMIT' && lower.includes('duration limit')) {
+    return { message: 'Phiên đã chạy hết thời lượng tối đa cho phép.', hint: 'Bấm Bắt đầu để mở phiên mới (hoặc tăng MAX_SESSION_MINUTES trong .env; 0 = không giới hạn).' };
+  }
+  if (upperCode === 'BUDGET_OR_RATE_LIMIT' && lower.includes('rate limit')) {
+    return { message: 'Trình duyệt gửi audio dồn dập quá mức cho phép.', hint: 'Thường do tab bị làm chậm hoặc xem video tua nhanh. Bấm Bắt đầu để mở phiên mới (hoặc tăng MAX_AUDIO_CHUNKS_PER_SECOND trong .env).' };
+  }
   if (upperCode === 'BUDGET_OR_RATE_LIMIT') {
     return { message: 'Phiên đã chạm giới hạn thời lượng hoặc tốc độ gửi audio.', hint: 'Bấm Bắt đầu để mở phiên mới.' };
   }

@@ -161,7 +161,8 @@ export class WebSocketGateway {
         dependencies.translationEngine,
         dependencies.ttsProvider,
         { sendMessage: serverMsg => this.sendSafe(ws, serverMsg) },
-        dependencies.budgetConfig
+        dependencies.budgetConfig,
+        dependencies.pipelineTiming
       );
       this.activeSessions.set(msg.sessionId, { pipeline, ws });
       pipeline.start();

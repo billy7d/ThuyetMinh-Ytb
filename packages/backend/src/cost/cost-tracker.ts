@@ -2,6 +2,7 @@ import { COST_RATES, SessionMetrics } from '@vietdub/shared';
 
 export interface BudgetConfig {
   maxCostPerSessionUsd: number;
+  /** 0 = không giới hạn thời lượng (chế độ local không tốn phí nên không cần trần). */
   maxSessionMinutes: number;
   rateLimitChunksPerSecond: number;
   /** Local inference is compute-only and must report zero API cost. */
@@ -86,7 +87,7 @@ export class CostTracker {
 
   private checkBudget(): void {
     const metrics = this.getMetrics();
-    if (metrics.elapsedSeconds > this.config.maxSessionMinutes * 60) {
+    if (this.config.maxSessionMinutes > 0 && metrics.elapsedSeconds > this.config.maxSessionMinutes * 60) {
       throw new Error(
         `[CostTracker] Session duration limit of ${this.config.maxSessionMinutes} minutes exceeded`
       );

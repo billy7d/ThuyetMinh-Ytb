@@ -7,17 +7,28 @@ import { TranslationEngine } from './translation/translation-engine.js';
 import { GoogleCloudTTSProvider } from './tts/google-cloud-tts.js';
 import { TTSProvider } from './tts/types.js';
 import { BudgetConfig } from './cost/cost-tracker.js';
+import { PipelineTimingConfig } from './pipeline/realtime-pipeline.js';
 import { LocalModelManager, LocalModelStatus } from './local/model-manager.js';
 import { createLocalProviders, createLocalRuntime, LocalRuntime } from './local/runtime.js';
 import { LocalWorkerStatus } from './local/worker-client.js';
 
 export type RuntimeMode = 'local' | 'cloud';
 
+/** Hành vi cũ: dịch ngay mảnh đủ dài dù chưa trọn câu, không chờ phần nối tiếp. */
+const LEGACY_FRAGMENT_CONFIG = {
+  flushUnpunctuated: true,
+  holdMidSpeech: false,
+  maxPendingDurationMs: 3_000,
+  forceFlushCharacters: 220
+};
+
 export interface ProductionPipelineDependencies {
   sttProvider: STTProvider;
   translationEngine: TranslationEngine;
   ttsProvider: TTSProvider;
   budgetConfig: Partial<BudgetConfig>;
+  /** Ghi đè thời gian giữ mảnh câu của pipeline (xem LOCAL_TRANSLATION_HOLD_FRAGMENTS). */
+  pipelineTiming?: Partial<PipelineTimingConfig>;
 }
 
 export interface ProviderFactoryStatus {
@@ -79,6 +90,9 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
         throw new Error(`Local AI is not ready: ${missing.join(', ')}`);
       }
       runtime ||= createLocalRuntime(env, { cwd });
+      // Mặc định chờ phần nối tiếp của mảnh câu dở để dịch trọn câu (đúng nghĩa hơn, trễ thêm ~1.5 s ở giọng nói dày);
+      // LOCAL_TRANSLATION_HOLD_FRAGMENTS=false quay lại dịch ngay như bản cũ.
+      const holdFragments = env.LOCAL_TRANSLATION_HOLD_FRAGMENTS?.trim().toLowerCase() !== 'false';
       // Adapter dịch và TTS giữ state theo generation; tạo mới cho từng phiên, còn worker/model vẫn dùng chung.
       const providers = createLocalProviders(runtime, env);
       return {
@@ -87,14 +101,22 @@ function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProv
           maxPendingCharacters: positiveInt(env.LOCAL_TRANSLATION_MAX_PENDING_CHARACTERS, 1200),
           maxTranslationCharacters: positiveInt(env.LOCAL_TRANSLATION_MAX_TRANSLATION_CHARACTERS, 2400),
           maxContextItems: positiveInt(env.LOCAL_TRANSLATION_MAX_CONTEXT_ITEMS, 5),
-          validateVietnamese: true
+          validateVietnamese: true,
+          ...(holdFragments ? {} : LEGACY_FRAGMENT_CONFIG)
         }),
         ttsProvider: providers.ttsProvider,
+        pipelineTiming: {
+          ...(holdFragments ? {} : { pendingFlushMs: 150 }),
+          // LOCAL_TTS_STREAM_PARTS=false: đọc nguyên câu dài một đoạn (không đọc từng vế ở dấu phẩy).
+          streamTtsParts: env.LOCAL_TTS_STREAM_PARTS?.trim().toLowerCase() !== 'false'
+        },
         budgetConfig: {
           costMode: 'local',
           maxCostPerSessionUsd: 0,
-          maxSessionMinutes: positiveInt(env.MAX_SESSION_MINUTES, 30),
-          rateLimitChunksPerSecond: positiveInt(env.MAX_AUDIO_CHUNKS_PER_SECOND, 10)
+          // Chạy local không tốn phí: mặc định không giới hạn thời lượng (0) và cho phép gửi dồn tới 200 đoạn/giây
+          // (tab nền bị làm chậm rồi gửi bù, hoặc xem video tua nhanh). Trước đây 30 phút và 10 đoạn/giây làm phiên tự dừng.
+          maxSessionMinutes: nonNegativeInt(env.MAX_SESSION_MINUTES, 0),
+          rateLimitChunksPerSecond: positiveInt(env.MAX_AUDIO_CHUNKS_PER_SECOND, 200)
         }
       };
     },
@@ -244,6 +266,11 @@ function parseRuntimeMode(value: string | undefined): RuntimeMode | null {
 
 function isTrue(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true';
+}
+
+function nonNegativeInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function positiveInt(value: string | undefined, fallback: number): number {

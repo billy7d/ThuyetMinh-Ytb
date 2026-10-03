@@ -16,7 +16,7 @@ import {
 import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
 import { RelaySocket, SocketLike, WS_RELAY_PORT_NAME } from '../relay/ws-relay.js';
 import { isSameVideo } from '../navigation/video-identity.js';
-import { SyncedSubtitleRelease, TtsSubtitleSync } from '../sync/tts-subtitle-sync.js';
+import { SyncedSubtitleRelease, TtsSubtitleSync, ttsSlotMs, ttsTotalDisplayMs } from '../sync/tts-subtitle-sync.js';
 
 interface FirefoxSession {
   sessionId: string;
@@ -696,10 +696,10 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
         for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
         const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
         if (firefoxSession === session && !session.cancelled && message.generation === session.generation && playbackEpochAtDecodeStart === session.playbackEpoch && session.audioMixer) {
-          const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, message.endMs - message.startMs);
+          const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, ttsSlotMs(message));
           if (scheduled) {
             session.syncController?.setActiveTTSSource(scheduled.source);
-            session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs);
+            session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs, ttsTotalDisplayMs(message, scheduled.durationMs));
           } else {
             session.subtitleSync?.ttsDropped(message.segmentId);
           }

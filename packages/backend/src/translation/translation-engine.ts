@@ -1,8 +1,10 @@
 import { ContextManager } from './context-manager.js';
-import { NO_FINAL_PUNCTUATION, SentenceCompletionGuard } from './completion-guard.js';
+import { NO_FINAL_PUNCTUATION, SentenceCompletionGuard, endsWithOpenWord } from './completion-guard.js';
 import { TranslationProvider } from './types.js';
 
 export interface TranslationOptions {
+  /** Đoạn nguồn bị cắt giữa lúc người nói chưa ngừng: coi là chưa trọn câu dù có dấu chấm cuối. */
+  endedMidSpeech?: boolean;
   preserveNumbers?: boolean;
   contextManager?: ContextManager;
   speakerTone?: 'natural' | 'formal' | 'casual';
@@ -30,6 +32,13 @@ export interface TranslationEngineConfig {
   forceFlushCharacters: number;
   /** Mảnh câu cụt đang giữ mà câu kế tiếp bắt đầu sau hơn chừng này (ms video) thì bỏ, không ghép nhầm sang câu khác. */
   maxPendingGapMs: number;
+  /**
+   * Đoạn không có dấu câu cuối nhưng đủ dài vẫn dịch ngay (cách cũ). Mặc định tắt: dịch riêng mảnh dở như
+   * "So instead of trying to fix everything at once" cho ra câu tiếng Việt cụt, làm giọng đọc ngắt sai chỗ và đổi nghĩa.
+   */
+  flushUnpunctuated: boolean;
+  /** Đoạn STT bị cắt giữa lúc người nói chưa ngừng được coi là chưa trọn câu (mặc định bật). */
+  holdMidSpeech: boolean;
 }
 
 const DEFAULT_CONFIG: TranslationEngineConfig = {
@@ -37,9 +46,13 @@ const DEFAULT_CONFIG: TranslationEngineConfig = {
   maxTranslationCharacters: 2400,
   maxContextItems: 5,
   validateVietnamese: true,
-  maxPendingDurationMs: 3_000,
-  forceFlushCharacters: 220,
-  maxPendingGapMs: 3_000
+  // Đủ cho một mảnh bị cắt (≤5 s) cộng phần nối tiếp; câu dài hơn vẫn bị buộc dịch để không treo. Không dài hơn nữa vì giọng đọc
+  // của câu quá dài (>10 s) chiếm CPU lâu làm nhận dạng giọng nói bị quá tải.
+  maxPendingDurationMs: 6_500,
+  forceFlushCharacters: 240,
+  maxPendingGapMs: 3_000,
+  flushUnpunctuated: false,
+  holdMidSpeech: true
 };
 
 /**
@@ -55,6 +68,7 @@ export class TranslationEngine {
   private pendingBuffer = '';
   private pendingStartMs: number | null = null;
   private pendingEndMs = 0;
+  private pendingEndedMidSpeech = false;
   private resetVersion = 0;
 
   constructor(
@@ -98,24 +112,31 @@ export class TranslationEngine {
       // Câu nối tiếp không tới kịp: mảnh cụt đang giữ thuộc về một lượt nói đã qua, không ghép với câu mới.
       this.pendingBuffer = '';
       this.pendingStartMs = null;
+      this.pendingEndedMidSpeech = false;
     }
-    const candidateText = (this.pendingBuffer ? `${this.pendingBuffer} ${incoming}` : incoming).trim();
+    const candidateText = (this.pendingBuffer
+      ? joinFragments(this.pendingBuffer, this.pendingEndedMidSpeech, incoming)
+      : incoming).trim();
     if (candidateText.length > this.config.maxPendingCharacters) {
       this.pendingBuffer = '';
       this.pendingStartMs = null;
       throw new Error(`Transcript segment exceeded ${this.config.maxPendingCharacters} characters before completion`);
     }
 
-    const completionCheck = this.completionGuard.check(candidateText);
+    const completionCheck = options.endedMidSpeech && this.config.holdMidSpeech && !this.completionGuard.isSelfContained(candidateText)
+      ? { isComplete: false, reason: 'Cut while the speaker was still talking' }
+      : this.completionGuard.check(candidateText);
     const pendingSinceMs = this.pendingStartMs ?? startMs;
     const mustFlush = candidateText.length >= this.config.forceFlushCharacters
       || endMs - pendingSinceMs >= this.config.maxPendingDurationMs
-      || (completionCheck.reason === NO_FINAL_PUNCTUATION
+      || (this.config.flushUnpunctuated
+        && completionCheck.reason === NO_FINAL_PUNCTUATION
         && this.completionGuard.isTranslatableWithoutPunctuation(candidateText));
     if (!completionCheck.isComplete && !mustFlush) {
       this.pendingBuffer = candidateText;
       if (this.pendingStartMs === null) this.pendingStartMs = startMs;
       this.pendingEndMs = endMs;
+      this.pendingEndedMidSpeech = Boolean(options.endedMidSpeech) && this.config.holdMidSpeech;
       return {
         sourceText: candidateText,
         translatedText: '',
@@ -159,6 +180,7 @@ export class TranslationEngine {
     const requestResetVersion = this.resetVersion;
     this.pendingBuffer = '';
     this.pendingStartMs = null;
+    this.pendingEndedMidSpeech = false;
 
     const providerResult = await this.provider.translate({
       sourceText: fullSourceText,
@@ -226,7 +248,38 @@ export class TranslationEngine {
     this.resetVersion++;
     this.pendingBuffer = '';
     this.pendingStartMs = null;
+    this.pendingEndedMidSpeech = false;
     this.provider.cancelPending?.();
     this.contextManager.reset();
   }
+}
+
+/** Từ đầu câu có thể viết thường khi nối vào giữa câu ("We" -> "we"); không gồm "I" và tên riêng. */
+const SAFE_LOWERCASE_STARTERS = new Set([
+  'the', 'a', 'an', 'we', 'you', 'they', 'it', 'he', 'she', 'this', 'that', 'these', 'those', 'and', 'but', 'so', 'if',
+  'when', 'then', 'to', 'of', 'in', 'on', 'for', 'with', 'as', 'what', 'how', 'because', 'which', 'who', 'there', 'our', 'your', 'their', 'even', 'also', 'just', 'still', 'now', 'or', 'not', 'my'
+]);
+
+/**
+ * Nối mảnh câu đang giữ với đoạn nối tiếp.
+ * - Mảnh bị cắt giữa lúc đang nói: dấu chấm cuối do Whisper tự thêm là sai, bỏ nó.
+ * - Mảnh không có dấu câu cuối (người nói ngừng giữa câu): thêm dấu phẩy để model dịch thấy mệnh đề phụ + mệnh đề chính.
+ * Chữ đầu đoạn sau được viết thường nếu an toàn, để thành một câu liền mạch thay vì hai câu cụt.
+ */
+export function joinFragments(previous: string, previousEndedMidSpeech: boolean, next: string): string {
+  let head = previous.trim();
+  let tail = next.trim();
+  let separator = ' ';
+  if (previousEndedMidSpeech) {
+    head = head.replace(/\s*(?:\.{3}|…|\.)\s*$/, '');
+  } else if (!/[.!?…,;:)"”']$/.test(head) && !endsWithOpenWord(head)) {
+    separator = ', ';
+  }
+  if (previousEndedMidSpeech || separator === ', ') {
+    const first = tail.split(/\s+/)[0]?.replace(/[^A-Za-z']/g, '');
+    if (first && first !== first.toLowerCase() && SAFE_LOWERCASE_STARTERS.has(first.toLowerCase())) {
+      tail = tail.charAt(0).toLowerCase() + tail.slice(1);
+    }
+  }
+  return `${head}${separator}${tail}`;
 }

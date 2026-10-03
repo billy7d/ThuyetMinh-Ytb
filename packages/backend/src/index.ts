@@ -25,3 +25,4 @@ export * from './local/local-translation.js';
 export * from './local/local-tts.js';
 export * from './local/runtime.js';
 export * from './server.js';
+export * from './tts/split-text.js';

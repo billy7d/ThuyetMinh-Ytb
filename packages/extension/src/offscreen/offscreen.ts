@@ -13,7 +13,7 @@ import {
   emitDiagnostic
 } from '@vietdub/shared';
 import { SESSION_READY_TIMEOUT_MS, isRetryableServerError } from '../errors/runtime-errors.js';
-import { TtsSubtitleSync } from '../sync/tts-subtitle-sync.js';
+import { TtsSubtitleSync, ttsSlotMs, ttsTotalDisplayMs } from '../sync/tts-subtitle-sync.js';
 
 interface RuntimeResponse {
   success: boolean;
@@ -412,8 +412,8 @@ async function handleServerMessage(session: OffscreenSession, message: ServerMes
       for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
       const audioBuffer = await session.audioCtx.decodeAudioData(bytes.buffer);
       if (isCurrent(session) && message.generation === session.generation && playbackEpochAtDecodeStart === session.playbackEpoch && session.audioMixer) {
-        const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, message.endMs - message.startMs);
-        if (scheduled) session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs);
+        const scheduled = session.audioMixer.scheduleTTSBuffer(audioBuffer, undefined, ttsSlotMs(message));
+        if (scheduled) session.subtitleSync?.ttsScheduled(message.segmentId, scheduled.delayMs, scheduled.durationMs, ttsTotalDisplayMs(message, scheduled.durationMs));
         else session.subtitleSync?.ttsDropped(message.segmentId);
         emitDiagnostic('chrome_tts', 'decoded_and_played', {
           sessionRef: diagnosticSessionRef(session.sessionId),

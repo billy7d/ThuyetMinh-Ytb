@@ -14,6 +14,7 @@ import {
 import { STTProvider, STTResult, STTStreamError, STTStreamSession } from '../stt/types.js';
 import { TranslationEngine } from '../translation/translation-engine.js';
 import { TTSProvider } from '../tts/types.js';
+import { splitForStreaming } from '../tts/split-text.js';
 import { CostTracker, BudgetConfig } from '../cost/cost-tracker.js';
 
 export interface PipelineCallbacks {
@@ -28,18 +29,25 @@ export interface PipelineTimingConfig {
   /** Khoảng cách tối thiểu giữa hai cảnh báo không nghiêm trọng cùng mã gửi cho extension (ms). */
   warningIntervalMs: number;
   /**
-   * Mảnh câu chưa trọn được giữ chờ câu nối tiếp; nếu không có câu mới trong khoảng này (ms)
-   * thì dịch luôn mảnh đó để phụ đề không treo tới lượt nói sau. Đo thực tế: lượt nói sau luôn tới
-   * muộn hơn ≥1 s nên chỉ ghép các câu Whisper trả về cùng một lần; chờ lâu hơn chỉ làm tăng độ trễ.
+   * Mảnh câu chưa trọn (không có dấu câu cuối, hoặc bị cắt giữa lúc người nói chưa ngừng) được giữ chờ phần nối tiếp;
+   * nếu không có đoạn mới trong khoảng này (ms) thì dịch luôn mảnh đó để phụ đề không treo. Phải đủ dài để đoạn nối tiếp
+   * (tối đa ~3.5 s âm thanh + thời gian nhận dạng) kịp tới; dịch riêng mảnh dở làm giọng đọc ngắt sai chỗ và đổi nghĩa
+   * ("every | time we simplified" -> "…là" + "thời gian chúng tôi đơn giản hóa").
    */
   pendingFlushMs: number;
+  /** Câu dài được tổng hợp và phát từng vế (ở dấu phẩy) để giọng đọc bắt đầu sớm hơn. */
+  streamTtsParts: boolean;
+  /** Câu thuyết minh ngắn hơn ngưỡng này (ký tự) đọc nguyên câu. */
+  streamPartMinChars: number;
 }
 
 const DEFAULT_TIMING: PipelineTimingConfig = {
   ttsMaxLagMs: 6_000,
   maxPendingTts: 3,
   warningIntervalMs: 10_000,
-  pendingFlushMs: 150
+  pendingFlushMs: 4_000,
+  streamTtsParts: true,
+  streamPartMinChars: 90
 };
 
 interface TtsJob {
@@ -305,7 +313,9 @@ export class RealtimePipeline {
     });
 
     const translationStartedAt = Date.now();
-    const transResult = await this.translationEngine.translate(sourceText, result.startMs, result.endMs);
+    const transResult = await this.translationEngine.translate(
+      sourceText, result.startMs, result.endMs, result.endedMidSpeech ? { endedMidSpeech: true } : {}
+    );
     const translationDurationMs = Date.now() - translationStartedAt;
 
     if (transResult.buffered || !transResult.translatedText) {
@@ -523,19 +533,44 @@ export class RealtimePipeline {
     }
 
     const ttsStartedAt = Date.now();
-    const ttsResult = await this.ttsEngine.synthesize({
-      segmentId: job.segmentId,
-      text: job.text,
-      generation: job.generation,
-      startMs: job.startMs,
-      endMs: job.endMs
-    });
-    const ttsLatencyMs = Date.now() - ttsStartedAt;
-
-    await previous;
-    if (!this.isJobCurrent(job)) return;
-    if (!ttsResult.cancelled && ttsResult.audioBase64) {
-      this.costTracker.recordTTS(job.text.length);
+    const parts = this.timing.streamTtsParts
+      ? splitForStreaming(job.text, { minTotalChars: this.timing.streamPartMinChars })
+      : [job.text];
+    const totalChars = Math.max(1, parts.reduce((sum, part) => sum + part.length, 0));
+    for (let index = 0; index < parts.length; index += 1) {
+      const ttsResult = await this.ttsEngine.synthesize({
+        segmentId: job.segmentId,
+        text: parts[index],
+        generation: job.generation,
+        startMs: job.startMs,
+        endMs: job.endMs
+      });
+      const isFirst = index === 0;
+      const ttsLatencyMs = Date.now() - ttsStartedAt;
+      // Giữ đúng thứ tự giữa các câu: câu sau (tổng hợp xong sớm hơn) chỉ gửi sau khi câu trước đã gửi hết các vế.
+      if (isFirst) await previous;
+      if (!this.isJobCurrent(job)) return;
+      if (ttsResult.cancelled || !ttsResult.audioBase64) {
+        emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
+          sessionRef: this.sessionRef,
+          segmentId: job.segmentId,
+          generation: job.generation,
+          cancelled: ttsResult.cancelled,
+          hasAudio: Boolean(ttsResult.audioBase64),
+          part: index
+        });
+        if (isFirst) {
+          if (job.subtitlePending && !ttsResult.cancelled) this.emitSubtitle(job);
+          this.emitLatency(job, ttsLatencyMs);
+        }
+        return;
+      }
+      this.costTracker.recordTTS(parts[index].length);
+      const share = parts[index].length / totalChars;
+      // Ước tính thời lượng cả câu từ vế đầu (cùng tốc độ đọc) để phụ đề không biến mất giữa chừng.
+      const totalDurationMs = isFirst && parts.length > 1
+        ? Math.round(ttsResult.durationMs / Math.max(0.05, parts[0].length / totalChars))
+        : undefined;
       const ttsMsg: TTSChunkMessage = {
         type: 'TTS_CHUNK',
         sessionId: this.sessionId,
@@ -549,10 +584,11 @@ export class RealtimePipeline {
         generation: job.generation,
         translatedText: job.text,
         startMs: job.startMs,
-        endMs: job.endMs
+        endMs: job.endMs,
+        ...(parts.length > 1 ? { partIndex: index, partCount: parts.length, slotShare: share, ...(totalDurationMs ? { totalDurationMs } : {}) } : {})
       };
       // Phụ đề đi ngay trước giọng đọc cùng segmentId; bên phát hiển thị phụ đề khi giọng đọc bắt đầu.
-      if (job.subtitlePending) this.emitSubtitle(job, { durationMs: ttsResult.durationMs });
+      if (isFirst && job.subtitlePending) this.emitSubtitle(job, { durationMs: totalDurationMs ?? ttsResult.durationMs });
       this.callbacks.sendMessage(ttsMsg);
       emitDiagnostic('pipeline', 'tts_chunk_emitted', {
         sessionRef: this.sessionRef,
@@ -560,19 +596,13 @@ export class RealtimePipeline {
         generation: job.generation,
         audioBytesApprox: Math.floor((ttsResult.audioBase64.length * 3) / 4),
         durationMs: ttsResult.durationMs,
-        textLength: job.text.length
+        textLength: parts[index].length,
+        part: index,
+        partCount: parts.length
       });
-    } else {
-      emitDiagnostic('pipeline', 'tts_chunk_suppressed', {
-        sessionRef: this.sessionRef,
-        segmentId: job.segmentId,
-        generation: job.generation,
-        cancelled: ttsResult.cancelled,
-        hasAudio: Boolean(ttsResult.audioBase64)
-      });
-      if (job.subtitlePending && !ttsResult.cancelled) this.emitSubtitle(job);
+      // Độ trễ ghi nhận là thời điểm có tiếng đầu tiên (vế đầu), không phải lúc xong cả câu.
+      if (isFirst) this.emitLatency(job, ttsLatencyMs);
     }
-    this.emitLatency(job, ttsLatencyMs);
   }
 
   private isJobCurrent(job: TtsJob): boolean {

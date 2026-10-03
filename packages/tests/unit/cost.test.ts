@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CostTracker } from '@vietdub/backend';
 
 describe('CostTracker & Budget Guard', () => {
@@ -50,5 +50,32 @@ describe('CostTracker & Budget Guard', () => {
     }
     // 11th chunk within the same second must throw rate limit error
     expect(() => tracker.recordAudioChunk(0.25)).toThrow(/Rate limit exceeded/);
+  });
+});
+
+describe('giới hạn phiên chế độ local', () => {
+  it('maxSessionMinutes = 0 nghĩa là không giới hạn thời lượng', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new CostTracker('unlimited', { costMode: 'local', maxCostPerSessionUsd: 0, maxSessionMinutes: 0, rateLimitChunksPerSecond: 40 });
+      vi.advanceTimersByTime(5 * 60 * 60 * 1000);
+      expect(() => tracker.recordAudioChunk(0.25)).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('vẫn chặn khi có giới hạn thời lượng và gửi dồn vượt ngưỡng', () => {
+    vi.useFakeTimers();
+    try {
+      const limited = new CostTracker('limited', { costMode: 'local', maxCostPerSessionUsd: 0, maxSessionMinutes: 30 });
+      vi.advanceTimersByTime(31 * 60 * 1000);
+      expect(() => limited.recordAudioChunk(0.25)).toThrow(/duration limit/);
+      const burst = new CostTracker('burst', { costMode: 'local', maxCostPerSessionUsd: 0, maxSessionMinutes: 0, rateLimitChunksPerSecond: 40 });
+      for (let index = 0; index < 40; index += 1) burst.recordAudioChunk(0.25);
+      expect(() => burst.recordAudioChunk(0.25)).toThrow(/Rate limit/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
