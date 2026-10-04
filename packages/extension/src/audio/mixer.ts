@@ -253,6 +253,25 @@ export class AudioMixer {
    * Tốc độ cho cả câu đọc dạng luồng, quyết định một lần ở đoạn đầu (chưa biết câu dài bao nhiêu nên dùng thời lượng ước tính):
    * lớn hơn của tốc độ theo hàng chờ và tốc độ để vừa khung thời gian câu gốc.
    */
+  /**
+   * Chế độ đọc trước theo phụ đề: phát buffer (đã co giãn sẵn) sau `delaySec` giây, bắt đầu từ `offsetSec` trong buffer
+   * (tiếp tục câu giữa chừng sau khi tạm dừng/tua). Không qua hàng chờ: thời điểm phát do mốc trên video quyết định.
+   */
+  scheduleTTSAt(audioBuffer: AudioBuffer, delaySec: number, offsetSec = 0, playbackRate = 1): ScheduledTTS | null {
+    if (this.disconnected || offsetSec >= audioBuffer.duration) return null;
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    if (source.playbackRate) source.playbackRate.value = playbackRate;
+    source.connect(this.ttsGainNode);
+    this.ttsSources.add(source);
+    source.onended = () => this.ttsSources.delete(source);
+    const startAt = this.audioCtx.currentTime + Math.max(0, delaySec);
+    source.start(startAt, Math.max(0, offsetSec));
+    const durationSec = (audioBuffer.duration - Math.max(0, offsetSec)) / playbackRate;
+    this.nextTTSStartTime = Math.max(this.nextTTSStartTime, startAt + durationSec);
+    return { source, delayMs: Math.round(Math.max(0, delaySec) * 1000), durationMs: Math.round(durationSec * 1000) };
+  }
+
   chooseTtsRate(estimatedAudioMs: number, sourceDurationMs: number | undefined): number {
     return Math.max(ttsPlaybackRateForBacklog(this.getTTSBacklogMs()), ttsPlaybackRateForSlot(estimatedAudioMs, sourceDurationMs));
   }

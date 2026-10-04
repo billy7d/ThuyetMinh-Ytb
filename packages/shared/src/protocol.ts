@@ -6,6 +6,7 @@ export type ClientMessageType =
   | 'VIDEO_STATE_UPDATE'
   | 'SEEK_EVENT'
   | 'MODE_CHANGE'
+  | 'SCRIPT_SEGMENTS'
   | 'SESSION_STOP';
 
 export type ServerMessageType =
@@ -61,6 +62,24 @@ export interface ModeChangeMessage extends BaseMessage {
   mode: OperationMode;
 }
 
+/** Một câu lời thoại lấy từ phụ đề có sẵn của video (mốc thời gian trên video, ms). */
+export interface ScriptSegment {
+  segmentId: string;
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Chế độ đọc trước theo phụ đề: extension gửi các câu sắp tới (đã có sẵn lời thoại và mốc thời gian), backend dịch và
+ * tổng hợp giọng trước rồi trả TTS_CHUNK/SUBTITLE_EVENT có `scheduled: true` để extension phát đúng lúc câu gốc bắt đầu.
+ */
+export interface ScriptSegmentsMessage extends BaseMessage {
+  type: 'SCRIPT_SEGMENTS';
+  generation: number;
+  segments: ScriptSegment[];
+}
+
 export interface SessionStopMessage extends BaseMessage {
   type: 'SESSION_STOP';
   reason?: string;
@@ -72,6 +91,7 @@ export type ClientMessage =
   | VideoStateUpdateMessage
   | SeekEventMessage
   | ModeChangeMessage
+  | ScriptSegmentsMessage
   | SessionStopMessage;
 
 // Server Messages
@@ -133,6 +153,8 @@ export interface TTSChunkMessage extends BaseMessage {
   slotShare?: number;
   /** Giọng đọc dạng luồng (mimeType audio/pcm, PCM 16-bit little-endian mono): đoạn cuối cùng, audioBase64 có thể rỗng. */
   partFinal?: boolean;
+  /** Chế độ đọc trước theo phụ đề: phát đúng lúc video tới startMs (không phát ngay). Cả câu trong một đoạn. */
+  scheduled?: boolean;
 }
 
 export interface SubtitleEventMessage extends BaseMessage {
@@ -150,6 +172,8 @@ export interface SubtitleEventMessage extends BaseMessage {
   syncWithTts?: boolean;
   /** Thời lượng giọng đọc (ms) khi syncWithTts. */
   ttsDurationMs?: number;
+  /** Chế độ đọc trước theo phụ đề: hiện khi video tới startMs. */
+  scheduled?: boolean;
 }
 
 export interface LatencyMetricMessage extends BaseMessage {

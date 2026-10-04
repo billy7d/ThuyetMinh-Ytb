@@ -112,6 +112,31 @@ await build({
   }
 });
 
+// 4b. Firefox: script chạy trong trang YouTube (world MAIN) để lấy phụ đề cho chế độ đọc trước.
+if (isFirefox) {
+  console.log(`[Extension Build] Step 3b: Building YouTube captions page script...`);
+  await build({
+    configFile: false,
+    build: {
+      outDir: path.resolve(outDir, 'content'),
+      emptyOutDir: false,
+      target: 'esnext',
+      lib: {
+        entry: path.resolve(__dirname, 'src/captions/youtube-captions-main.ts'),
+        name: 'VietDubYoutubeCaptions',
+        formats: ['iife'],
+        fileName: () => 'youtube-captions.js'
+      },
+      rollupOptions: {
+        output: {
+          extend: true,
+          inlineDynamicImports: true
+        }
+      }
+    }
+  });
+}
+
 // 5. Copy manifest sau cùng để artifact luôn khớp target.
 const manifestSource = isFirefox ? 'manifest.firefox.json' : 'manifest.chrome.json';
 const targetManifest = path.resolve(outDir, 'manifest.json');

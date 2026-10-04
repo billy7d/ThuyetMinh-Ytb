@@ -972,6 +972,7 @@ class TtsRuntime(RuntimeBase):
                     for value in presets.values()
                     if isinstance(value, dict) and requested in (value.get("aliases") or [])
                 ),
+                None,
             )
         if selected is None:
             selected = presets.get(default_voice)

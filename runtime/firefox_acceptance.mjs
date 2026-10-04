@@ -130,6 +130,12 @@ async function main() {
   const report = { startedAt: new Date().toISOString(), timeline: [], subtitleTexts: 0, contentConsole: [] };
   try {
     const context = await browser.newContext();
+    // Firefox điều khiển tự động (navigator.webdriver) bị YouTube trả phụ đề rỗng, kể cả cho trình phát: --captions-fixture <file json3>
+    // trả phụ đề thật đã lưu của video đó để thử chế độ đọc trước theo phụ đề (các bước còn lại chạy thật).
+    if (args.get('--captions-fixture')) {
+      const fixture = await readFile(args.get('--captions-fixture'), 'utf8');
+      await context.route(/\/api\/timedtext/, route => route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: fixture }));
+    }
     const rdp = await openRdp(RDP_PORT);
     report.addonId = await installTemporaryAddon(rdp, extensionPath);
     const evaluate = await backgroundEvaluator(rdp, report.addonId);
@@ -266,6 +272,7 @@ async function main() {
   }
   report.completedAt = new Date().toISOString();
   report.sync = summarizeSync(report.diag || []);
+  report.script = summarizeScript(report.diag || []);
   report.verdict = report.timeline.some(entry => entry.state === 'ERROR') || report.subtitleTexts === 0 ||
     (report.subtitlesAfterReload !== undefined && report.subtitlesAfterReload === 0) ? 'FAIL' : 'PASS';
   await mkdir(evidenceRoot, { recursive: true });
@@ -284,6 +291,27 @@ function percentile(values, p) {
  * Lệch phụ đề so với giọng đọc (cùng segmentId) và độ trễ so với câu gốc trên video.
  * subtitleMinusTtsMs > 0: phụ đề hiện SAU giọng đọc; < 0: phụ đề đi TRƯỚC giọng đọc.
  */
+/** Chế độ đọc trước theo phụ đề: giọng bắt đầu lệch bao nhiêu so với câu gốc, giọng tới sớm bao lâu trước câu. */
+function summarizeScript(diag) {
+  const stats = raw => {
+    const values = raw.filter(Number.isFinite);
+    return { n: values.length, p50: percentile(values, 50), p95: percentile(values, 95), max: values.length ? Math.max(...values) : null, min: values.length ? Math.min(...values) : null };
+  };
+  const scheduled = diag.filter(item => item.event === 'firefox_script.scheduled').map(item => item.payload || {});
+  const ready = diag.filter(item => item.event === 'firefox_script.audio_ready').map(item => item.payload || {});
+  if (scheduled.length === 0 && ready.length === 0) return undefined;
+  return {
+    started: diag.find(item => item.event === 'firefox_script.started')?.payload,
+    switchedFromStt: diag.some(item => item.event === 'firefox_script.switched_from_stt'),
+    scheduled: scheduled.length,
+    missed: diag.filter(item => item.event === 'firefox_script.audio_missed').length,
+    startOffsetMs: stats(scheduled.map(item => item.startOffsetMs)),
+    audioLeadMs: stats(ready.map(item => item.leadMs)),
+    rate: stats(ready.map(item => item.rate)),
+    stretchMs: stats(ready.map(item => item.stretchMs))
+  };
+}
+
 function summarizeSync(diag) {
   // segmentId lặp lại giữa các phiên (trước/sau tải lại trang): ghép với lần phát gần nhất cùng segmentId.
   const ttsStart = [];

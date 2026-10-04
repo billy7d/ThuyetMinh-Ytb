@@ -621,6 +621,22 @@ class TtsStreamTests(unittest.TestCase):
         self.assertEqual(emitted[-1].get("ok"), False)
 
 
+class VoiceSelectionTests(unittest.TestCase):
+    def test_unknown_voice_falls_back_to_the_default_instead_of_crashing(self) -> None:
+        voices = {
+            "default_voice": "Minh Đức",
+            "presets": {
+                "Minh Đức": {"speaker_emb": [1.0], "codes": [1]},
+                "Ngọc Huyền": {"speaker_emb": [2.0], "codes": [2], "aliases": ["huyen"]},
+            },
+        }
+        select = lambda name: worker.TtsRuntime._select_voice(voices, name, np, lambda codes: codes)[0][0]
+        # Tên giọng hỏng mã hóa (ví dụ truyền qua PowerShell) từng làm worker sập vì next() không có giá trị mặc định.
+        self.assertEqual(select("Minh ??c"), 1.0)
+        self.assertEqual(select("huyen"), 2.0)
+        self.assertEqual(select("Ngọc Huyền"), 2.0)
+
+
 class TtsGpuOptionTests(unittest.TestCase):
     def test_only_the_heavy_sessions_are_eligible_for_the_gpu(self) -> None:
         for name in ("vieneu_prefill.onnx", "vieneu_decode_step.onnx", "moss_audio_tokenizer_decode_full.onnx", "moss_audio_tokenizer_decode_step.onnx"):

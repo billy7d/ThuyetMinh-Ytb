@@ -14,6 +14,9 @@ import { createProductionProviderFactory, ProductionProviderFactory } from '../p
 
 const MAX_SESSION_ID_LENGTH = 128;
 const MAX_PCM_FRAME_BYTES = 192 * 1024;
+/** SCRIPT_SEGMENTS: extension gửi tối đa 24 câu mỗi lần; mỗi câu phụ đề tối đa vài trăm ký tự. */
+const MAX_SCRIPT_SEGMENTS = 64;
+const MAX_SCRIPT_TEXT_CHARS = 1_000;
 
 interface ActiveSession {
   pipeline: RealtimePipeline;
@@ -252,6 +255,12 @@ export class WebSocketGateway {
         break;
       }
 
+      case 'SCRIPT_SEGMENTS': {
+        const session = this.activeSessions.get(msg.sessionId);
+        if (session?.ws === ws) session.pipeline.handleScriptSegments(msg.segments, msg.generation);
+        break;
+      }
+
       case 'MODE_CHANGE': {
         const session = this.activeSessions.get(msg.sessionId);
         if (session?.ws === ws) session.pipeline.setMode(msg.mode);
@@ -315,6 +324,7 @@ function validateClientMessage(msg: ClientMessage): string | null {
     'AUDIO_CHUNK',
     'SEEK_EVENT',
     'MODE_CHANGE',
+    'SCRIPT_SEGMENTS',
     'VIDEO_STATE_UPDATE',
     'SESSION_STOP'
   ].includes(msg.type)) return 'type không được hỗ trợ.';
@@ -339,6 +349,18 @@ function validateClientMessage(msg: ClientMessage): string | null {
   if (msg.type === 'SEEK_EVENT') {
     if (![msg.fromMs, msg.toMs, msg.generation].every(Number.isFinite)) return 'Thông tin seek không hợp lệ.';
     if (msg.fromMs < 0 || msg.toMs < 0 || msg.generation < 0) return 'Thông tin seek không hợp lệ.';
+  }
+  if (msg.type === 'SCRIPT_SEGMENTS') {
+    if (!Number.isSafeInteger(msg.generation) || msg.generation < 0) return 'generation không hợp lệ.';
+    if (!Array.isArray(msg.segments) || msg.segments.length === 0 || msg.segments.length > MAX_SCRIPT_SEGMENTS) return 'segments không hợp lệ.';
+    for (const segment of msg.segments) {
+      if (!segment || typeof segment !== 'object') return 'segments không hợp lệ.';
+      if (typeof segment.segmentId !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(segment.segmentId)) return 'segmentId không hợp lệ.';
+      if (typeof segment.text !== 'string' || !segment.text.trim() || segment.text.length > MAX_SCRIPT_TEXT_CHARS) return 'text không hợp lệ.';
+      if (!Number.isFinite(segment.startMs) || !Number.isFinite(segment.endMs) || segment.startMs < 0 || segment.endMs < segment.startMs) {
+        return 'Mốc thời gian câu không hợp lệ.';
+      }
+    }
   }
   if (msg.type === 'MODE_CHANGE' && !['subtitle_only', 'dubbing_only', 'dubbing_and_subtitle'].includes(msg.mode)) {
     return 'mode không hợp lệ.';

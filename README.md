@@ -178,6 +178,12 @@ Lệnh này build bản Firefox, kiểm tra bằng bộ kiểm tra của AMO, g�
 5. Đợi vài giây cho tới khi trạng thái là **Đang thuyết minh**. Bạn có thể đóng popup, phiên vẫn chạy.
 6. Muốn dừng: mở popup, bấm nút đỏ **Dừng thuyết minh**. Âm thanh gốc của video được trả lại như cũ.
 
+> **YouTube có phụ đề tiếng Anh do người làm (Firefox):** extension tự lấy phụ đề đó, dịch và đọc trước khoảng 45 giây, rồi phát giọng Việt
+> **đúng lúc câu gốc bắt đầu** (không phải chờ nghe hết câu như bình thường). Không cần bật CC; extension tự trả nút CC về như cũ.
+> Video chỉ có phụ đề tự động hoặc không có phụ đề thì vẫn nhận dạng giọng nói như trước (phụ đề tự động không có dấu câu, ghép câu sai làm dịch sai nghĩa).
+> Nếu lúc bấm Bắt đầu đang chạy quảng cáo, extension thuyết minh bằng nhận dạng giọng nói trước rồi tự chuyển khi lấy được phụ đề.
+> Chrome chưa có chế độ này.
+
 ### Gặp lỗi? Tra nhanh ở đây
 
 | Bạn thấy | Nguyên nhân | Cách xử lý |

@@ -512,3 +512,26 @@ Cả backend (Whisper + vinai + TTS GPU): VRAM đỉnh 3.47 GB / 6.14 GB (gồm 
 | Lỗi | 0 | 0 |
 
 Chưa nghe riêng chất lượng giọng GPU (cùng mô hình, chỉ khác nơi chạy; kết quả số học có thể lệch rất nhỏ).
+
+## Đọc trước theo phụ đề YouTube (2026-10-04)
+
+Độ trễ còn lại của chế độ nhận dạng giọng nói (~1.3 s sau khi câu gốc kết thúc) chủ yếu do phải nghe hết câu rồi mới nhận dạng. Với video YouTube có
+phụ đề tiếng Anh do người làm, extension (Firefox) lấy sẵn lời thoại kèm mốc thời gian, gửi trước các câu trong 45 s tới (`SCRIPT_SEGMENTS`), backend
+dịch (có ngữ cảnh, không giữ mảnh câu) và tổng hợp cả câu (`ScriptPipeline`), extension co giãn giữ cao độ cho vừa khung tới câu kế tiếp (tối đa 1.3x)
+và phát đúng lúc video tới mốc bắt đầu câu (`ScriptDubPlayer`); tạm dừng/tua thì đọc tiếp đúng chỗ, câu đã có giọng không tổng hợp lại.
+
+Lấy phụ đề: YouTube trả rỗng nếu thiếu mã `pot` mà chỉ trình phát có, nên một content script `world: MAIN` (document_start, chỉ youtube.com) bắt
+đường dẫn /api/timedtext trình phát tự gọi; nếu chưa có thì chờ hết quảng cáo rồi buộc trình phát tải (chọn rãnh, hoặc tạm chuyển rãnh nếu đã tải sẵn),
+trả lại rãnh và nút CC như cũ, rồi tải rãnh tiếng Anh do người làm (đường dẫn riêng của rãnh + pot). Phụ đề tự động không dùng: ghép câu theo khoảng
+ngừng cho ranh giới sai ("…one is the extraordinary." + "Evidence of…"), dịch sai nghĩa. Chờ phụ đề tối đa 4 s lúc bắt đầu, lâu hơn thì chạy nhận dạng
+giọng nói trước rồi tự chuyển (tua tại chỗ để backend bỏ việc cũ).
+
+Đo:
+- Ghép câu trên phụ đề thật (TED, Ken Robinson, 19 phút): 272 câu, trung vị 2.6 s, dài nhất 15.8 s; tách đúng câu, giữ "Mr."/"U.S.", bỏ "(Laughter)".
+- Firefox 155 (Playwright) trên trang YouTube thật, backend thử TTS CPU: 7/7 câu giọng bắt đầu lệch **0 ms** so với câu gốc (trước: ~1.3 s sau khi câu
+  kết thúc), 0 câu lỡ, giọng xong trước 20–44 s, co giãn ≤12 ms/câu, tốc độ 1.0x (trung vị), tối đa 1.3x.
+- Hạn chế môi trường thử: Firefox điều khiển tự động (`navigator.webdriver`) bị YouTube trả phụ đề rỗng kể cả cho trình phát (đã kiểm riêng không có
+  extension) và tự dừng video sau ~45 s; bài đo dùng `--captions-fixture` trả phụ đề thật đã lưu của video đó cho /api/timedtext, các bước khác chạy thật.
+  Bước lấy phụ đề với `pot` đã kiểm trên trình duyệt không tự động (khung trình duyệt của ứng dụng): tải được cả rãnh người làm và tự động.
+- Chưa kiểm: Firefox thật của người dùng (cần ký lại), tạm dừng/tua trong trình duyệt thật (đã có unit test), video tốc độ khác 1x (giọng được phát
+  nhanh theo bằng playbackRate nên cao độ đổi), Chrome (chưa hỗ trợ).

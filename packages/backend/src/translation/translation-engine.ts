@@ -148,6 +148,17 @@ export class TranslationEngine {
     return this.translateNow(candidateText, this.pendingStartMs ?? startMs, endMs, options, startedAt);
   }
 
+  /** Dịch ngay một câu đã trọn (câu ghép từ phụ đề có sẵn): không giữ chờ mảnh nối tiếp, vẫn dùng ngữ cảnh các câu trước. */
+  async translateComplete(text: string, startMs: number, endMs: number, options: TranslationOptions = {}): Promise<TranslationResult> {
+    const startedAt = Date.now();
+    const sourceText = text.trim();
+    if (!sourceText) return { sourceText: '', translatedText: '', buffered: true, latencyMs: 0 };
+    if (sourceText.length > this.config.maxPendingCharacters) {
+      throw new Error(`Transcript segment exceeded ${this.config.maxPendingCharacters} characters before completion`);
+    }
+    return this.translateNow(sourceText, startMs, endMs, options, startedAt);
+  }
+
   hasPending(): boolean {
     return this.pendingBuffer.length > 0;
   }

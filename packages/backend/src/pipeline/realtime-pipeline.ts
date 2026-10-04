@@ -1,5 +1,6 @@
 import {
   OperationMode,
+  ScriptSegment,
   ServerMessage,
   TranscriptInterimMessage,
   TranscriptFinalMessage,
@@ -16,6 +17,7 @@ import { TranslationEngine } from '../translation/translation-engine.js';
 import { TTSProvider } from '../tts/types.js';
 import { splitForStreaming } from '../tts/split-text.js';
 import { CostTracker, BudgetConfig } from '../cost/cost-tracker.js';
+import { ScriptPipeline } from './script-pipeline.js';
 
 export interface PipelineCallbacks {
   sendMessage: (msg: ServerMessage) => void;
@@ -113,6 +115,8 @@ export class RealtimePipeline {
   private readonly costTracker: CostTracker;
   private readonly sessionRef: string;
   private readonly timing: PipelineTimingConfig;
+  /** Chế độ đọc trước theo phụ đề; tạo khi extension gửi SCRIPT_SEGMENTS đầu tiên. */
+  private scriptPipeline: ScriptPipeline | null = null;
 
   constructor(
     private readonly sessionId: string,
@@ -135,6 +139,24 @@ export class RealtimePipeline {
     this.isActive = true;
     emitDiagnostic('pipeline', 'started', { sessionRef: this.sessionRef, mode: this.mode });
     this.openSttStream();
+  }
+
+  /** Chế độ đọc trước theo phụ đề: các câu sắp tới (lời thoại + mốc video) được dịch và tổng hợp trước. */
+  handleScriptSegments(segments: ScriptSegment[], generation: number): void {
+    if (!this.isActive) return;
+    this.scriptPipeline ??= new ScriptPipeline({
+      sessionId: this.sessionId,
+      sessionRef: this.sessionRef,
+      translationEngine: this.translationEngine,
+      ttsEngine: this.ttsEngine,
+      costTracker: this.costTracker,
+      sendMessage: message => this.callbacks.sendMessage(message),
+      getMode: () => this.mode,
+      getGeneration: () => this.generation,
+      isActive: () => this.isActive,
+      reportError: (code, message) => this.handleError(code, message, false)
+    });
+    this.scriptPipeline.enqueue(segments, generation);
   }
 
   handleAudioChunk(pcmData: Buffer, videoTimeMs: number): void {
@@ -753,6 +775,7 @@ export class RealtimePipeline {
     this.ttsQueue.length = 0;
     this.closeSttStream();
     this.openSttStream();
+    this.scriptPipeline?.reset(this.generation);
     emitDiagnostic('pipeline', 'generation_changed', {
       sessionRef: this.sessionRef,
       generation: this.generation
@@ -840,5 +863,6 @@ export class RealtimePipeline {
     this.processedFinalKeys.clear();
     this.audioEndWallClockByVideoMs.clear();
     this.closeSttStream();
+    this.scriptPipeline?.reset(this.generation);
   }
 }
