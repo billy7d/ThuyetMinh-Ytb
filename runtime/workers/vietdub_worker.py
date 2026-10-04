@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from punctuation import Punctuator, segment_words
 from text_rules import (
     MAX_TERM_TRANSLATIONS,
     apply_pronunciations,
@@ -744,6 +745,10 @@ class SttRuntime(RuntimeBase):
             raise RuntimeError("STT inference failed") from exc
 
 
+# Một yêu cầu thêm dấu câu: extension gửi phụ đề tự động theo từng phần (khoảng 10 phút lời nói mỗi phần).
+MAX_PUNCTUATE_WORDS = 3_000
+
+
 class TranslationRuntime(RuntimeBase):
     """Dịch Anh→Việt. Hỗ trợ OPUS-MT (Marian) và vinai-translate-en2vi (mBART, mã ngôn ngữ en_XX/vi_VN).
 
@@ -759,8 +764,14 @@ class TranslationRuntime(RuntimeBase):
         gpu_compute_type: str = "int8_float16",
         term_translations: dict[str, str] | None = None,
         keep_names: bool = True,
+        punct_model_path: Path | None = None,
+        threads_for_punct: int = 2,
     ) -> None:
         super().__init__(model_path)
+        # Mô hình thêm dấu câu cho phụ đề tự động: chỉ nạp khi có yêu cầu đầu tiên (video có phụ đề do người làm không tốn RAM).
+        self._punct_model_path = punct_model_path
+        self._punct_threads = threads_for_punct
+        self._punctuator: Punctuator | None = None
         self._term_patterns = compile_term_patterns(term_translations or {})
         self._keep_names = keep_names
         try:
@@ -883,8 +894,25 @@ class TranslationRuntime(RuntimeBase):
             return restored, retranslated_tokens
         return translated, token_count
 
+    def punctuate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Phụ đề tự động (từ + mốc thời gian, không dấu câu) -> câu có dấu câu kèm mốc thời gian."""
+        if self._punct_model_path is None:
+            raise WorkerInputError("punctuation model is not configured")
+        words = payload.get("words")
+        if not isinstance(words, list) or not words or len(words) > MAX_PUNCTUATE_WORDS:
+            raise WorkerInputError("words must be a non-empty list")
+        for word in words:
+            if not isinstance(word, dict) or not isinstance(word.get("text"), str) or len(word["text"]) > 64 \
+                    or not isinstance(word.get("startMs"), (int, float)):
+                raise WorkerInputError("invalid caption word")
+        if self._punctuator is None:
+            self._punctuator = Punctuator(self._punct_model_path, self._punct_threads)
+        return {"segments": segment_words(self._punctuator, words)}
+
     def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.check_model(payload)
+        if payload.get("op") == "punctuate":
+            return self.punctuate(payload)
         if payload.get("op") != "translate":
             raise WorkerInputError("unsupported translation operation")
         source_text = safe_text(payload.get("sourceText"), "sourceText")
@@ -1154,6 +1182,7 @@ def build_runtime(args: argparse.Namespace) -> RuntimeBase:
             model_path, args.threads, ct2_path, args.device, args.gpu_compute_type,
             term_translations=load_glossary_section(args.glossary_file, "translations"),
             keep_names=not args.translate_names,
+            punct_model_path=resolve_existing_directory(args.punct_model_path, "punctuation model") if args.punct_model_path else None,
         )
     codec_path = resolve_existing_directory(args.codec_path, "codec")
     return TtsRuntime(
@@ -1187,6 +1216,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # (sửa đúng thuật ngữ nhưng chèn từ thừa ở chỗ khác); xem docs/TEST_REPORT.md. Thuật ngữ được sửa sau nhận dạng.
     parser.add_argument("--glossary-file", default="", help="từ điển thuật ngữ chuyên ngành để sửa lỗi nghe nhầm (JSON hoặc mỗi dòng một thuật ngữ)")
     parser.add_argument("--tts-gpu-libs", default="", help="TTS: thư mục chứa onnxruntime-gpu + DLL CUDA 12 để chạy prefill/decode/codec trên GPU (trống = CPU)")
+    parser.add_argument("--punct-model-path", default="", help="dịch: thư mục mô hình thêm dấu câu cho phụ đề tự động (trống = không hỗ trợ)")
     parser.add_argument("--translate-names", action="store_true", help="dịch cả tên riêng (mặc định giữ nguyên tiếng Anh)")
     parser.add_argument("--cpu-model-path", default="", help="STT: model dùng khi phải chạy CPU (mặc định = --model-path)")
     args = parser.parse_args(argv)

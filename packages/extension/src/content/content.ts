@@ -5,10 +5,12 @@ import { PCMProcessor } from '../audio/pcm-processor.js';
 import { AudioContextBlockedError, ensureAudioContextRunning } from '../audio/audio-context-guard.js';
 import {
   AudioMixerConfig,
+  CaptionWord,
   ClientMessage,
   DEFAULT_ORIGINAL_VOLUME,
   DEFAULT_TTS_VOLUME,
   OperationMode,
+  ScriptSegment,
   ServerMessage,
   diagnosticSessionRef,
   emitDiagnostic
@@ -19,6 +21,7 @@ import { isSameVideo } from '../navigation/video-identity.js';
 import { TtsStreamReceiver } from '../audio/tts-stream-receiver.js';
 import { SyncedSubtitleRelease, TtsSubtitleSync, ttsSlotMs, ttsTotalDisplayMs } from '../sync/tts-subtitle-sync.js';
 import { CaptionScriptResult, requestCaptionScript, youtubeVideoId } from '../captions/caption-messages.js';
+import { chunkCaptionWords } from '../captions/caption-script.js';
 import { ScriptDubPlayer } from '../captions/script-player.js';
 
 interface FirefoxSession {
@@ -49,6 +52,16 @@ interface FirefoxSession {
   ttsReceiver: TtsStreamReceiver | null;
   /** Chế độ đọc trước theo phụ đề YouTube (có phụ đề tiếng Anh do người làm); null = nhận dạng giọng nói như cũ. */
   script: ScriptDubPlayer | null;
+  /** Phụ đề tự động đang chờ backend thêm dấu câu: requestId -> nhận các câu. */
+  punctuationWaiters: Map<string, (segments: ScriptSegment[]) => void>;
+}
+
+/** Câu đầu tiên để bắt đầu đọc trước, kèm các phần phụ đề tự động còn lại (thêm dấu câu dần sau khi đã bắt đầu). */
+interface PreparedScript {
+  segments: ScriptSegment[];
+  remainingWords: CaptionWord[][];
+  source: 'manual' | 'asr' | 'none';
+  reason: string;
 }
 
 /** Chờ phụ đề tối đa chừng này lúc bắt đầu; lâu hơn (đang quảng cáo…) thì chạy nhận dạng giọng nói trước, có phụ đề thì chuyển. */
@@ -334,6 +347,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       subtitleSync: null,
       ttsReceiver: null,
       script: null,
+      punctuationWaiters: new Map(),
       detachCaptureWatch: null
     };
     session.subtitleSync = new TtsSubtitleSync(item => showReleasedSubtitle(session, item));
@@ -357,7 +371,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     const videoId = youtubeVideoId(location.href);
     const captions: Promise<CaptionScriptResult> = videoId
       ? requestCaptionScript(videoId)
-      : Promise.resolve({ segments: [], reason: 'not-youtube' });
+      : Promise.resolve({ segments: [], asrWords: [], reason: 'not-youtube' });
     try {
       session.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       try {
@@ -397,8 +411,9 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       await connectFirefoxWebSocket(session);
       assertCurrent(session);
 
+      const prepared = prepareScript(session, captions);
       const early = await Promise.race([
-        captions,
+        prepared,
         new Promise<null>(resolve => setTimeout(() => resolve(null), CAPTIONS_FAST_WAIT_MS))
       ]);
       assertCurrent(session);
@@ -443,7 +458,7 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       session.ready = true;
       notifyBackground({ type: 'SESSION_RUNTIME', sessionId: session.sessionId, state: 'ACTIVE' });
       if (!early) {
-        void captions.then(result => {
+        void prepared.then(result => {
           if (result.segments.length > 0) switchToScriptDubbing(session, result);
           else emitDiagnostic('firefox_script', 'captions_unavailable', { sessionRef: diagnosticSessionRef(session.sessionId), reason: result.reason });
         });
@@ -454,8 +469,75 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     }
   }
 
-  /** Có phụ đề tiếng Anh do người làm: dịch và đọc trước, phát giọng đúng lúc câu gốc bắt đầu (không gửi âm thanh cho STT). */
-  function startScriptDubbing(session: FirefoxSession, captions: CaptionScriptResult): void {
+  /**
+   * Câu để đọc trước: phụ đề do người làm dùng ngay; phụ đề tự động gửi phần quanh vị trí đang xem cho backend thêm dấu câu
+   * (CAPTION_WORDS -> SCRIPT_SENTENCES), các phần còn lại xử lý sau khi đã bắt đầu.
+   */
+  async function prepareScript(session: FirefoxSession, captions: Promise<CaptionScriptResult>): Promise<PreparedScript> {
+    const result = await captions;
+    if (result.segments.length > 0) return { segments: result.segments, remainingWords: [], source: 'manual', reason: '' };
+    if (result.asrWords.length === 0) return { segments: [], remainingWords: [], source: 'none', reason: result.reason };
+    const chunks = chunkCaptionWords(result.asrWords, Math.round(session.video.currentTime * 1000));
+    const startedAt = Date.now();
+    const first = await punctuateWords(session, chunks[0]);
+    emitDiagnostic('firefox_script', 'asr_punctuated', {
+      sessionRef: diagnosticSessionRef(session.sessionId),
+      words: chunks[0].length,
+      sentences: first.length,
+      durationMs: Date.now() - startedAt,
+      chunks: chunks.length
+    });
+    return {
+      segments: first,
+      remainingWords: chunks.slice(1),
+      source: 'asr',
+      reason: first.length > 0 ? '' : 'asr-punctuation-failed'
+    };
+  }
+
+  function punctuateWords(session: FirefoxSession, words: CaptionWord[], timeoutMs = 30_000): Promise<ScriptSegment[]> {
+    return new Promise(resolve => {
+      if (firefoxSession !== session || session.cancelled || session.ws?.readyState !== WebSocket.OPEN || words.length === 0) {
+        resolve([]);
+        return;
+      }
+      const requestId = `pw_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      const timer = setTimeout(() => {
+        session.punctuationWaiters.delete(requestId);
+        resolve([]);
+      }, timeoutMs);
+      session.punctuationWaiters.set(requestId, segments => {
+        clearTimeout(timer);
+        session.punctuationWaiters.delete(requestId);
+        resolve(segments);
+      });
+      try {
+        session.ws.send(JSON.stringify({
+          type: 'CAPTION_WORDS',
+          sessionId: session.sessionId,
+          timestamp: Date.now(),
+          requestId,
+          words
+        } satisfies ClientMessage));
+      } catch {
+        clearTimeout(timer);
+        session.punctuationWaiters.delete(requestId);
+        resolve([]);
+      }
+    });
+  }
+
+  /** Các phần phụ đề tự động còn lại: thêm dấu câu lần lượt rồi bổ sung câu cho bộ phát. */
+  async function loadRemainingWords(session: FirefoxSession, chunks: CaptionWord[][]): Promise<void> {
+    for (const chunk of chunks) {
+      if (firefoxSession !== session || session.cancelled || !session.script) return;
+      const segments = await punctuateWords(session, chunk);
+      session.script?.addSegments(segments);
+    }
+  }
+
+  /** Có phụ đề tiếng Anh: dịch và đọc trước, phát giọng đúng lúc câu gốc bắt đầu (không gửi âm thanh cho STT). */
+  function startScriptDubbing(session: FirefoxSession, captions: PreparedScript): void {
     if (!session.audioCtx || !session.audioMixer) throw createRuntimeError('AUDIO_CONTEXT_MISSING', 'AudioContext chưa được khởi tạo.');
     session.script = new ScriptDubPlayer({
       video: session.video,
@@ -487,13 +569,15 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
     });
     emitDiagnostic('firefox_script', 'started', {
       sessionRef: diagnosticSessionRef(session.sessionId),
-      segments: session.script.segmentCount
+      segments: session.script.segmentCount,
+      source: captions.source
     });
     session.script.start();
+    if (captions.remainingWords.length > 0) void loadRemainingWords(session, captions.remainingWords);
   }
 
   /** Phụ đề tới muộn (sau quảng cáo…): dừng gửi âm thanh cho nhận dạng giọng nói và chuyển sang đọc trước theo phụ đề. */
-  function switchToScriptDubbing(session: FirefoxSession, captions: CaptionScriptResult): void {
+  function switchToScriptDubbing(session: FirefoxSession, captions: PreparedScript): void {
     if (firefoxSession !== session || session.cancelled || session.script || session.ws?.readyState !== WebSocket.OPEN) return;
     session.pcmProcessor?.stop();
     session.pcmProcessor = null;
@@ -764,6 +848,10 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
       if (message.fatal) {
         await failFirefoxSession(session, createRuntimeError(message.code, message.message, isRetryableServerError(message.code), true));
       }
+      return;
+    }
+    if (message.type === 'SCRIPT_SENTENCES') {
+      session.punctuationWaiters.get(message.requestId)?.(message.segments);
       return;
     }
     if (session.script && (message.type === 'SUBTITLE_EVENT' || message.type === 'TTS_CHUNK') && message.scheduled) {

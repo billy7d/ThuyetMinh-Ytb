@@ -535,3 +535,28 @@ giọng nói trước rồi tự chuyển (tua tại chỗ để backend bỏ vi
   Bước lấy phụ đề với `pot` đã kiểm trên trình duyệt không tự động (khung trình duyệt của ứng dụng): tải được cả rãnh người làm và tự động.
 - Chưa kiểm: Firefox thật của người dùng (cần ký lại), tạm dừng/tua trong trình duyệt thật (đã có unit test), video tốc độ khác 1x (giọng được phát
   nhanh theo bằng playbackRate nên cao độ đổi), Chrome (chưa hỗ trợ).
+
+## Phụ đề tự động YouTube: thêm dấu câu rồi đọc trước (2026-10-04)
+
+Video thử: podcast "Dopamine Expert…" (R6xbXOp7wDA, 2 giờ 12 phút), chỉ có phụ đề tự động tiếng Anh. YouTube không có bản phụ đề tự động kèm dấu câu
+(`variant=punctuated` trả rỗng); cả video chỉ có 3 dấu câu.
+
+Cách làm: extension lấy từ + mốc từ rãnh ASR, gửi từng phần ≤3000 từ (phần quanh vị trí đang xem trước, cắt ở khoảng ngừng dài nhất) qua `CAPTION_WORDS`;
+worker dịch thêm dấu câu + viết hoa + tách câu bằng `1-800-BAD-CODE/punctuation_fullstop_truecase_english` (ONNX CPU, Apache-2.0, nạp khi cần),
+cửa sổ 120 từ, bỏ điểm ngắt trong 15 từ cuối cửa sổ (mô hình hay đoán ngắt ở cuối chuỗi), câu > 15 s hoặc > 40 từ cắt ở dấu phẩy gần giữa; trả
+`SCRIPT_SENTENCES` rồi đi tiếp luồng đọc trước như phụ đề do người làm.
+
+Đo:
+- Thêm dấu câu: 131 phút (23 nghìn từ) mất ~7.5 s CPU; 10 phút mất 0.58 s; câu trung vị 4.9 s, dài nhất 14.8 s sau khi cắt.
+- Chất lượng dịch đoạn 7:43–10:00 (vinai CT2 CPU): ghép theo khoảng ngừng (cách cũ đã bỏ) cho câu cụt/ghép sai ("But you know even." ->
+  "Nhưng bạn biết thậm chí.", "dope mean" -> "ma túy", "…tại các liên lạc của một ngón tay"); thêm dấu câu cho câu đúng ranh giới phần lớn
+  ("Ví dụ, bệnh Parkinson, một căn bệnh liên quan đến cứng khớp và run rẩy, được gây ra bởi…"), dịch nhanh hơn (trung vị 563 so với 824 ms).
+  Vẫn còn: lỗi nhận dạng của YouTube ("dope mean"), chỗ người nói lủng củng.
+- Firefox 155 trên trang thật, bắt đầu ở 7:43, phụ đề từ bản đã lưu (`--captions-fixture`, xem mục trước), backend thử:
+  - Giọng đọc CPU: không kịp — mỗi câu xong cách nhau 4–6 s ~ tốc độ nói (podcast nói dày, giọng Việt dài gần bằng câu gốc), mọi câu đều lỡ.
+  - Giọng đọc GPU (như máy người dùng): bắt đầu sau ~6 s (lấy phụ đề + thêm dấu câu 2883 từ trong 1.5 s); 7 câu giọng bắt đầu lệch 0 ms (trung vị,
+    tối đa 135 ms); 1 câu lỡ (đang nói dở lúc bắt đầu); chuẩn bị nhanh ~2.1x thời gian thực (đi trước tăng từ 0.7 s lên 27 s); tốc độ giọng
+    trung vị 1.2x, tối đa 1.3x.
+- Sửa kèm: đang phát thì không gửi câu bắt đầu quá sớm để kịp dịch + đọc (1.5 s + nửa độ dài câu), để backend dồn sức cho các câu sau thay vì
+  làm mọi câu muộn theo.
+- Chưa kiểm: Firefox thật của người dùng; giọng đọc CPU không đủ nhanh cho podcast nói dày.

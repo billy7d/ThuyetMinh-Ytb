@@ -7,6 +7,7 @@ export type ClientMessageType =
   | 'SEEK_EVENT'
   | 'MODE_CHANGE'
   | 'SCRIPT_SEGMENTS'
+  | 'CAPTION_WORDS'
   | 'SESSION_STOP';
 
 export type ServerMessageType =
@@ -18,6 +19,7 @@ export type ServerMessageType =
   | 'SUBTITLE_EVENT'
   | 'LATENCY_METRIC'
   | 'SESSION_METRICS'
+  | 'SCRIPT_SENTENCES'
   | 'ERROR';
 
 export interface BaseMessage {
@@ -80,6 +82,22 @@ export interface ScriptSegmentsMessage extends BaseMessage {
   segments: ScriptSegment[];
 }
 
+/** Một từ của phụ đề tự động (ASR) kèm mốc bắt đầu trên video (ms). */
+export interface CaptionWord {
+  text: string;
+  startMs: number;
+}
+
+/**
+ * Phụ đề tự động không có dấu câu: extension gửi từng phần (tối đa 3000 từ) để backend thêm dấu câu, tách câu và trả
+ * SCRIPT_SENTENCES cùng requestId; sau đó các câu đi theo luồng SCRIPT_SEGMENTS như phụ đề do người làm.
+ */
+export interface CaptionWordsMessage extends BaseMessage {
+  type: 'CAPTION_WORDS';
+  requestId: string;
+  words: CaptionWord[];
+}
+
 export interface SessionStopMessage extends BaseMessage {
   type: 'SESSION_STOP';
   reason?: string;
@@ -92,6 +110,7 @@ export type ClientMessage =
   | SeekEventMessage
   | ModeChangeMessage
   | ScriptSegmentsMessage
+  | CaptionWordsMessage
   | SessionStopMessage;
 
 // Server Messages
@@ -192,6 +211,14 @@ export interface SessionMetricsMessage extends BaseMessage {
   metrics: SessionMetrics;
 }
 
+export interface ScriptSentencesMessage extends BaseMessage {
+  type: 'SCRIPT_SENTENCES';
+  requestId: string;
+  segments: ScriptSegment[];
+  /** Có lỗi (không thêm được dấu câu): segments rỗng. */
+  error?: string;
+}
+
 export interface ErrorMessage extends BaseMessage {
   type: 'ERROR';
   code: string;
@@ -208,4 +235,5 @@ export type ServerMessage =
   | SubtitleEventMessage
   | LatencyMetricMessage
   | SessionMetricsMessage
+  | ScriptSentencesMessage
   | ErrorMessage;

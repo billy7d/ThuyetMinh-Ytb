@@ -1,6 +1,8 @@
 import {
+  CaptionWord,
   OperationMode,
   ScriptSegment,
+  ScriptSentencesMessage,
   ServerMessage,
   TranscriptInterimMessage,
   TranscriptFinalMessage,
@@ -157,6 +159,38 @@ export class RealtimePipeline {
       reportError: (code, message) => this.handleError(code, message, false)
     });
     this.scriptPipeline.enqueue(segments, generation);
+  }
+
+  /** Phụ đề tự động: thêm dấu câu, tách câu rồi trả SCRIPT_SENTENCES (mã câu theo mốc bắt đầu, ổn định giữa các lần gửi). */
+  async punctuateCaptions(requestId: string, words: CaptionWord[]): Promise<void> {
+    if (!this.isActive) return;
+    const reply = (fields: Partial<ScriptSentencesMessage>): void => {
+      if (!this.isActive) return;
+      this.callbacks.sendMessage({ type: 'SCRIPT_SENTENCES', sessionId: this.sessionId, timestamp: Date.now(), requestId, segments: [], ...fields });
+    };
+    const startedAt = Date.now();
+    try {
+      const sentences = await this.translationEngine.punctuate(words);
+      const segments: ScriptSegment[] = sentences
+        .filter(sentence => sentence.text.trim() && Number.isFinite(sentence.startMs) && Number.isFinite(sentence.endMs))
+        .map(sentence => ({
+          segmentId: `asr_${Math.round(sentence.startMs)}`,
+          text: sentence.text.trim(),
+          startMs: Math.round(sentence.startMs),
+          endMs: Math.round(Math.max(sentence.endMs, sentence.startMs + 300))
+        }));
+      emitDiagnostic('pipeline', 'captions_punctuated', {
+        sessionRef: this.sessionRef,
+        words: words.length,
+        sentences: segments.length,
+        durationMs: Date.now() - startedAt
+      });
+      reply({ segments });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitDiagnostic('pipeline', 'captions_punctuate_failed', { sessionRef: this.sessionRef, messageLength: message.length });
+      reply({ error: message.slice(0, 200) });
+    }
   }
 
   handleAudioChunk(pcmData: Buffer, videoTimeMs: number): void {

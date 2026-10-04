@@ -17,6 +17,10 @@ const MAX_LATE_RESTART_MS = 1_500;
 const TICK_MS = 150;
 const MIN_STRETCH_RATE = 1.02;
 const STRETCH_BUDGET_MS = 600;
+/** Thời gian cần để dịch + tổng hợp một câu: ~1.5 s cộng nửa độ dài câu gốc (giọng đọc GPU RTF ~0.45, CPU ~0.6). */
+const MIN_DUB_PREP_MS = 1_500;
+const DUB_PREP_PER_SOURCE_MS = 0.5;
+const MIN_SUBTITLE_PREP_MS = 400;
 
 interface ReadyAudio {
   buffer: AudioBuffer;
@@ -42,7 +46,7 @@ export interface ScriptPlayerOptions {
 }
 
 export class ScriptDubPlayer {
-  private readonly segments: ScriptSegment[];
+  private segments: ScriptSegment[];
   private readonly indexById = new Map<string, number>();
   private readonly sent = new Set<string>();
   private readonly audio = new Map<string, ReadyAudio>();
@@ -60,6 +64,16 @@ export class ScriptDubPlayer {
     this.segments = [...options.segments].sort((a, b) => a.startMs - b.startMs);
     this.segments.forEach((segment, index) => this.indexById.set(segment.segmentId, index));
     this.diagScope = options.diagScope ?? 'script_dub';
+  }
+
+  /** Phụ đề tự động: câu của các phần sau được thêm dần khi backend thêm dấu câu xong. */
+  addSegments(segments: ScriptSegment[]): void {
+    const fresh = segments.filter(segment => !this.indexById.has(segment.segmentId));
+    if (fresh.length === 0) return;
+    this.segments = [...this.segments, ...fresh].sort((a, b) => a.startMs - b.startMs);
+    this.indexById.clear();
+    this.segments.forEach((segment, index) => this.indexById.set(segment.segmentId, index));
+    this.tick();
   }
 
   get segmentCount(): number {
@@ -166,9 +180,15 @@ export class ScriptDubPlayer {
 
   private sendUpcoming(nowMs: number): void {
     const batch: ScriptSegment[] = [];
+    const playing = !this.options.video.paused;
+    const subtitleOnly = this.options.getMode() === 'subtitle_only';
     for (const segment of this.segments) {
       if (segment.startMs > nowMs + SCRIPT_LOOKAHEAD_MS || batch.length >= SEND_BATCH) break;
       if (segment.endMs < nowMs - 1_000 || this.sent.has(segment.segmentId) || this.isComplete(segment.segmentId)) continue;
+      // Đang phát mà câu bắt đầu quá sớm để kịp dịch + đọc: không gửi, để backend dồn sức cho các câu sau (nếu không, mọi câu
+      // phía sau đều muộn theo). Lúc tạm dừng thì chuẩn bị hết.
+      const prepMs = subtitleOnly ? MIN_SUBTITLE_PREP_MS : MIN_DUB_PREP_MS + DUB_PREP_PER_SOURCE_MS * (segment.endMs - segment.startMs);
+      if (playing && segment.startMs < nowMs + prepMs) continue;
       batch.push(segment);
     }
     if (batch.length === 0) return;

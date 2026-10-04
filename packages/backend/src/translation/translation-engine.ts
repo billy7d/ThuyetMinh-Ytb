@@ -1,6 +1,6 @@
 import { ContextManager } from './context-manager.js';
 import { NO_FINAL_PUNCTUATION, SentenceCompletionGuard, endsWithOpenWord } from './completion-guard.js';
-import { TranslationProvider } from './types.js';
+import { PunctuatedSentence, TranslationProvider } from './types.js';
 
 export interface TranslationOptions {
   /** Đoạn nguồn bị cắt giữa lúc người nói chưa ngừng: coi là chưa trọn câu dù có dấu chấm cuối. */
@@ -157,6 +157,16 @@ export class TranslationEngine {
       throw new Error(`Transcript segment exceeded ${this.config.maxPendingCharacters} characters before completion`);
     }
     return this.translateNow(sourceText, startMs, endMs, options, startedAt);
+  }
+
+  canPunctuate(): boolean {
+    return typeof this.provider.punctuate === 'function';
+  }
+
+  /** Phụ đề tự động -> câu có dấu câu (xem TranslationProvider.punctuate). */
+  async punctuate(words: Array<{ text: string; startMs: number }>): Promise<PunctuatedSentence[]> {
+    if (!this.provider.punctuate) throw new Error('Translation provider does not support punctuation');
+    return this.provider.punctuate(words);
   }
 
   hasPending(): boolean {

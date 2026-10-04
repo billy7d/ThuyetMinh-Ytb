@@ -9,8 +9,8 @@ import {
   TranslationEngine,
   TranslationProvider
 } from '@vietdub/backend';
-import { ScriptSegment, ServerMessage, SubtitleEventMessage, TTSChunkMessage } from '@vietdub/shared';
-import { buildCaptionScript, segmentSlotMs } from '../../extension/src/captions/caption-script.js';
+import { CaptionWord, ScriptSegment, ServerMessage, ScriptSentencesMessage, SubtitleEventMessage, TTSChunkMessage } from '@vietdub/shared';
+import { buildCaptionScript, chunkCaptionWords, parseAsrWords, segmentSlotMs } from '../../extension/src/captions/caption-script.js';
 import { youtubeVideoId } from '../../extension/src/captions/caption-messages.js';
 import { ScriptDubPlayer } from '../../extension/src/captions/script-player.js';
 
@@ -125,13 +125,41 @@ const SCRIPT: ScriptSegment[] = [
   { segmentId: 's3', text: 'Three.', startMs: 60_000, endMs: 62_000 }
 ];
 
+describe('phụ đề tự động (ASR): từ kèm mốc và chia phần gửi backend', () => {
+  it('lấy từng từ với mốc = đầu dòng + tOffsetMs, theo thứ tự thời gian', () => {
+    const words = parseAsrWords({ events: [
+      { tStartMs: 5_000, dDurationMs: 2_000, segs: [{ utf8: 'and' }, { utf8: ' then', tOffsetMs: 400 }] },
+      { tStartMs: 1_000, dDurationMs: 2_000, segs: [{ utf8: 'so' }, { utf8: ' we', tOffsetMs: 300 }] },
+      { tStartMs: 3_000, segs: [{ utf8: '\n' }] }
+    ] });
+    expect(words).toEqual([
+      { text: 'so', startMs: 1_000 }, { text: 'we', startMs: 1_300 }, { text: 'and', startMs: 5_000 }, { text: 'then', startMs: 5_400 }
+    ]);
+  });
+
+  it('phần chứa vị trí đang xem đi trước, cắt ở khoảng ngừng dài nhất; phần trước vị trí đi sau cùng; không mất từ nào', () => {
+    const words: CaptionWord[] = Array.from({ length: 1_000 }, (_, index) => ({ text: `w${index}`, startMs: index * 300 + (index === 640 ? 2_000 : 0) + (index > 640 ? 2_000 : 0) }));
+    const chunks = chunkCaptionWords(words, 150_000, 400);
+    // Vị trí 150 s ~ từ 500; lùi 15 s ~ từ 450, rồi lùi tiếp tới khoảng ngừng dài nhất trong 60 từ trước đó.
+    expect(chunks[0][0].startMs).toBeLessThanOrEqual(135_000);
+    expect(chunks[0][0].startMs).toBeGreaterThan(115_000);
+    // Phần đầu kết thúc ngay trước khoảng ngừng 2 s (từ 640) thay vì cắt cứng ở 400 từ.
+    expect(chunks[0].at(-1)?.text).toBe('w639');
+    expect(chunks.at(-1)?.[0].text).toBe('w0');
+    expect(chunks.flat().map(word => word.text).sort()).toEqual(words.map(word => word.text).sort());
+  });
+});
+
 describe('ScriptDubPlayer: phát giọng đúng mốc câu gốc', () => {
   it('gửi trước các câu trong 45 s tới một lần; phát đúng lúc câu bắt đầu (trễ 0) kèm phụ đề', async () => {
     const { video, scheduled, sent, subtitles, tick, tts } = setup(SCRIPT);
+    // Đang tạm dừng: chuẩn bị cả câu sắp bắt đầu.
+    video.paused = true;
     video.currentTime = 0.7;
     tick();
     tick();
     expect(sent).toEqual([['s1', 's2']]);
+    video.paused = false;
     await tts('s1', 2_000);
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0].delaySec).toBeCloseTo(0.3, 3);
@@ -139,6 +167,14 @@ describe('ScriptDubPlayer: phát giọng đúng mốc câu gốc', () => {
     expect(subtitles).toEqual([]);
     await wait(350);
     expect(subtitles).toEqual([{ id: 's1', text: 'vi s1' }]);
+  });
+
+  it('đang phát: câu bắt đầu quá sớm để kịp dịch + đọc thì không gửi, để các câu sau không muộn theo', () => {
+    const { video, sent, tick } = setup(SCRIPT);
+    // s1 (dài 2 s) cần ~2.5 s chuẩn bị nhưng chỉ còn 0.3 s; s2 bắt đầu sau 3.3 s thì kịp.
+    video.currentTime = 0.7;
+    tick();
+    expect(sent).toEqual([['s2']]);
   });
 
   it('giọng dài hơn khung tới câu sau: co giãn giữ cao độ cho vừa khung (tối đa 1.3x)', async () => {
@@ -193,7 +229,9 @@ describe('ScriptDubPlayer: phát giọng đúng mốc câu gốc', () => {
 
   it('tua: câu đã có giọng không gửi lại, câu chưa xong thì gửi lại; câu đã qua hẳn không phát', async () => {
     const { video, player, sent, scheduled, tick, tts } = setup(SCRIPT);
+    video.paused = true;
     tick();
+    video.paused = false;
     await tts('s1', 1_000);
     video.currentTime = 50;
     player.handleSeek();
@@ -252,6 +290,30 @@ function makePipeline(mode: 'dubbing_and_subtitle' | 'subtitle_only', log: strin
 }
 
 const segs = (...starts: number[]): ScriptSegment[] => starts.map(startMs => ({ segmentId: `cap_${startMs}`, text: `Sentence at ${startMs}.`, startMs, endMs: startMs + 1_000 }));
+
+describe('backend: thêm dấu câu cho phụ đề tự động', () => {
+  it('CAPTION_WORDS -> SCRIPT_SENTENCES cùng requestId, mã câu theo mốc bắt đầu; lỗi thì trả error và danh sách rỗng', async () => {
+    const punctuating: TranslationProvider = {
+      ...vi,
+      async punctuate(words) {
+        if (words.length === 1) throw new Error('model missing');
+        return [{ text: 'Hello there.', startMs: words[0].startMs, endMs: words[1].startMs + 300 }];
+      }
+    };
+    const messages: ServerMessage[] = [];
+    const pipeline = new RealtimePipeline(
+      'pipe_punct', 'dubbing_and_subtitle', new IdleSTT(), new TranslationEngine(punctuating, undefined, { validateVietnamese: false }), tts([]),
+      { sendMessage: message => messages.push(message) }
+    );
+    pipeline.start();
+    await pipeline.punctuateCaptions('r1', [{ text: 'hello', startMs: 1_000 }, { text: 'there', startMs: 1_400 }]);
+    await pipeline.punctuateCaptions('r2', [{ text: 'x', startMs: 9 }]);
+    const replies = messages.filter((message): message is ScriptSentencesMessage => message.type === 'SCRIPT_SENTENCES');
+    expect(replies[0]).toMatchObject({ requestId: 'r1', segments: [{ segmentId: 'asr_1000', text: 'Hello there.', startMs: 1_000, endMs: 1_700 }] });
+    expect(replies[1]).toMatchObject({ requestId: 'r2', segments: [], error: 'model missing' });
+    pipeline.stop();
+  });
+});
 
 describe('ScriptPipeline (backend): dịch và đọc trước', () => {
   it('xử lý theo thứ tự; mỗi câu gửi phụ đề rồi giọng đọc, cả hai có scheduled; câu trùng không làm lại', async () => {

@@ -4,7 +4,7 @@
  *  1. bắt đường dẫn /api/timedtext có `pot` mà trình phát tự gọi (XHR/fetch) cho từng video;
  *  2. khi content script hỏi: nếu chưa có thì chờ hết quảng cáo rồi buộc trình phát tải phụ đề (chọn rãnh tiếng Anh, hoặc tạm
  *     chuyển sang rãnh khác nếu rãnh đó đã tải sẵn), sau đó trả lại rãnh và trạng thái nút CC như cũ;
- *  3. tải rãnh tiếng Anh do người làm (không dùng phụ đề tự động) dạng json3 và trả về qua window.postMessage.
+ *  3. tải rãnh tiếng Anh do người làm (không có thì rãnh tự động ASR, backend thêm dấu câu) dạng json3, trả về qua window.postMessage.
  */
 import { CAPTIONS_REQUEST, CAPTIONS_RESPONSE, CaptionsRequest, CaptionsResponse } from './caption-messages.js';
 
@@ -65,10 +65,11 @@ if (!(window as any)[MAIN_FLAG]) {
     });
   };
 
-  /** Rãnh tiếng Anh do người làm: ưu tiên "en", sau đó "en-US", "en-GB"… */
+  /** Rãnh tiếng Anh do người làm (ưu tiên "en", rồi "en-US", "en-GB"…); không có thì rãnh tự động (kind "asr"). */
   const pickTrack = (tracks: CaptionTrack[]): CaptionTrack | undefined => {
-    const manual = tracks.filter(track => !track.kind && /^en(?:-|$)/i.test(track.languageCode ?? ''));
-    return manual.find(track => track.languageCode?.toLowerCase() === 'en') ?? manual[0];
+    const english = tracks.filter(track => /^en(?:-|$)/i.test(track.languageCode ?? ''));
+    const manual = english.filter(track => !track.kind);
+    return manual.find(track => track.languageCode?.toLowerCase() === 'en') ?? manual[0] ?? english.find(track => track.kind === 'asr');
   };
 
   const captionsButton = (): HTMLElement | null => document.querySelector('.ytp-subtitles-button');
@@ -115,7 +116,7 @@ if (!(window as any)[MAIN_FLAG]) {
     if (response?.videoDetails?.videoId !== request.videoId) return { ...base, ok: false, reason: 'player-not-ready' };
     const tracks: CaptionTrack[] = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
     const track = pickTrack(tracks);
-    if (!track?.languageCode) return { ...base, ok: false, reason: tracks.length > 0 ? 'no-manual-english' : 'no-captions' };
+    if (!track?.languageCode) return { ...base, ok: false, reason: tracks.length > 0 ? 'no-english' : 'no-captions' };
     const potUrl = potUrls.get(request.videoId) ?? await triggerCaptionLoad(request.videoId, track, tracks);
     if (!potUrl) return { ...base, ok: false, reason: 'no-pot-url' };
 
@@ -123,7 +124,7 @@ if (!(window as any)[MAIN_FLAG]) {
     for (const url of captionUrls(potUrl, track)) {
       const result = await originalFetch.call(window, url, { credentials: 'include' });
       const text = result.ok ? await result.text() : '';
-      if (text) return { ...base, ok: true, languageCode: track.languageCode, json: JSON.parse(text) };
+      if (text) return { ...base, ok: true, languageCode: track.languageCode, kind: track.kind === 'asr' ? 'asr' : 'manual', json: JSON.parse(text) };
       statuses.push(String(result.status));
     }
     const captured = new URL(potUrl).searchParams;

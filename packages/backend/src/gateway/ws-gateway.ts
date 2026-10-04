@@ -17,6 +17,8 @@ const MAX_PCM_FRAME_BYTES = 192 * 1024;
 /** SCRIPT_SEGMENTS: extension gửi tối đa 24 câu mỗi lần; mỗi câu phụ đề tối đa vài trăm ký tự. */
 const MAX_SCRIPT_SEGMENTS = 64;
 const MAX_SCRIPT_TEXT_CHARS = 1_000;
+/** CAPTION_WORDS: khớp giới hạn một yêu cầu `punctuate` của worker dịch. */
+const MAX_CAPTION_WORDS = 3_000;
 
 interface ActiveSession {
   pipeline: RealtimePipeline;
@@ -261,6 +263,12 @@ export class WebSocketGateway {
         break;
       }
 
+      case 'CAPTION_WORDS': {
+        const session = this.activeSessions.get(msg.sessionId);
+        if (session?.ws === ws) void session.pipeline.punctuateCaptions(msg.requestId, msg.words);
+        break;
+      }
+
       case 'MODE_CHANGE': {
         const session = this.activeSessions.get(msg.sessionId);
         if (session?.ws === ws) session.pipeline.setMode(msg.mode);
@@ -325,6 +333,7 @@ function validateClientMessage(msg: ClientMessage): string | null {
     'SEEK_EVENT',
     'MODE_CHANGE',
     'SCRIPT_SEGMENTS',
+    'CAPTION_WORDS',
     'VIDEO_STATE_UPDATE',
     'SESSION_STOP'
   ].includes(msg.type)) return 'type không được hỗ trợ.';
@@ -360,6 +369,14 @@ function validateClientMessage(msg: ClientMessage): string | null {
       if (!Number.isFinite(segment.startMs) || !Number.isFinite(segment.endMs) || segment.startMs < 0 || segment.endMs < segment.startMs) {
         return 'Mốc thời gian câu không hợp lệ.';
       }
+    }
+  }
+  if (msg.type === 'CAPTION_WORDS') {
+    if (typeof msg.requestId !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(msg.requestId)) return 'requestId không hợp lệ.';
+    if (!Array.isArray(msg.words) || msg.words.length === 0 || msg.words.length > MAX_CAPTION_WORDS) return 'words không hợp lệ.';
+    for (const word of msg.words) {
+      if (!word || typeof word.text !== 'string' || word.text.length === 0 || word.text.length > 64) return 'Từ phụ đề không hợp lệ.';
+      if (!Number.isFinite(word.startMs) || word.startMs < 0) return 'Mốc thời gian từ không hợp lệ.';
     }
   }
   if (msg.type === 'MODE_CHANGE' && !['subtitle_only', 'dubbing_only', 'dubbing_and_subtitle'].includes(msg.mode)) {

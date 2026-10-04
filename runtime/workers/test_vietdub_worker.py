@@ -17,6 +17,7 @@ import numpy as np  # noqa: E402
 
 import text_rules  # noqa: E402
 import vietdub_worker as worker  # noqa: E402
+import punctuation  # noqa: E402
 
 SAMPLE_RATE = worker.SAMPLE_RATE_STT
 
@@ -619,6 +620,57 @@ class TtsStreamTests(unittest.TestCase):
             worker.emit = original
         self.assertEqual(emitted[-1].get("cancelled"), True)
         self.assertEqual(emitted[-1].get("ok"), False)
+
+
+class FakePunctuator:
+    """Mô hình giả: từ kết thúc bằng "!" là hết câu (bỏ "!"), từ kết thúc bằng "," giữ dấu phẩy; ghi lại kích thước từng cửa sổ."""
+
+    def __init__(self, end_of_window_boundary: bool = False) -> None:
+        self.windows: list[int] = []
+        self.end_of_window_boundary = end_of_window_boundary
+
+    def run(self, words: list[str]) -> tuple[list[str], list[bool]]:
+        self.windows.append(len(words))
+        texts = [word.rstrip("!") + ("." if word.endswith("!") else "") for word in words]
+        ends = [word.endswith("!") for word in words]
+        if self.end_of_window_boundary and ends:
+            # Mô phỏng mô hình thật hay đoán có ngắt câu ở cuối chuỗi nó được xem.
+            ends[-1] = True
+        return texts, ends
+
+
+class PunctuationSegmentTests(unittest.TestCase):
+    def words(self, texts: list[str], step: int = 300) -> list[dict]:
+        return [{"text": text, "startMs": index * step} for index, text in enumerate(texts)]
+
+    def test_sentences_keep_word_times_and_drop_fillers_and_tags(self) -> None:
+        raw = self.words(["so", "um", "we", "went!", "[Music]", "then", "it", "rained!"])
+        sentences = punctuation.segment_words(FakePunctuator(), raw)
+        self.assertEqual([s["text"] for s in sentences], ["So we went.", "Then it rained."])
+        self.assertEqual(sentences[0]["startMs"], 0)
+        self.assertEqual(sentences[1]["startMs"], 5 * 300)
+        self.assertEqual(sentences[1]["endMs"], 7 * 300 + punctuation.MAX_WORD_TAIL_MS)
+
+    def test_boundary_near_the_window_end_is_reprocessed_with_following_context(self) -> None:
+        texts = [f"w{index}" for index in range(200)]
+        texts[29] = "w29!"
+        fake = FakePunctuator(end_of_window_boundary=True)
+        sentences = punctuation.segment_words(fake, self.words(texts))
+        # Ngắt giả ở cuối cửa sổ đầu (từ 119) không được dùng: từ 30-119 được xử lý lại cùng 30 từ sau (cửa sổ 2 đủ 120 từ;
+        # nếu dùng ngắt giả thì cửa sổ 2 chỉ còn 80 từ 120-199).
+        self.assertEqual(sentences[0]["text"].split()[-1], "w29.")
+        self.assertEqual(fake.windows[:2], [120, 120])
+        self.assertEqual(sum(len(s["text"].split()) for s in sentences), 200)
+
+    def test_long_sentence_is_split_at_the_comma_nearest_the_middle(self) -> None:
+        texts = [f"w{index}" for index in range(60)]
+        texts[10] = "w10,"
+        texts[28] = "w28,"
+        texts[-1] = "w59!"
+        sentences = punctuation.segment_words(FakePunctuator(), self.words(texts))
+        self.assertEqual(len(sentences), 2)
+        self.assertTrue(sentences[0]["text"].endswith("w28."))
+        self.assertEqual(sentences[1]["startMs"], 29 * 300)
 
 
 class VoiceSelectionTests(unittest.TestCase):

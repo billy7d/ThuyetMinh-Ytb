@@ -1,10 +1,10 @@
 /**
- * Đọc phụ đề YouTube do người làm (định dạng json3 của /api/timedtext) và ghép thành câu có mốc thời gian để thuyết minh trước:
- * tách câu theo dấu chấm/hỏi/than, một dòng chứa hai câu thì chia mốc theo số ký tự.
- * Phụ đề tự động (ASR) không dùng: không có dấu câu, ghép câu theo khoảng ngừng giữa các từ sai ranh giới câu
- * ("…one is the extraordinary." + "Evidence of human creativity…") nên bản dịch sai nghĩa; video đó dùng Whisper như cũ.
+ * Đọc phụ đề YouTube (định dạng json3 của /api/timedtext) để thuyết minh trước:
+ * - Do người làm: ghép thành câu có mốc thời gian, tách câu theo dấu chấm/hỏi/than, một dòng chứa hai câu thì chia mốc theo số ký tự.
+ * - Tự động (ASR): chỉ lấy từng từ kèm mốc; không có dấu câu nên ghép câu theo khoảng ngừng sai ranh giới câu
+ *   ("…one is the extraordinary." + "Evidence of human creativity…"). Từ được gửi lên backend thêm dấu câu bằng mô hình rồi mới tách câu.
  */
-import type { ScriptSegment } from '@vietdub/shared';
+import type { CaptionWord, ScriptSegment } from '@vietdub/shared';
 
 interface Json3Seg {
   utf8?: string;
@@ -89,6 +89,69 @@ function toSegments(sentences: TimedText[]): ScriptSegment[] {
       used.add(segmentId);
       return { segmentId, text: sentence.text, startMs: Math.round(sentence.startMs), endMs: Math.round(Math.max(sentence.endMs, sentence.startMs + 300)) };
     });
+}
+
+/** Phụ đề tự động: từng từ kèm mốc bắt đầu (tStartMs của dòng + tOffsetMs của từ), theo thứ tự thời gian. */
+export function parseAsrWords(json: unknown): CaptionWord[] {
+  const words: CaptionWord[] = [];
+  for (const event of eventsOf(json)) {
+    if (!Array.isArray(event.segs) || !Number.isFinite(event.tStartMs)) continue;
+    for (const seg of event.segs as Array<Json3Seg & { tOffsetMs?: number }>) {
+      const text = (seg.utf8 ?? '').trim();
+      if (!text || text.length > 64) continue;
+      words.push({ text, startMs: Math.round((event.tStartMs as number) + Math.max(0, seg.tOffsetMs ?? 0)) });
+    }
+  }
+  return words.sort((a, b) => a.startMs - b.startMs);
+}
+
+/** Số từ tối đa mỗi lần gửi backend thêm dấu câu (khớp giới hạn của backend, ~10 phút lời nói). */
+export const MAX_WORDS_PER_PUNCTUATE = 3_000;
+/** Ranh giới giữa hai phần đặt ở khoảng ngừng dài nhất trong chừng này từ cuối phần, để ít cắt ngang câu. */
+const CHUNK_BOUNDARY_SEARCH_WORDS = 200;
+/** Phần đầu tiên bắt đầu trước vị trí đang xem một chút để câu đang nói dở có đủ phần đầu. */
+const FIRST_CHUNK_LEAD_MS = 15_000;
+
+function chunkRange(words: CaptionWord[], from: number, to: number, maxWords: number): CaptionWord[][] {
+  const chunks: CaptionWord[][] = [];
+  let start = from;
+  while (start < to) {
+    let end = Math.min(to, start + maxWords);
+    if (end < to) {
+      let best = end;
+      let bestGap = -1;
+      for (let index = Math.max(start + 1, end - CHUNK_BOUNDARY_SEARCH_WORDS); index < end; index += 1) {
+        const gap = words[index].startMs - words[index - 1].startMs;
+        if (gap > bestGap) {
+          bestGap = gap;
+          best = index;
+        }
+      }
+      end = best;
+    }
+    chunks.push(words.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+/** Chia từ thành các phần gửi backend: phần chứa vị trí đang xem đi trước, rồi phần sau đó, cuối cùng phần trước đó (khi tua lại). */
+export function chunkCaptionWords(words: CaptionWord[], positionMs: number, maxWords = MAX_WORDS_PER_PUNCTUATE): CaptionWord[][] {
+  if (words.length === 0) return [];
+  let pivot = words.findIndex(word => word.startMs >= positionMs - FIRST_CHUNK_LEAD_MS);
+  if (pivot < 0) pivot = Math.max(0, words.length - maxWords);
+  // Lùi về khoảng ngừng dài nhất ngay trước mốc để không cắt ngang câu đang nói.
+  let start = pivot;
+  let bestGap = -1;
+  for (let index = Math.max(1, pivot - 60); index <= pivot && index < words.length; index += 1) {
+    const gap = words[index].startMs - words[index - 1].startMs;
+    if (gap > bestGap) {
+      bestGap = gap;
+      start = index;
+    }
+  }
+  if (pivot === 0) start = 0;
+  return [...chunkRange(words, start, words.length, maxWords), ...chunkRange(words, 0, start, maxWords)];
 }
 
 /** Phụ đề người làm -> câu. */

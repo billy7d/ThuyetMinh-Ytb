@@ -1,5 +1,5 @@
 import { LocalWorkerClientLike, abortError } from './worker-client.js';
-import { TranslationProvider, TranslationProviderResult, TranslationRequest } from '../translation/types.js';
+import { PunctuatedSentence, TranslationProvider, TranslationProviderResult, TranslationRequest } from '../translation/types.js';
 
 export interface LocalTranslationConfig {
   modelPath: string;
@@ -56,6 +56,25 @@ export class LocalTranslationProvider implements TranslationProvider {
     } finally {
       clearTimeout(timeout);
       this.controllers.delete(controller);
+    }
+  }
+
+  /** Thao tác `punctuate` của worker dịch (cần --punct-model-path). Không bị hủy khi tua: kết quả dùng cho cả video. */
+  async punctuate(words: Array<{ text: string; startMs: number }>): Promise<PunctuatedSentence[]> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(this.config.timeoutMs, 60_000));
+    try {
+      const response = await this.worker.request<{ segments?: PunctuatedSentence[] }>({
+        op: 'punctuate',
+        modelPath: this.config.modelPath,
+        words
+      }, { signal: controller.signal });
+      return Array.isArray(response.segments) ? response.segments : [];
+    } catch (error) {
+      if (controller.signal.aborted) throw abortError('Local punctuation timed out');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
