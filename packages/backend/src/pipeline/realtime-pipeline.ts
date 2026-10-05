@@ -57,8 +57,13 @@ const DEFAULT_TIMING: PipelineTimingConfig = {
   streamPartMinChars: 90
 };
 
-/** Thời lượng giọng đọc trung bình mỗi ký tự tiếng Việt (ms) của giọng VieNeu hiện dùng: 148 ký tự ≈ 9.1 s, 59 ≈ 4.0 s, 27 ≈ 1.8 s. */
-const TTS_ESTIMATED_MS_PER_CHAR = 64;
+/**
+ * Thời lượng giọng đọc mỗi ký tự tiếng Việt (ms) dùng lúc chưa đo được: giọng Minh Đức ~65, Trúc Ly ~49 (70 câu podcast). Sau mỗi câu
+ * đọc xong, ước lượng được hiệu chỉnh theo thời lượng thật nên đổi giọng không cần sửa số này.
+ */
+const TTS_INITIAL_MS_PER_CHAR = 64;
+/** Trọng số của câu mới khi hiệu chỉnh ước lượng (trung bình trượt). */
+const TTS_MS_PER_CHAR_SMOOTHING = 0.2;
 
 interface TtsJob {
   segmentId: string;
@@ -117,6 +122,8 @@ export class RealtimePipeline {
   private readonly costTracker: CostTracker;
   private readonly sessionRef: string;
   private readonly timing: PipelineTimingConfig;
+  /** Ước lượng ms giọng đọc mỗi ký tự, tự hiệu chỉnh theo các câu đã đọc. */
+  private ttsMsPerChar = TTS_INITIAL_MS_PER_CHAR;
   /** Chế độ đọc trước theo phụ đề; tạo khi extension gửi SCRIPT_SEGMENTS đầu tiên. */
   private scriptPipeline: ScriptPipeline | null = null;
 
@@ -678,7 +685,7 @@ export class RealtimePipeline {
   private async synthesizeJobStreaming(job: TtsJob, previous: Promise<void>, ttsStartedAt: number): Promise<void> {
     const engine = this.ttsEngine;
     if (!engine.synthesizeStream) return;
-    const estimatedTotalMs = Math.max(400, Math.round(job.text.length * TTS_ESTIMATED_MS_PER_CHAR));
+    const estimatedTotalMs = Math.max(400, Math.round(job.text.length * this.ttsMsPerChar));
     const queued: Array<() => void> = [];
     let released = false;
     let delivered = 0;
@@ -746,6 +753,7 @@ export class RealtimePipeline {
           });
         }
       );
+      if (!result.cancelled) this.learnTtsSpeed(job.text, result.durationMs);
       await previous;
       if (!this.isJobCurrent(job)) return;
       if (result.cancelled && delivered === 0) {
@@ -760,6 +768,17 @@ export class RealtimePipeline {
       }
     }
     if (delivered === 0 && job.subtitlePending) this.emitSubtitle(job);
+  }
+
+  /** Hiệu chỉnh ước lượng thời lượng giọng đọc theo câu vừa đọc xong (câu quá ngắn bỏ qua vì nhiễu). */
+  private learnTtsSpeed(text: string, durationMs: number): void {
+    if (text.length < 20 || !Number.isFinite(durationMs) || durationMs <= 0) return;
+    const observed = Math.min(120, Math.max(25, durationMs / text.length));
+    this.ttsMsPerChar += TTS_MS_PER_CHAR_SMOOTHING * (observed - this.ttsMsPerChar);
+  }
+
+  getTtsMsPerChar(): number {
+    return this.ttsMsPerChar;
   }
 
   private isJobCurrent(job: TtsJob): boolean {

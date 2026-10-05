@@ -341,6 +341,22 @@ describe('pipeline: giọng đọc dạng luồng', () => {
     pipeline.stop();
   });
 
+  it('ước lượng thời lượng giọng đọc tự hiệu chỉnh theo câu vừa đọc (đổi sang giọng nhanh hơn thì ước lượng giảm dần)', async () => {
+    const stt = new ManualSTT();
+    const pipeline = new RealtimePipeline(
+      'pipe_speed', 'dubbing_and_subtitle', stt, new TranslationEngine(vi, undefined, { validateVietnamese: false }), streamingTts([]),
+      { sendMessage: () => {} }
+    );
+    pipeline.start();
+    expect(pipeline.getTtsMsPerChar()).toBe(64);
+    stt.final('First sentence is right here.', 0, 2_000);
+    await wait(300);
+    // Giọng giả: 600 ms cho ~55 ký tự (~11 ms/ký tự, kẹp ở 25): ước lượng giảm về phía đó.
+    expect(pipeline.getTtsMsPerChar()).toBeLessThan(64);
+    expect(pipeline.getTtsMsPerChar()).toBeGreaterThan(25);
+    pipeline.stop();
+  });
+
   it('worker lỗi giữa chừng: vẫn gửi bản tin cuối cho đoạn đã phát và báo lỗi không nghiêm trọng', async () => {
     const messages: ServerMessage[] = [];
     const stt = new ManualSTT();

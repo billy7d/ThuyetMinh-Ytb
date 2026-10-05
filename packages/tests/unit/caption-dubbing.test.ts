@@ -12,7 +12,7 @@ import {
 import { CaptionWord, ScriptSegment, ServerMessage, ScriptSentencesMessage, SubtitleEventMessage, TTSChunkMessage } from '@vietdub/shared';
 import { buildCaptionScript, chunkCaptionWords, parseAsrWords, segmentSlotMs } from '../../extension/src/captions/caption-script.js';
 import { youtubeVideoId } from '../../extension/src/captions/caption-messages.js';
-import { ScriptDubPlayer } from '../../extension/src/captions/script-player.js';
+import { ScriptDubPlayer, trimSilence } from '../../extension/src/captions/script-player.js';
 
 const SAMPLE_RATE = 48_000;
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -201,13 +201,73 @@ describe('ScriptDubPlayer: phát giọng đúng mốc câu gốc', () => {
     expect(scheduled[1].delaySec).toBe(0);
   });
 
-  it('giọng không kịp (muộn quá 1.5 s): bỏ giọng, vẫn hiện phụ đề nếu đã có bản dịch', () => {
+  it('giọng không kịp (khung còn lại < 0.8 s): bỏ giọng, vẫn hiện phụ đề nếu đã có bản dịch', () => {
     const { video, player, scheduled, subtitles, tick } = setup(SCRIPT);
     player.handleSubtitle({ type: 'SUBTITLE_EVENT', sessionId: 's', timestamp: 0, segmentId: 's1', text: 'vi s1', startMs: 1_000, endMs: 3_000, generation: 1, action: 'show', scheduled: true });
+    // Khung s1 = 2900 ms: tới 2.6 s (muộn 1.6 s) vẫn còn chờ giọng; tới 3.2 s (còn < 0.8 s) thì bỏ.
     video.currentTime = 2.6;
+    tick();
+    expect(subtitles).toEqual([]);
+    video.currentTime = 3.2;
     tick();
     expect(scheduled).toEqual([]);
     expect(subtitles.map(item => item.id)).toEqual(['s1']);
+  });
+
+  it('giọng tới muộn mà khung còn đủ: đọc từ đầu câu (co giãn để bắt kịp) thay vì cắt mất đầu câu', async () => {
+    const { video, scheduled, tick, tts } = setup(SCRIPT);
+    video.paused = true;
+    await tts('s1', 2_000);
+    // Muộn 1.2 s: khung còn 1.7 s, ở 1.3x chứa được 2.2 s >= 2.0 s giọng -> đọc từ đầu, co ~1.18x cho vừa 1.7 s.
+    video.currentTime = 2.2;
+    video.paused = false;
+    tick();
+    expect(scheduled[0].offsetSec).toBe(0);
+    expect(scheduled[0].durationSec).toBeLessThan(1.75);
+    expect(scheduled[0].durationSec).toBeGreaterThan(1.6);
+  });
+
+  it('phát tiếp sau tạm dừng giữa câu: đọc tiếp đúng chỗ, không đọc lại từ đầu dù khung còn đủ', async () => {
+    const { video, player, scheduled, tick, tts } = setup(SCRIPT);
+    video.currentTime = 0.9;
+    await tts('s1', 1_000);
+    expect(scheduled[0].offsetSec).toBe(0);
+    video.currentTime = 1.3;
+    video.paused = true;
+    player.handlePause();
+    video.paused = false;
+    tick();
+    expect(scheduled[1].offsetSec).toBeCloseTo(0.3, 3);
+  });
+
+  it('cắt im lặng đầu/cuối câu của giọng đọc, giữ 40 ms đầu và 100 ms cuối', () => {
+    const data = new Float32Array(SAMPLE_RATE * 2);
+    for (let index = Math.round(0.4 * SAMPLE_RATE); index < Math.round(1.5 * SAMPLE_RATE); index += 1) data[index] = 0.3 * Math.sin(index / 20);
+    const context = { createBuffer: (_channels: number, length: number) => makeBuffer(new Float32Array(length)) };
+    const trimmed = trimSilence(context, makeBuffer(data));
+    expect(trimmed.duration).toBeGreaterThan(1.1 + 0.13);
+    expect(trimmed.duration).toBeLessThan(1.1 + 0.16);
+    const silent = makeBuffer(new Float32Array(1_000));
+    expect(trimSilence(context, silent)).toBe(silent);
+  });
+
+  it('bắt đầu muộn vì câu trước đọc lố: co giãn lại nhanh hơn theo thời gian còn lại để không đẩy câu sau muộn theo', async () => {
+    const segments: ScriptSegment[] = [
+      { segmentId: 'a', text: 'A.', startMs: 1_000, endMs: 1_500 },
+      { segmentId: 'b', text: 'B.', startMs: 2_000, endMs: 3_000 },
+      { segmentId: 'c', text: 'C.', startMs: 4_000, endMs: 5_000 }
+    ];
+    const { video, audioCtx, scheduled, tick, tts } = setup(segments);
+    video.currentTime = 1;
+    await tts('a', 1_600);
+    await tts('b', 1_800);
+    video.currentTime = 2;
+    audioCtx.currentTime += 1;
+    tick();
+    // b chờ ~0.23 s; khung còn lại 2000 - 230 - 100 = ~1.67 s cho 1.8 s giọng: co giãn ~1.08x thay vì phát 1.8 s nguyên.
+    expect(scheduled[1].delaySec).toBeGreaterThan(0.2);
+    expect(scheduled[1].durationSec).toBeLessThan(1.72);
+    expect(scheduled[1].durationSec).toBeGreaterThan(1.6);
   });
 
   it('câu trước còn đang đọc: câu sau chờ đọc nối tiếp, không chồng tiếng', async () => {

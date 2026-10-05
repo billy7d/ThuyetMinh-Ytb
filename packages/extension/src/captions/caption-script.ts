@@ -109,6 +109,8 @@ export function parseAsrWords(json: unknown): CaptionWord[] {
 export const MAX_WORDS_PER_PUNCTUATE = 3_000;
 /** Ranh giới giữa hai phần đặt ở khoảng ngừng dài nhất trong chừng này từ cuối phần, để ít cắt ngang câu. */
 const CHUNK_BOUNDARY_SEARCH_WORDS = 200;
+/** Phần đầu tiên (quanh vị trí đang xem) nhỏ hơn để bắt đầu đọc sớm. */
+const FIRST_CHUNK_WORDS = 400;
 /** Phần đầu tiên bắt đầu trước vị trí đang xem một chút để câu đang nói dở có đủ phần đầu. */
 const FIRST_CHUNK_LEAD_MS = 15_000;
 
@@ -136,7 +138,12 @@ function chunkRange(words: CaptionWord[], from: number, to: number, maxWords: nu
 }
 
 /** Chia từ thành các phần gửi backend: phần chứa vị trí đang xem đi trước, rồi phần sau đó, cuối cùng phần trước đó (khi tua lại). */
-export function chunkCaptionWords(words: CaptionWord[], positionMs: number, maxWords = MAX_WORDS_PER_PUNCTUATE): CaptionWord[][] {
+export function chunkCaptionWords(
+  words: CaptionWord[],
+  positionMs: number,
+  maxWords = MAX_WORDS_PER_PUNCTUATE,
+  firstMaxWords = FIRST_CHUNK_WORDS
+): CaptionWord[][] {
   if (words.length === 0) return [];
   let pivot = words.findIndex(word => word.startMs >= positionMs - FIRST_CHUNK_LEAD_MS);
   if (pivot < 0) pivot = Math.max(0, words.length - maxWords);
@@ -151,7 +158,10 @@ export function chunkCaptionWords(words: CaptionWord[], positionMs: number, maxW
     }
   }
   if (pivot === 0) start = 0;
-  return [...chunkRange(words, start, words.length, maxWords), ...chunkRange(words, 0, start, maxWords)];
+  // Phần đầu nhỏ để có câu sớm (thêm dấu câu 400 từ ~0.2 s thay vì ~1.5 s cho 3000 từ), các phần sau lớn.
+  const [first = []] = chunkRange(words, start, words.length, Math.min(firstMaxWords, maxWords));
+  return [first, ...chunkRange(words, start + first.length, words.length, maxWords), ...chunkRange(words, 0, start, maxWords)]
+    .filter(chunk => chunk.length > 0);
 }
 
 /** Phụ đề người làm -> câu. */

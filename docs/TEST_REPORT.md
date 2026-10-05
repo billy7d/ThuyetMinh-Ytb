@@ -560,3 +560,32 @@ cửa sổ 120 từ, bỏ điểm ngắt trong 15 từ cuối cửa sổ (mô h�
 - Sửa kèm: đang phát thì không gửi câu bắt đầu quá sớm để kịp dịch + đọc (1.5 s + nửa độ dài câu), để backend dồn sức cho các câu sau thay vì
   làm mọi câu muộn theo.
 - Chưa kiểm: Firefox thật của người dùng; giọng đọc CPU không đủ nhanh cho podcast nói dày.
+
+## Đọc trước: trễ cộng dồn trên lời nói dày, đổi sang giọng nữ Trúc Ly (2026-10-05)
+
+Người dùng thấy thuyết minh vẫn chậm trên podcast. Nguyên nhân: câu tiếng Việt dài hơn khung tới câu sau dù đã tăng tốc tối đa 1.3x, câu sau
+phải chờ câu trước đọc xong nên độ trễ cộng dồn suốt đoạn nói liên tục. Đo trên 70 câu (6.5 phút) podcast R6xbXOp7wDA, cùng bản dịch, tạo giọng
+thật trên GPU rồi mô phỏng lịch phát (`E:\VietDub-AI\runtime\bench_dub_timing.py`):
+
+| Giọng | Dài so với lời gốc | ms/ký tự | Lệch p90 / tối đa (cũ) | Cắt im lặng + bắt kịp p90 / tối đa |
+| --- | --- | --- | --- | --- |
+| Minh Đức (nam, cũ) | 108% | 65.5 | 1.09 / 2.46 s | 0.29 / 1.13 s |
+| **Trúc Ly** (nữ, Bắc, tự nhiên) | **80%** | 48.6 | 0 / 0.41 s | **0 / 0.18 s** |
+| Ngọc Huyền (nữ, Bắc, tự nhiên) | 90% | 54.8 | 0.46 / 0.82 s | 0 / 0.41 s |
+| Đoan Trang (nữ, Bắc, tự nhiên) | 97% | 59.2 | 0.37 / 0.91 s | 0 / 0.33 s |
+| Mai Anh (nữ, Bắc, tin tức) | 96% | 58.4 | 0.27 / 1.09 s | 0 / 0.66 s |
+
+Trần 1.4x không giúp thêm với Trúc Ly nên giữ 1.3x. Mẫu nghe: `E:\VietDub-AI\evidence\voices\*.wav` (3 câu mỗi giọng).
+
+Thay đổi (không đổi bản dịch):
+- Giọng mặc định Trúc Ly (`--voice`, `.env`). Ước lượng thời lượng giọng (chế độ nhận dạng giọng nói) tự hiệu chỉnh theo các câu đã đọc thay vì
+  cố định 64 ms/ký tự của Minh Đức.
+- Cắt im lặng đầu/cuối câu của giọng đọc (giữ 40/100 ms; VieNeu để ~0.1-0.3 s mỗi đầu).
+- Bắt kịp: câu phải bắt đầu muộn (chờ câu trước, giọng tới muộn) được co giãn lại theo thời gian thực còn lại tới câu sau (trong trần 1.3x).
+- Giọng tới muộn mà phần khung còn lại ở 1.3x vẫn chứa đủ cả câu thì đọc từ đầu (không cắt đầu câu); phát tiếp sau tạm dừng thì đọc tiếp đúng chỗ;
+  câu chưa có giọng chỉ bỏ khi khung còn < 0.8 s.
+- Ước thời gian chuẩn bị sát hơn (1 s + 35% độ dài câu, trước 1.5 s + 50%); phần phụ đề tự động đầu tiên chỉ 400 từ (thêm dấu câu 93 ms).
+
+Firefox 155, podcast từ 7:43, giọng Trúc Ly GPU, phụ đề đã lưu: đọc trước chạy sau 0.4 s; giọng đầu tiên sau 4.4 s (trước ~13 s), đúng mốc câu;
+7/7 câu lệch 0 ms, tốc độ 1.0x; chỉ câu đang nói dở lúc bấm Bắt đầu bị bỏ.
+Chưa kiểm: nghe đánh giá giọng Trúc Ly (đã lưu mẫu), Firefox thật của người dùng.
