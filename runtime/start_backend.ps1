@@ -1,4 +1,4 @@
-﻿param([string]$NodeExecutable = '')
+﻿param([string]$NodeExecutable = '', [string]$LogFile = '')
 
 $ErrorActionPreference = 'Stop'
 
@@ -43,7 +43,13 @@ if (-not $NodeExecutable -or -not (Test-Path -LiteralPath $NodeExecutable)) {
 
 Push-Location $repositoryRoot
 try {
-    & $NodeExecutable 'packages/backend/dist/server.js'
+    # -LogFile: tác vụ nền (nút "Bật backend") không có cửa sổ để xem, nên ghi toàn bộ đầu ra của backend vào tệp (ghi đè mỗi lần chạy).
+    if ($LogFile) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $LogFile) -Force | Out-Null
+        & $NodeExecutable 'packages/backend/dist/server.js' *> $LogFile
+    } else {
+        & $NodeExecutable 'packages/backend/dist/server.js'
+    }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
     Pop-Location

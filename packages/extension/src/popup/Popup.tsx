@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { DEFAULT_MODE, DEFAULT_ORIGINAL_VOLUME, DEFAULT_TTS_VOLUME, OperationMode, SessionState } from '@vietdub/shared';
 import { createStartSessionMessage } from './start-session-message.js';
 import { classifyRuntimeError } from '../errors/runtime-errors.js';
+import { BackendState, LaunchFailure, launchBackend, probeBackend, waitUntilReady } from '../backend/backend-launcher.js';
 
 // Cảnh báo cũ hơn ngưỡng này không còn phản ánh tình trạng hiện tại.
 const WARNING_VISIBLE_MS = 30_000;
@@ -21,7 +22,10 @@ export const Popup: React.FC = () => {
   const [canRetry, setCanRetry] = useState<boolean>(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [warningText, setWarningText] = useState<string | null>(null);
-  const [backendStatus, setBackendStatus] = useState<string>('Đang kiểm tra backend local...');
+  // checking: đang thăm dò; launching: đã nhờ host bật, đang chờ model nạp xong.
+  const [backendState, setBackendState] = useState<BackendState | 'checking' | 'launching'>('checking');
+  const [launchFailure, setLaunchFailure] = useState<LaunchFailure | null>(null);
+  const launchCancelledRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
 
   const classifyError = classifyRuntimeError;
@@ -128,18 +132,58 @@ export const Popup: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8080/health')
-      .then(async response => {
-        const payload = await response.json().catch(() => ({}));
-        const providerStatus = payload.providers || payload;
-        if (response.ok && providerStatus.mode === 'local' && providerStatus.configured) {
-          setBackendStatus('Backend local sẵn sàng');
-        } else {
-          setBackendStatus('Backend local chưa sẵn sàng — kiểm tra model/worker');
-        }
-      })
-      .catch(() => setBackendStatus('Chưa kết nối backend local'));
+    launchCancelledRef.current = false;
+    void probeBackend().then(state => {
+      if (!launchCancelledRef.current) setBackendState(current => (current === 'checking' ? state : current));
+    });
+    return () => {
+      launchCancelledRef.current = true;
+    };
   }, []);
+
+  // Nhờ native host bật backend rồi chờ tới khi sẵn sàng (nạp model ~1-2 phút). Đóng popup thì thôi chờ, backend vẫn chạy tiếp.
+  const handleLaunchBackend = async () => {
+    if (backendState === 'launching') return;
+    setLaunchFailure(null);
+    setBackendState('launching');
+    const result = await launchBackend();
+    if (!result.ok) {
+      setLaunchFailure(result.reason);
+      setBackendState('down');
+      return;
+    }
+    const ready = await waitUntilReady({
+      probe: () => probeBackend(),
+      isCancelled: () => launchCancelledRef.current,
+      onState: state => {
+        if (state === 'ready') setBackendState('ready');
+      }
+    });
+    if (launchCancelledRef.current) return;
+    if (!ready) {
+      setLaunchFailure('host-error');
+      setBackendState('down');
+    }
+  };
+
+  const backendStatus = ((): string => {
+    switch (backendState) {
+      case 'ready': return 'Backend local sẵn sàng';
+      case 'warming': return 'Backend local đang nạp model hoặc chưa sẵn sàng — đợi một lúc rồi mở lại popup';
+      case 'launching': return 'Đang bật backend và nạp model (khoảng 1–2 phút)...';
+      case 'down': return 'Chưa kết nối backend local';
+      default: return 'Đang kiểm tra backend local...';
+    }
+  })();
+  const launchFailureText = ((): string | null => {
+    switch (launchFailure) {
+      case 'host-missing': return 'Chưa cài trình hỗ trợ bật backend. Chạy một lần: powershell -ExecutionPolicy Bypass -File runtime/install_native_host.ps1 rồi mở lại popup.';
+      case 'forbidden': return 'Trình hỗ trợ không cho extension này gọi (ID extension đã đổi). Chạy lại runtime/install_native_host.ps1.';
+      case 'script-missing': return 'Không tìm thấy runtime/start_backend.ps1. Chạy lại runtime/install_native_host.ps1 từ thư mục dự án.';
+      case 'host-error': return 'Không bật được backend hoặc model chưa nạp xong sau 4 phút. Xem E:\\VietDub-AI\\logs\\backend.log.';
+      default: return null;
+    }
+  })();
 
   const sendExtensionMessage = <T,>(message: unknown): Promise<T> => {
     return new Promise((resolve, reject) => {
@@ -260,6 +304,19 @@ export const Popup: React.FC = () => {
         AI mặc định chạy offline trên máy của bạn sau khi model local được cài đặt. Không cần API key; dừng phiên sẽ ngắt truyền dữ liệu.
       </div>
       <div style={styles.backendStatus}>{backendStatus}</div>
+      {(backendState === 'down' || backendState === 'launching') && (
+        <div style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            style={backendState === 'launching' ? styles.btnDisabled : styles.btnLaunch}
+            disabled={backendState === 'launching'}
+            onClick={handleLaunchBackend}
+          >
+            {backendState === 'launching' ? 'Đang bật backend...' : '▶ Bật backend'}
+          </button>
+          {launchFailureText && <div style={styles.launchFailure} role="alert">{launchFailureText}</div>}
+        </div>
+      )}
 
       {/* Video Detection Notice */}
       {!hasVideo && (
@@ -524,6 +581,23 @@ const styles: Record<string, any> = {
     lineHeight: 1.3,
     color: '#a1a1aa',
     marginBottom: 12
+  },
+  btnLaunch: {
+    width: '100%',
+    padding: '8px 12px',
+    backgroundColor: '#2563eb',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 600
+  },
+  launchFailure: {
+    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 1.4,
+    color: '#fed7aa'
   },
   alertWarning: {
     backgroundColor: '#422006',

@@ -1,6 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VietDub AI - Thuyết minh tiếng Việt thời gian thực",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDghlivsWXzR4p+7PpAnxsc7ML5J5nDGcEaca6Q88qoKYNBPbIoukitcBypN7M00lz5yIDeIfHakRud94xVaTelNc4IqyZVLkO/xkB5Ry753pYLbEEIFyvOyiH8sskGXLuKfxQTnFTY+ixV3uDFSgO0q1gF/wnt9oj6qt5zV2L4JNmn6dIwv+JtyP4IuWa8cEnISMFsifG2v23A9LhPx0QaG1aMRzKGt0uSoWi0LqkW731Bx3jC7Ig7hd5LN+alrca3tuPL7nepRS4tKc2q6yW1Od4l1IYD8ovUYQuCWJ4GAz6N4Kf/+t+CEgcwZBYkYvrTEXaz1tkh4SQ2b5luYVwIDAQAB",
   "version": "1.0.0",
   "description": "Thuyết minh và phụ đề video tiếng Anh sang tiếng Việt theo thời gian thực cho trình duyệt.",
   "permissions": [
@@ -8,7 +9,8 @@
     "offscreen",
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -23,15 +25,23 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content/content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/content.js"
+      ],
       "run_at": "document_end"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["offscreen/*"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "offscreen/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

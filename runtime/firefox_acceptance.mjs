@@ -4,6 +4,7 @@
 //
 // Dùng: node runtime/firefox_acceptance.mjs [--seconds 40] [--video E:\VietDub-AI\cache\temp\vietdub-acceptance.webm]
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -139,6 +140,23 @@ async function main() {
     const rdp = await openRdp(RDP_PORT);
     report.addonId = await installTemporaryAddon(rdp, extensionPath);
     const evaluate = await backgroundEvaluator(rdp, report.addonId);
+
+    // --native-launch true: thử nút "Bật backend" của popup (native messaging host) thay cho bài thử thuyết minh. Cổng 8080 phải trống.
+    if (args.get('--native-launch') === 'true') {
+      report.nativeLaunch = await runNativeLaunchTest(context, evaluate);
+      report.verdict = report.nativeLaunch.verdict;
+      await browser.close();
+      // Backend bật từ Firefox phải sống tiếp sau khi Firefox đóng.
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      report.nativeLaunch.healthAfterBrowserClosed = await backendHealth();
+      if (report.nativeLaunch.healthAfterBrowserClosed !== 200) report.nativeLaunch.verdict = 'FAIL';
+      stopBackendOnPort8080();
+      await mkdir(evidenceRoot, { recursive: true });
+      const nativePath = path.join(evidenceRoot, `firefox-native-launch-${Date.now()}.json`);
+      await writeFile(nativePath, JSON.stringify(report, null, 2));
+      console.log(JSON.stringify({ ...report.nativeLaunch, reportPath: nativePath }, null, 2));
+      return;
+    }
 
     // Trang video mang origin https://www.youtube.com giống môi trường thật của người dùng.
     await context.route('https://www.youtube.com/**', async route => {
@@ -279,6 +297,46 @@ async function main() {
   const reportPath = path.join(evidenceRoot, `firefox-acceptance-${Date.now()}.json`);
   await writeFile(reportPath, JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, reportPath }, null, 2));
+}
+
+async function backendHealth() {
+  try {
+    return (await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(2000) })).status;
+  } catch {
+    return 0;
+  }
+}
+
+async function runNativeLaunchTest(context, evaluate) {
+  const result = { steps: [] };
+  const note = (name, data = {}) => { result.steps.push({ name, ...data }); console.error('[ff-native]', name, JSON.stringify(data)); };
+  if (await backendHealth() !== 0) throw new Error('Cổng 8080 đang có backend chạy; tắt nó trước khi thử.');
+  const call = command => evaluate(`new Promise(resolve => chrome.runtime.sendNativeMessage('com.vietdub.backend_launcher', { command: '${command}' }, response => resolve({ response: response ?? null, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : null })))`);
+  // Playwright không điều hướng được tới moz-extension://, nên không bấm nút popup: gọi đúng lệnh mà nút gọi (launchBackend ->
+  // runtime.sendNativeMessage({command:'start'})) từ background của add-on Firefox thật.
+  result.status = await call('status');
+  note('status-from-background', result.status);
+  const startedAt = Date.now();
+  result.start = await call('start');
+  note('start-from-background', { ...result.start, afterMs: Date.now() - startedAt });
+  let health = 0;
+  while (Date.now() - startedAt < 240_000 && health !== 200) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    health = await backendHealth();
+  }
+  result.readyAfterMs = Date.now() - startedAt;
+  note('backend-health', { health, afterMs: result.readyAfterMs });
+  result.second = await call('start');
+  note('second-start-is-noop', result.second);
+  result.verdict = health === 200 && result.start.response?.ok === true && result.second.response?.state === 'ready' ? 'PASS' : 'FAIL';
+  return result;
+}
+
+function stopBackendOnPort8080() {
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', "(Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess"], { encoding: 'utf8' }).trim();
+    if (out) execFileSync('taskkill', ['/PID', out, '/T', '/F'], { stdio: 'ignore' });
+  } catch { /* không có gì để tắt */ }
 }
 
 function percentile(values, p) {

@@ -119,6 +119,28 @@ http://127.0.0.1:8080/health
 - Dòng "listening on port 8080" trong Terminal **chưa đủ** để kết luận backend sẵn sàng; hãy nhìn `/health`.
 - **Để cửa sổ Terminal này mở** trong lúc xem video. Muốn tắt backend thì bấm `Ctrl+C`.
 
+#### Tùy chọn: nút "Bật backend" trong popup (khỏi mở Terminal)
+
+Quên bật backend thì popup hiện nút **▶ Bật backend**; bấm vào là backend tự chạy ngầm (nạp model mất khoảng 20–40 giây, popup tự báo khi
+xong). Trình duyệt không tự chạy được chương trình trên máy, nên cần cài **một lần** một "trình hỗ trợ" nhỏ (Chrome, Edge và Firefox dùng chung):
+
+```bash
+powershell -ExecutionPolicy Bypass -File runtime/install_native_host.ps1
+```
+
+Lệnh này không cần quyền quản trị. Nó ghi vào `E:\VietDub-AI\native-host`, đăng ký trình hỗ trợ trong registry của **người dùng hiện tại**
+(Chrome, Edge, Firefox) và tạo tác vụ theo yêu cầu **VietDub AI Backend** trong Task Scheduler (không tự chạy, chỉ chạy khi bạn bấm nút).
+Gỡ hoàn toàn bằng `... install_native_host.ps1 -Uninstall`.
+
+- Trình hỗ trợ chỉ hiểu hai lệnh cố định (xem trạng thái, bật backend), không nhận đường dẫn hay tham số từ extension, và trình duyệt
+  chỉ cho đúng extension của VietDub gọi nó (Chrome theo ID cố định `boffkjgmlpmipjpojfjjkdmmcnmnfnoj`, Firefox theo `vietdub-ai@vietdub.local`).
+- Backend bật bằng nút chạy độc lập với trình duyệt: đóng trình duyệt backend vẫn chạy. Tắt bằng cách kết thúc tiến trình `node` ở cổng 8080
+  (hoặc Task Scheduler → VietDub AI Backend → End). Nhật ký của lần bật gần nhất: `E:\VietDub-AI\logs\backend.log`.
+- Đã thêm khóa cố định (`key`) vào `manifest.chrome.json` để ID extension Chrome không đổi theo đường dẫn. **Lần đầu sau khi cập nhật:** xóa
+  extension VietDub cũ trong `chrome://extensions` rồi nạp lại (**Load unpacked**), vì ID đổi. Muốn dùng ID khác thì chạy lại trình cài đặt với
+  `-ExtensionId <id>`. Nếu một ngày đưa extension lên Chrome Web Store, phải bỏ trường `key`.
+- Firefox: bản add-on có thêm quyền `nativeMessaging`, cần ký lại (`npm run sign:firefox`) và bấm **Add** khi Firefox hỏi quyền mới.
+
 ### Bước 3 — Nạp extension vào trình duyệt
 
 #### 🟢 Chrome

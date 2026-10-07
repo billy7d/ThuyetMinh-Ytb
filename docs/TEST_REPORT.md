@@ -589,3 +589,28 @@ Thay đổi (không đổi bản dịch):
 Firefox 155, podcast từ 7:43, giọng Trúc Ly GPU, phụ đề đã lưu: đọc trước chạy sau 0.4 s; giọng đầu tiên sau 4.4 s (trước ~13 s), đúng mốc câu;
 7/7 câu lệch 0 ms, tốc độ 1.0x; chỉ câu đang nói dở lúc bấm Bắt đầu bị bỏ.
 Chưa kiểm: nghe đánh giá giọng Trúc Ly (đã lưu mẫu), Firefox thật của người dùng.
+
+## Nút "Bật backend" trong popup (native messaging) (2026-10-07)
+
+Quên bật backend thì popup hiện nút **▶ Bật backend** (Chrome và Firefox). Extension không tự chạy được chương trình nên dùng native messaging:
+`runtime/native-host/host.mjs` (Node, chỉ hai lệnh cố định `status`/`start`, không nhận tham số từ extension, kiểm tra lại người gọi qua
+`allowedOrigins`), cài bằng `runtime/install_native_host.ps1` (HKCU Chrome/Edge/Firefox + tác vụ Task Scheduler theo yêu cầu "VietDub AI Backend",
+không cần quản trị). Popup: `src/backend/backend-launcher.ts` + nút ở `Popup.tsx`; Chrome có `key` cố định trong manifest để ID extension không đổi.
+
+Đo trên Windows 11, Chrome 152 và Firefox 155 thật, backend thật (3 worker, GPU):
+- **Chrome** (`runtime/native_host_e2e.mjs`: nạp extension bằng `Extensions.loadUnpacked`, mở popup, bấm nút): popup hiện nút khi 8080 trống; bấm xong
+  backend sẵn sàng sau **~25 s** (lần đầu đo 17–37 s tùy bộ nhớ đệm); **đóng Chrome backend vẫn sống** (`/health` 200). PASS.
+- **Firefox** (`firefox_acceptance.mjs --native-launch true`, gọi đúng lệnh mà nút gọi từ background của add-on): `start` trả lời sau 0.2 s, backend sẵn sàng
+  sau **24.8 s**, lệnh `start` lần hai không chạy thêm (`ready`), đóng Firefox backend vẫn sống. PASS. Playwright không điều hướng được tới `moz-extension://`
+  nên nút popup chưa bấm bằng máy trong Firefox (mã popup dùng chung với Chrome).
+
+Phát hiện khi đo (đã sửa trong thiết kế):
+- `spawn({detached:true})` của Node làm `powershell.exe` thoát ngay mã 0 mà không chạy script (mất console); tiến trình con không tách và `cmd /c start` chết ngay khi host thoát.
+- Chỉ `Start-Process` của PowerShell sống tiếp từ Chrome, nhưng **từ Firefox backend chết trong ~1 s** (log trống): Firefox giết cả nhóm tiến trình của host khi
+  host thoát. Nên bật bằng Task Scheduler (`schtasks /run`, tiến trình nằm ngoài nhóm đó), `Start-Process` chỉ là phương án dự phòng khi chưa đăng ký tác vụ.
+- Pipe stdout của PowerShell khởi động bị backend kế thừa nên không bao giờ đóng: host ghi kết quả ra tệp thay vì pipe. `Start-Process -RedirectStandardOutput` ghi đè log mỗi lần.
+- Windows PowerShell 5.1 cần BOM để đọc `.ps1` có tiếng Việt.
+
+Kiểm thử tự động: `packages/tests/unit/native-host.test.ts` (10: giao thức, bỏ qua `script` do extension gửi, người gọi Chrome/Firefox, bản tin quá lớn,
+bật tiến trình tách rời + log, lần bật thứ hai không nhân đôi, phương án dự phòng, thiếu script) và `backend-launcher.test.ts` (5).
+Chưa kiểm: Edge; máy không có Node trong PATH (trình cài đặt ghi đường dẫn Node tuyệt đối); backend chết sớm sau khi bật (popup chờ tối đa 4 phút rồi báo xem log).
