@@ -109,11 +109,15 @@ export class ScriptPipeline {
   private async process(segment: ScriptSegment, generation: number): Promise<void> {
     const { translationEngine, ttsEngine, costTracker, sessionId, sessionRef } = this.context;
     const translationStartedAt = Date.now();
-    const translation = await translationEngine.translateComplete(segment.text, segment.startMs, segment.endMs);
+    // Câu tiếng Việt có sẵn (phụ đề tiếng Việt của YouTube): đọc nguyên văn, chỉ gộp khoảng trắng; không qua bộ dịch.
+    const verbatim = segment.translatedText?.replace(/\s+/g, ' ').trim();
+    const translation = verbatim
+      ? undefined
+      : await translationEngine.translateComplete(segment.text, segment.startMs, segment.endMs);
     const translationMs = Date.now() - translationStartedAt;
-    if (!this.isCurrent(generation) || !translation.translatedText) return;
-    costTracker.recordTranslation(segment.text.length);
-    const text = translation.translatedText;
+    const text = verbatim || translation?.translatedText;
+    if (!this.isCurrent(generation) || !text) return;
+    if (!verbatim) costTracker.recordTranslation(segment.text.length);
     const base = { sessionId, segmentId: segment.segmentId, startMs: segment.startMs, endMs: segment.endMs, generation };
     const translationReady: TranslationReadyMessage = {
       type: 'TRANSLATION_READY',

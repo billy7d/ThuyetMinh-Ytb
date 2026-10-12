@@ -140,6 +140,9 @@ Gỡ hoàn toàn bằng `... install_native_host.ps1 -Uninstall`.
   extension VietDub cũ trong `chrome://extensions` rồi nạp lại (**Load unpacked**), vì ID đổi. Muốn dùng ID khác thì chạy lại trình cài đặt với
   `-ExtensionId <id>`. Nếu một ngày đưa extension lên Chrome Web Store, phải bỏ trường `key`.
 - Firefox: bản add-on có thêm quyền `nativeMessaging`, cần ký lại (`npm run sign:firefox`) và bấm **Add** khi Firefox hỏi quyền mới.
+- **Firefox báo "No such native application":** chạy `install_native_host.ps1` trong cửa sổ PowerShell **của chính bạn** rồi mở lại popup; kiểm tra khóa
+  bằng `reg query "HKCU\Software\Mozilla\NativeMessagingHosts\com.vietdub.backend_launcher"`. Đang điều tra: trên một máy, Firefox của người dùng (cả bản
+  Microsoft Store lẫn bản mozilla.org) không thấy khóa dù Firefox chạy thử bằng profile tạm trên cùng máy thì thấy. Tạm thời bật backend bằng `start_backend.ps1`.
 
 ### Bước 3 — Nạp extension vào trình duyệt
 
@@ -200,6 +203,10 @@ Lệnh này build bản Firefox, kiểm tra bằng bộ kiểm tra của AMO, g�
 5. Đợi vài giây cho tới khi trạng thái là **Đang thuyết minh**. Bạn có thể đóng popup, phiên vẫn chạy.
 6. Muốn dừng: mở popup, bấm nút đỏ **Dừng thuyết minh**. Âm thanh gốc của video được trả lại như cũ.
 
+> **Phụ đề tiếng Việt của YouTube (Firefox):** nếu YouTube có phụ đề tiếng Việt cho video (rãnh do người làm, hoặc "Tiếng Việt (dịch tự động)"),
+> giọng thuyết minh đọc **nguyên văn** đúng chữ YouTube hiển thị, không tự dịch lại. Dòng phụ đề tự động hay bị YouTube cắt giữa câu, nên extension
+> ghép lại thành câu theo dấu câu tiếng Việt và khoảng ngừng của người nói (chỉ quyết định chỗ ngắt, không đổi chữ) rồi đọc đúng lúc câu bắt đầu.
+>
 > **YouTube có phụ đề tiếng Anh (Firefox):** extension tự lấy phụ đề đó, dịch và đọc trước khoảng 45 giây, rồi phát giọng Việt
 > **đúng lúc câu gốc bắt đầu** (không phải chờ nghe hết câu như bình thường). Không cần bật CC; extension tự trả nút CC về như cũ.
 > Ưu tiên phụ đề do người làm. Video chỉ có phụ đề tự động thì backend thêm dấu câu bằng một mô hình nhỏ rồi mới tách câu

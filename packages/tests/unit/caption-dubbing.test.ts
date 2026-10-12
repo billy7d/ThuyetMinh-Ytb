@@ -10,7 +10,7 @@ import {
   TranslationProvider
 } from '@vietdub/backend';
 import { CaptionWord, ScriptSegment, ServerMessage, ScriptSentencesMessage, SubtitleEventMessage, TTSChunkMessage } from '@vietdub/shared';
-import { buildCaptionScript, chunkCaptionWords, parseAsrWords, segmentSlotMs } from '../../extension/src/captions/caption-script.js';
+import { buildCaptionScript, buildVietnameseScript, chunkCaptionWords, parseAsrWords, segmentSlotMs } from '../../extension/src/captions/caption-script.js';
 import { youtubeVideoId } from '../../extension/src/captions/caption-messages.js';
 import { ScriptDubPlayer, trimSilence } from '../../extension/src/captions/script-player.js';
 
@@ -147,6 +147,93 @@ describe('phụ đề tự động (ASR): từ kèm mốc và chia phần gửi 
     expect(chunks[0].at(-1)?.text).toBe('w639');
     expect(chunks.at(-1)?.[0].text).toBe('w0');
     expect(chunks.flat().map(word => word.text).sort()).toEqual(words.map(word => word.text).sort());
+  });
+});
+
+/**
+ * Bản dịch tự động tiếng Việt của YouTube (json3 tlang=vi): mỗi dòng là một sự kiện, mỗi từ một seg có tOffsetMs; dòng xen kẽ sự kiện "\n".
+ * `lines`: [mốc bắt đầu dòng, các từ (giữ dấu câu như YouTube)]; từ cách nhau 160 ms.
+ */
+/** Các dòng nối liền nhau như phụ đề thật (dòng sau bắt đầu ngay sau từ cuối dòng trước). */
+function continuousLines(texts: string[], stepMs: number): Array<[number, string]> {
+  let at = 0;
+  return texts.map(text => {
+    const line: [number, string] = [at, text];
+    at += text.split(' ').length * stepMs;
+    return line;
+  });
+}
+
+function viAuto(lines: Array<[number, string]>, stepMs = 160) {
+  const events: unknown[] = [];
+  for (const [tStartMs, text] of lines) {
+    events.push({ tStartMs: tStartMs - 10, dDurationMs: 2_000, aAppend: 1, segs: [{ utf8: '\n' }] });
+    const words = text.split(' ');
+    events.push({ tStartMs, dDurationMs: 5_000, segs: words.map((word, index) => (index === 0 ? { utf8: `${word} ` } : { utf8: `${word} `, tOffsetMs: index * stepMs })) });
+  }
+  return { events };
+}
+
+describe('phụ đề tiếng Việt của YouTube: đọc nguyên văn, ngắt theo câu', () => {
+  it('ghép các dòng bị cắt giữa câu, ngắt đúng giữa dòng sau dấu chấm khi từ sau viết hoa; giữ nguyên từng chữ', () => {
+    const json = viAuto([
+      [1_000, 'bạn biết đấy, theo một số cách... ý tôi là, mỗi'],
+      [3_000, 'khi chúng ta làm điều gì đó'],
+      [5_000, 'sẽ ảnh hưởng đến dopamine. Ý tôi là, nó thực sự là...'],
+      [7_000, 'Tín hiệu chính cho chúng ta biết']
+    ]);
+    const segments = buildVietnameseScript(json, 'auto');
+    expect(segments.map(segment => segment.translatedText)).toEqual([
+      'bạn biết đấy, theo một số cách... ý tôi là, mỗi khi chúng ta làm điều gì đó sẽ ảnh hưởng đến dopamine.',
+      // "là..." rồi viết hoa nhưng không có khoảng lặng: câu bỏ lửng, không ngắt.
+      'Ý tôi là, nó thực sự là... Tín hiệu chính cho chúng ta biết'
+    ]);
+    expect(segments[0].startMs).toBe(1_000);
+    // Câu sau bắt đầu đúng ở từ "Ý" (từ thứ 6 của dòng 5000 ms).
+    expect(segments[1].startMs).toBe(5_000 + 5 * 160);
+    expect(segments.every(segment => segment.text === segment.translatedText)).toBe(true);
+    // Nguyên văn: ghép lại đúng chuỗi từ YouTube, không thêm/bớt/đổi chữ nào.
+    const original = parseAsrWords(json).map(word => word.text).join(' ');
+    expect(segments.map(segment => segment.translatedText).join(' ')).toBe(original);
+  });
+
+  it('ngừng lâu: câu sau viết hoa thì ngắt; viết thường (dòng bị cắt giữa câu) thì vẫn một câu trừ khi ngừng rất lâu', () => {
+    const segments = buildVietnameseScript(viAuto([
+      [1_000, 'bất cứ điều gì mới lạ đều'],
+      [5_000, 'kích hoạt dopamine trong não'],
+      [8_000, 'Chúng ta muốn điều đó'],
+      [20_000, 'và rồi mọi thứ thay đổi']
+    ]), 'auto').map(segment => segment.translatedText);
+    expect(segments).toEqual([
+      'bất cứ điều gì mới lạ đều kích hoạt dopamine trong não',
+      'Chúng ta muốn điều đó',
+      'và rồi mọi thứ thay đổi'
+    ]);
+  });
+
+  it('câu quá dài (> 14 s) cắt ở dấu phẩy gần giữa nhất', () => {
+    // 47 từ x 350 ms ~ 16.5 s, các dòng nối liền nhau (không có khoảng lặng giả giữa dòng).
+    const segments = buildVietnameseScript(viAuto(continuousLines([
+      'Và có lẽ không phải ngẫu nhiên mà cùng một chất',
+      'dẫn truyền thần kinh rất quan trọng đối với khoái cảm,',
+      'cũng rất quan trọng đối với vận động,',
+      'bởi vì hầu hết các sinh vật phải di chuyển',
+      'về phía đối tượng mà chúng mong muốn.'
+    ], 350), 350), 'auto');
+    expect(segments.length).toBe(2);
+    // Dấu phẩy gần giữa nhất: sau "khoái cảm," (từ 21/47), không phải "vận động," (từ 29).
+    expect(segments[0].translatedText?.endsWith('đối với khoái cảm,')).toBe(true);
+    expect(segments[1].translatedText?.startsWith('cũng rất quan trọng')).toBe(true);
+    expect(segments.every(segment => segment.endMs - segment.startMs <= 14_000)).toBe(true);
+  });
+
+  it('rãnh tiếng Việt do người làm: tách câu theo dấu câu, đọc nguyên văn', () => {
+    const segments = buildVietnameseScript({ events: [
+      { tStartMs: 1_000, dDurationMs: 2_000, segs: [{ utf8: 'Chào buổi sáng.' }] },
+      { tStartMs: 3_000, dDurationMs: 2_000, segs: [{ utf8: 'Hôm nay chúng ta\nnói về giáo dục.' }] }
+    ] }, 'manual');
+    expect(segments.map(segment => segment.translatedText)).toEqual(['Chào buổi sáng.', 'Hôm nay chúng ta nói về giáo dục.']);
+    expect(segments.every(segment => segment.segmentId.startsWith('yv_'))).toBe(true);
   });
 });
 
@@ -371,6 +458,42 @@ describe('backend: thêm dấu câu cho phụ đề tự động', () => {
     const replies = messages.filter((message): message is ScriptSentencesMessage => message.type === 'SCRIPT_SENTENCES');
     expect(replies[0]).toMatchObject({ requestId: 'r1', segments: [{ segmentId: 'asr_1000', text: 'Hello there.', startMs: 1_000, endMs: 1_700 }] });
     expect(replies[1]).toMatchObject({ requestId: 'r2', segments: [], error: 'model missing' });
+    pipeline.stop();
+  });
+});
+
+describe('ScriptPipeline (backend): đọc nguyên văn phụ đề tiếng Việt có sẵn', () => {
+  it('câu có translatedText: không gọi bộ dịch, phụ đề và giọng đọc dùng đúng chữ đó (chỉ gộp khoảng trắng)', async () => {
+    const translated: string[] = [];
+    const spyVi: TranslationProvider = { name: 'Spy', async translate(request) { translated.push(request.sourceText); return { translatedText: 'BẢN DỊCH KHÁC' }; } };
+    const ttsLog: string[] = [];
+    const texts: string[] = [];
+    const speaking: TTSProvider = {
+      name: 'FakeTTS',
+      async synthesize(request: TTSRequest): Promise<TTSResponse> {
+        ttsLog.push(request.segmentId);
+        texts.push(request.text);
+        return { segmentId: request.segmentId, generation: request.generation, audioBase64: 'UklGRg==', mimeType: 'audio/wav', durationMs: 1_000, sampleRate: SAMPLE_RATE, channels: 1, cancelled: false };
+      },
+      cancelGeneration() {}
+    };
+    const messages: ServerMessage[] = [];
+    const pipeline = new RealtimePipeline(
+      'pipe_vi', 'dubbing_and_subtitle', new IdleSTT(), new TranslationEngine(spyVi, undefined, { validateVietnamese: false }), speaking,
+      { sendMessage: message => messages.push(message) }
+    );
+    pipeline.start();
+    pipeline.handleScriptSegments([
+      { segmentId: 'yv_1000', text: 'Ý tôi là,  nó thực sự là...', translatedText: 'Ý tôi là,  nó thực sự là...', startMs: 1_000, endMs: 3_000 },
+      { segmentId: 'cap_4000', text: 'English only.', startMs: 4_000, endMs: 5_000 }
+    ], 1);
+    await wait(120);
+    const subtitles = messages.filter((message): message is SubtitleEventMessage => message.type === 'SUBTITLE_EVENT');
+    expect(subtitles[0].text).toBe('Ý tôi là, nó thực sự là...');
+    expect(texts[0]).toBe('Ý tôi là, nó thực sự là...');
+    // Chỉ câu không có bản tiếng Việt mới qua bộ dịch.
+    expect(translated).toEqual(['English only.']);
+    expect(texts[1]).toBe('BẢN DỊCH KHÁC');
     pipeline.stop();
   });
 });

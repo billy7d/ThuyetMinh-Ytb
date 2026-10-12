@@ -60,7 +60,7 @@ interface FirefoxSession {
 interface PreparedScript {
   segments: ScriptSegment[];
   remainingWords: CaptionWord[][];
-  source: 'manual' | 'asr' | 'none';
+  source: 'youtube-vi' | 'manual' | 'asr' | 'none';
   reason: string;
 }
 
@@ -475,6 +475,10 @@ if ((window as any).__VIETDUB_CONTENT_INJECTED__) {
    */
   async function prepareScript(session: FirefoxSession, captions: Promise<CaptionScriptResult>): Promise<PreparedScript> {
     const result = await captions;
+    // Có phụ đề tiếng Việt của YouTube (kể cả bản dịch tự động): đọc nguyên văn đúng chữ YouTube hiển thị, không dịch lại.
+    if (result.vietnamese && result.vietnamese.length > 0) {
+      return { segments: result.vietnamese, remainingWords: [], source: 'youtube-vi', reason: '' };
+    }
     if (result.segments.length > 0) return { segments: result.segments, remainingWords: [], source: 'manual', reason: '' };
     if (result.asrWords.length === 0) return { segments: [], remainingWords: [], source: 'none', reason: result.reason };
     const chunks = chunkCaptionWords(result.asrWords, Math.round(session.video.currentTime * 1000));

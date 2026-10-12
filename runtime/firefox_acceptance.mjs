@@ -135,7 +135,14 @@ async function main() {
     // trả phụ đề thật đã lưu của video đó để thử chế độ đọc trước theo phụ đề (các bước còn lại chạy thật).
     if (args.get('--captions-fixture')) {
       const fixture = await readFile(args.get('--captions-fixture'), 'utf8');
-      await context.route(/\/api\/timedtext/, route => route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: fixture }));
+      // --captions-fixture-vi: bản tiếng Việt (tlang=vi hoặc lang=vi) để thử chế độ đọc nguyên văn phụ đề tiếng Việt của YouTube.
+      const fixtureVi = args.get('--captions-fixture-vi') ? await readFile(args.get('--captions-fixture-vi'), 'utf8') : null;
+      await context.route(/\/api\/timedtext/, route => {
+        const query = new URL(route.request().url()).searchParams;
+        const wantsVietnamese = query.get('tlang') === 'vi' || query.get('lang') === 'vi';
+        if (wantsVietnamese && !fixtureVi) return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: '' });
+        return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: wantsVietnamese ? fixtureVi : fixture });
+      });
     }
     const rdp = await openRdp(RDP_PORT);
     report.addonId = await installTemporaryAddon(rdp, extensionPath);

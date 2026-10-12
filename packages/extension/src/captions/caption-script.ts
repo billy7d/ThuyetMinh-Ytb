@@ -1,5 +1,8 @@
 /**
  * Đọc phụ đề YouTube (định dạng json3 của /api/timedtext) để thuyết minh trước:
+ * - Tiếng Việt của YouTube (do người làm, hoặc bản dịch tự động tlang=vi): đọc NGUYÊN VĂN, không dịch lại. Dòng phụ đề bị YouTube cắt
+ *   giữa câu ("…theo một số cách... ý tôi là, mỗi" / "khi chúng ta làm điều gì đó"), nên ghép lại thành câu theo dấu câu tiếng Việt
+ *   và khoảng ngừng của người nói (mốc từng từ), rồi mới đọc: chỉ quyết định chỗ ngắt, không đổi chữ.
  * - Do người làm: ghép thành câu có mốc thời gian, tách câu theo dấu chấm/hỏi/than, một dòng chứa hai câu thì chia mốc theo số ký tự.
  * - Tự động (ASR): chỉ lấy từng từ kèm mốc; không có dấu câu nên ghép câu theo khoảng ngừng sai ranh giới câu
  *   ("…one is the extraordinary." + "Evidence of human creativity…"). Từ được gửi lên backend thêm dấu câu bằng mô hình rồi mới tách câu.
@@ -79,15 +82,22 @@ interface Builder {
   endMs: number;
 }
 
-function toSegments(sentences: TimedText[]): ScriptSegment[] {
+function toSegments(sentences: TimedText[], options: { prefix?: string; translated?: boolean } = {}): ScriptSegment[] {
   const used = new Set<string>();
+  const prefix = options.prefix ?? 'cap';
   return sentences
-    .filter(sentence => /[A-Za-z0-9]/.test(sentence.text))
+    .filter(sentence => /[\p{L}\p{N}]/u.test(sentence.text))
     .map(sentence => {
-      let segmentId = `cap_${Math.round(sentence.startMs)}`;
+      let segmentId = `${prefix}_${Math.round(sentence.startMs)}`;
       while (used.has(segmentId)) segmentId += 'b';
       used.add(segmentId);
-      return { segmentId, text: sentence.text, startMs: Math.round(sentence.startMs), endMs: Math.round(Math.max(sentence.endMs, sentence.startMs + 300)) };
+      return {
+        segmentId,
+        text: sentence.text,
+        startMs: Math.round(sentence.startMs),
+        endMs: Math.round(Math.max(sentence.endMs, sentence.startMs + 300)),
+        ...(options.translated ? { translatedText: sentence.text } : {})
+      };
     });
 }
 
@@ -198,6 +208,96 @@ export function buildManualScript(cues: TimedText[]): ScriptSegment[] {
 
 export function buildCaptionScript(json: unknown): ScriptSegment[] {
   return buildManualScript(parseManualCues(json));
+}
+
+/** Người nói dừng chừng này (ms giữa hai từ) thì ngắt câu dù phụ đề không có dấu câu. */
+const VI_PAUSE_MS = 1_500;
+/** Sau dấu chấm/hỏi/than mà từ kế tiếp viết thường thì chỉ ngắt khi có khoảng lặng chừng này ("cách... ý tôi là" không ngắt). */
+const VI_PUNCT_PAUSE_MS = 600;
+/** Từ kế tiếp viết thường (câu chưa hết, dòng bị YouTube cắt) thì chỉ ngắt khi người nói dừng rất lâu. */
+const VI_LONG_PAUSE_MS = 5_000;
+const VI_WORD_TAIL_MS = 600;
+/** Câu dài hơn (ms hoặc số từ) thì cắt ở dấu phẩy gần giữa câu nhất. */
+const VI_MAX_SENTENCE_MS = 14_000;
+const VI_MAX_SENTENCE_WORDS = 50;
+const VI_MIN_PART_WORDS = 4;
+const SENTENCE_END = /[.?!…]["'”’)\]]*$/;
+/** "nó thực sự là..." thường là bỏ lửng giữa câu (YouTube vẫn viết hoa từ sau), chỉ là kết câu khi có khoảng lặng. */
+const TRAILING_ELLIPSIS = /(?:\.\.\.|…)["'”’)\]]*$/;
+const CLAUSE_END = /[,;:]["'”’)\]]*$/;
+const STARTS_SENTENCE = /^["“'(]?[\p{Lu}\p{N}]/u;
+
+function wordEndMs(words: CaptionWord[], index: number): number {
+  const next = words[index + 1];
+  return words[index].startMs + Math.min(VI_WORD_TAIL_MS, next ? Math.max(0, next.startMs - words[index].startMs) : VI_WORD_TAIL_MS);
+}
+
+/** Câu quá dài: cắt ở dấu phẩy gần giữa nhất (mỗi phần >= 4 từ), không có thì ở khoảng ngừng dài nhất. */
+function splitLongSentence(words: CaptionWord[], all: CaptionWord[], offset: number): Array<[number, number]> {
+  const from = offset;
+  const to = offset + words.length - 1;
+  const durationMs = wordEndMs(all, to) - all[from].startMs;
+  if (durationMs <= VI_MAX_SENTENCE_MS && words.length <= VI_MAX_SENTENCE_WORDS) return [[from, to]];
+  if (words.length < 2 * VI_MIN_PART_WORDS) return [[from, to]];
+  const middle = from + words.length / 2;
+  const candidates: number[] = [];
+  for (let index = from + VI_MIN_PART_WORDS - 1; index <= to - VI_MIN_PART_WORDS; index += 1) {
+    if (CLAUSE_END.test(all[index].text)) candidates.push(index);
+  }
+  let cut: number;
+  if (candidates.length > 0) {
+    cut = candidates.reduce((best, index) => (Math.abs(index + 1 - middle) < Math.abs(best + 1 - middle) ? index : best));
+  } else {
+    cut = from + VI_MIN_PART_WORDS - 1;
+    for (let index = cut; index <= to - VI_MIN_PART_WORDS; index += 1) {
+      if (all[index + 1].startMs - all[index].startMs > all[cut + 1].startMs - all[cut].startMs) cut = index;
+    }
+  }
+  return [
+    ...splitLongSentence(all.slice(from, cut + 1), all, from),
+    ...splitLongSentence(all.slice(cut + 1, to + 1), all, cut + 1)
+  ];
+}
+
+/**
+ * Phụ đề tiếng Việt có mốc từng từ (bản dịch tự động của YouTube) -> câu đọc nguyên văn. Ngắt sau dấu kết câu khi từ kế tiếp viết hoa
+ * (hoặc có khoảng lặng), hoặc khi người nói dừng lâu; ghép các dòng bị cắt giữa câu; câu quá dài cắt ở dấu phẩy.
+ */
+export function buildTimedWordScript(words: CaptionWord[]): ScriptSegment[] {
+  const sentences: TimedText[] = [];
+  let start = 0;
+  for (let index = 0; index < words.length; index += 1) {
+    const next = words[index + 1];
+    const gapMs = next ? next.startMs - words[index].startMs : Number.POSITIVE_INFINITY;
+    const text = words[index].text;
+    const punctuated = TRAILING_ELLIPSIS.test(text)
+      ? gapMs >= VI_PUNCT_PAUSE_MS
+      : SENTENCE_END.test(text) && (!next || STARTS_SENTENCE.test(next.text) || gapMs >= VI_PUNCT_PAUSE_MS);
+    // Ngừng lâu mà câu sau viết thường (dòng bị cắt giữa câu): vẫn là một câu, trừ khi ngừng rất lâu.
+    const continues = next !== undefined && !STARTS_SENTENCE.test(next.text) && !CLAUSE_END.test(text);
+    const paused = gapMs >= (continues ? VI_LONG_PAUSE_MS : VI_PAUSE_MS) && index - start + 1 >= 3;
+    if (!punctuated && !paused && next) continue;
+    for (const [from, to] of splitLongSentence(words.slice(start, index + 1), words, start)) {
+      sentences.push({
+        text: words.slice(from, to + 1).map(word => word.text).join(' '),
+        startMs: words[from].startMs,
+        endMs: wordEndMs(words, to)
+      });
+    }
+    start = index + 1;
+  }
+  return toSegments(sentences, { prefix: 'yv', translated: true });
+}
+
+export type VietnameseTrackKind = 'manual' | 'auto';
+
+/**
+ * Phụ đề tiếng Việt của YouTube -> câu đọc nguyên văn. Rãnh do người làm (có dấu câu, dòng là câu/vế) ghép như phụ đề người làm;
+ * bản dịch tự động có mốc từng từ thì ghép theo từ.
+ */
+export function buildVietnameseScript(json: unknown, kind: VietnameseTrackKind): ScriptSegment[] {
+  if (kind === 'manual') return toSegments(buildManualScript(parseManualCues(json)).map(segment => ({ text: segment.text, startMs: segment.startMs, endMs: segment.endMs })), { prefix: 'yv', translated: true });
+  return buildTimedWordScript(parseAsrWords(json));
 }
 
 /** Khung thời gian (ms video) giọng đọc của câu được dùng: từ lúc câu bắt đầu tới ngay trước lúc câu kế tiếp bắt đầu. */

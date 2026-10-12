@@ -366,6 +366,10 @@ function validateClientMessage(msg: ClientMessage): string | null {
       if (!segment || typeof segment !== 'object') return 'segments không hợp lệ.';
       if (typeof segment.segmentId !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(segment.segmentId)) return 'segmentId không hợp lệ.';
       if (typeof segment.text !== 'string' || !segment.text.trim() || segment.text.length > MAX_SCRIPT_TEXT_CHARS) return 'text không hợp lệ.';
+      if (segment.translatedText !== undefined
+        && (typeof segment.translatedText !== 'string' || !segment.translatedText.trim() || segment.translatedText.length > MAX_SCRIPT_TEXT_CHARS)) {
+        return 'translatedText không hợp lệ.';
+      }
       if (!Number.isFinite(segment.startMs) || !Number.isFinite(segment.endMs) || segment.startMs < 0 || segment.endMs < segment.startMs) {
         return 'Mốc thời gian câu không hợp lệ.';
       }

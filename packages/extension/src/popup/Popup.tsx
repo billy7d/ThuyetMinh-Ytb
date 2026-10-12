@@ -7,6 +7,8 @@ import { BackendState, LaunchFailure, launchBackend, probeBackend, waitUntilRead
 // Cảnh báo cũ hơn ngưỡng này không còn phản ánh tình trạng hiện tại.
 const WARNING_VISIBLE_MS = 30_000;
 
+const isFirefoxBrowser = (): boolean => /firefox/i.test(navigator.userAgent);
+
 export const Popup: React.FC = () => {
   const configuredBackendUrl = new URLSearchParams(window.location.search).get('wsUrl') || undefined;
   const [sessionState, setSessionState] = useState<SessionState>('IDLE');
@@ -25,6 +27,8 @@ export const Popup: React.FC = () => {
   // checking: đang thăm dò; launching: đã nhờ host bật, đang chờ model nạp xong.
   const [backendState, setBackendState] = useState<BackendState | 'checking' | 'launching'>('checking');
   const [launchFailure, setLaunchFailure] = useState<LaunchFailure | null>(null);
+  // Nguyên văn lỗi trình duyệt trả về (vd "No such native application ..."), hiện kèm hướng dẫn để chẩn đoán đúng nguyên nhân.
+  const [launchDetail, setLaunchDetail] = useState<string | null>(null);
   const launchCancelledRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
 
@@ -145,10 +149,12 @@ export const Popup: React.FC = () => {
   const handleLaunchBackend = async () => {
     if (backendState === 'launching') return;
     setLaunchFailure(null);
+    setLaunchDetail(null);
     setBackendState('launching');
     const result = await launchBackend();
     if (!result.ok) {
       setLaunchFailure(result.reason);
+      setLaunchDetail(result.detail ? result.detail.slice(0, 200) : null);
       setBackendState('down');
       return;
     }
@@ -177,7 +183,9 @@ export const Popup: React.FC = () => {
   })();
   const launchFailureText = ((): string | null => {
     switch (launchFailure) {
-      case 'host-missing': return 'Chưa cài trình hỗ trợ bật backend. Chạy một lần: powershell -ExecutionPolicy Bypass -File runtime/install_native_host.ps1 rồi mở lại popup.';
+      case 'host-missing': return isFirefoxBrowser()
+        ? 'Firefox không thấy trình hỗ trợ bật backend. Chạy runtime/install_native_host.ps1 trong cửa sổ PowerShell của chính bạn rồi mở lại popup. Vẫn lỗi thì bật backend bằng runtime/start_backend.ps1 (Firefox cài từ Microsoft Store có thể không gọi được chương trình ngoài).'
+        : 'Chưa cài trình hỗ trợ bật backend. Chạy một lần: powershell -ExecutionPolicy Bypass -File runtime/install_native_host.ps1 rồi mở lại popup.';
       case 'forbidden': return 'Trình hỗ trợ không cho extension này gọi (ID extension đã đổi). Chạy lại runtime/install_native_host.ps1.';
       case 'script-missing': return 'Không tìm thấy runtime/start_backend.ps1. Chạy lại runtime/install_native_host.ps1 từ thư mục dự án.';
       case 'host-error': return 'Không bật được backend hoặc model chưa nạp xong sau 4 phút. Xem E:\\VietDub-AI\\logs\\backend.log.';
@@ -314,7 +322,12 @@ export const Popup: React.FC = () => {
           >
             {backendState === 'launching' ? 'Đang bật backend...' : '▶ Bật backend'}
           </button>
-          {launchFailureText && <div style={styles.launchFailure} role="alert">{launchFailureText}</div>}
+          {launchFailureText && (
+            <div style={styles.launchFailure} role="alert">
+              {launchFailureText}
+              {launchDetail && <div style={{ marginTop: 4, opacity: 0.8 }}>Lỗi gốc của trình duyệt: {launchDetail}</div>}
+            </div>
+          )}
         </div>
       )}
 

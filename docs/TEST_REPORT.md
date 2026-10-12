@@ -613,4 +613,31 @@ Phát hiện khi đo (đã sửa trong thiết kế):
 
 Kiểm thử tự động: `packages/tests/unit/native-host.test.ts` (10: giao thức, bỏ qua `script` do extension gửi, người gọi Chrome/Firefox, bản tin quá lớn,
 bật tiến trình tách rời + log, lần bật thứ hai không nhân đôi, phương án dự phòng, thiếu script) và `backend-launcher.test.ts` (5).
+**Chưa giải quyết:** Firefox của người dùng báo `No such native application` (bản Microsoft Store 157, rồi cả bản mozilla.org 157.0.1 cài sau), dù khóa
+`HKCU\Software\Mozilla\NativeMessagingHosts\com.vietdub.backend_launcher`, manifest, `.bat` và tác vụ nền đều đúng; Firefox cùng bản chạy bằng profile tạm do
+công cụ khởi động thì gọi được host. Giả thuyết: khóa registry do công cụ ghi không hiện với Firefox của người dùng; đã nhờ người dùng tự chạy `reg query` và
+`install_native_host.ps1` trong PowerShell của họ. Lần đầu nghi do ảo hóa registry của gói MSIX (lệnh chạy trong gói không thấy khóa) nhưng bản mozilla.org cũng
+lỗi nên chưa kết luận. Đường dự phòng bằng giao thức URL tùy chỉnh (`vietdub-backend://`) bị chặn (ghi registry lâu dài mà trang web nào cũng gọi được), chưa làm.
 Chưa kiểm: Edge; máy không có Node trong PATH (trình cài đặt ghi đường dẫn Node tuyệt đối); backend chết sớm sau khi bật (popup chờ tối đa 4 phút rồi báo xem log).
+
+## Đọc nguyên văn phụ đề tiếng Việt của YouTube, ngắt câu cho phụ đề tự động (2026-10-12)
+
+Người dùng: thuyết minh không khớp chữ với phụ đề tiếng Việt (dịch tự động) YouTube hiển thị, và ngắt nghỉ sai vì phụ đề tự động bị cắt dòng. Nay khi video có phụ đề
+tiếng Việt (rãnh do người làm, không có thì bản dịch tự động `tlang=vi` của rãnh tiếng Anh đang chọn), extension đọc NGUYÊN VĂN (`ScriptSegment.translatedText`,
+backend bỏ qua bộ dịch, chỉ gộp khoảng trắng); không có thì như cũ (dịch phụ đề tiếng Anh).
+
+Bản dịch tự động có dấu câu và mốc từng từ nhưng mỗi dòng bị cắt giữa câu ("bạn biết đấy, theo một số cách... ý tôi là, mỗi" / "khi chúng ta làm điều gì đó").
+Ghép lại thành câu (`buildTimedWordScript`): ngắt sau `.?!` khi từ sau viết hoa hoặc có lặng ≥0.6 s; `...` bỏ lửng chỉ ngắt khi có lặng; ngừng ≥1.5 s thì ngắt, nhưng
+nếu từ sau viết thường (câu chưa hết) phải ngừng ≥5 s; câu >14 s hoặc >50 từ cắt ở dấu phẩy gần giữa.
+
+Đo trên podcast R6xbXOp7wDA (6 phút, 7:20–13:20, bản dịch tự động thật): 142 dòng YouTube -> 51 câu, ghép lại **trùng khớp từng ký tự** với phụ đề (5544 ký tự),
+1 câu kết thúc không dấu câu, trung vị 6.9 s, dài nhất 14.0 s. Hai lỗi ngắt đã sửa nhờ dữ liệu thật: "Bất cứ điều gì mới lạ đều | kích hoạt dopamine…" (ngừng 3.8 s
+giữa câu) và "nó thực sự là... | Tín hiệu chính…". Firefox 155, trang thật, phụ đề đã lưu (`--captions-fixture-vi`), giọng GPU: nguồn `youtube-vi`, đọc trước bắt đầu
+sau 0.7 s (không cần thêm dấu câu), 5/5 câu giọng lệch 0 ms, tốc độ 1.0x, phụ đề hiện đúng chữ YouTube.
+Chưa kiểm: Firefox thật của người dùng; Chrome chưa có chế độ đọc trước.
+
+## Đổi giọng mặc định sang Mai Anh (2026-10-12)
+
+Người dùng chọn giọng Mai Anh (nữ, Bắc, kiểu tin tức) thay cho Trúc Ly (`--voice` mặc định trong `vietdub_worker.py`, `.env`, `.env.example`). Số đo cũ ở mục
+"đổi sang giọng nữ Trúc Ly": Mai Anh đọc dài hơn (58.4 so với 48.6 ms/ký tự), nên với lời nói dày đọc trước dễ trễ dồn hơn Trúc Ly; trần tăng tốc 1.3x vẫn giữ.
+Cần khởi động lại backend để nhận giọng mới.

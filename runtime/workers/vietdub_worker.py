@@ -1205,8 +1205,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-utterance-ms", type=int, default=5000)
     parser.add_argument("--whisper-vad", dest="whisper_vad", action="store_true", default=True)
     parser.add_argument("--no-whisper-vad", dest="whisper_vad", action="store_false")
-    # Trúc Ly (nữ, Bắc, tự nhiên): đọc ngắn hơn lời gốc ~20% (Minh Đức dài hơn 8%), thuyết minh đọc trước ít bị trễ dồn nhất (docs/TEST_REPORT.md).
-    parser.add_argument("--voice", default="Trúc Ly")
+    # Mai Anh (nữ, Bắc, giọng tin tức rõ chữ): người dùng chọn thay Trúc Ly. Đọc dài hơn Trúc Ly (~58 ms/ký tự so với ~49), đọc trước dễ trễ dồn hơn (docs/TEST_REPORT.md).
+    parser.add_argument("--voice", default="Mai Anh")
     # auto: dùng GPU NVIDIA nếu có (cần gói nvidia-cublas-cu12 + nvidia-cudnn-cu12), lỗi thì lùi về CPU.
     parser.add_argument("--device", choices=DEVICE_CHOICES, default="cpu")
     parser.add_argument("--gpu-compute-type", default="int8_float16")

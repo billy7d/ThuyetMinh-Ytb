@@ -70,6 +70,11 @@ export interface ScriptSegment {
   text: string;
   startMs: number;
   endMs: number;
+  /**
+   * Câu tiếng Việt có sẵn (phụ đề tiếng Việt của YouTube, kể cả bản dịch tự động): backend đọc nguyên văn, không dịch lại.
+   * Thiếu thì backend dịch `text` (tiếng Anh).
+   */
+  translatedText?: string;
 }
 
 /**

@@ -4,7 +4,9 @@
  *  1. bắt đường dẫn /api/timedtext có `pot` mà trình phát tự gọi (XHR/fetch) cho từng video;
  *  2. khi content script hỏi: nếu chưa có thì chờ hết quảng cáo rồi buộc trình phát tải phụ đề (chọn rãnh tiếng Anh, hoặc tạm
  *     chuyển sang rãnh khác nếu rãnh đó đã tải sẵn), sau đó trả lại rãnh và trạng thái nút CC như cũ;
- *  3. tải rãnh tiếng Anh do người làm (không có thì rãnh tự động ASR, backend thêm dấu câu) dạng json3, trả về qua window.postMessage.
+ *  3. tải rãnh tiếng Anh do người làm (không có thì rãnh tự động ASR, backend thêm dấu câu) dạng json3, trả về qua window.postMessage;
+ *  4. tải thêm phụ đề tiếng Việt của YouTube (rãnh do người làm, không có thì bản dịch tự động `tlang=vi` của rãnh tiếng Anh) để
+ *     thuyết minh đọc nguyên văn đúng chữ YouTube hiển thị.
  */
 import { CAPTIONS_REQUEST, CAPTIONS_RESPONSE, CaptionsRequest, CaptionsResponse } from './caption-messages.js';
 
@@ -12,6 +14,10 @@ interface CaptionTrack {
   baseUrl?: string;
   languageCode?: string;
   kind?: string;
+}
+
+interface TranslationLanguage {
+  languageCode?: string;
 }
 
 const MAIN_FLAG = '__VIETDUB_CAPTIONS_MAIN__';
@@ -121,15 +127,50 @@ if (!(window as any)[MAIN_FLAG]) {
     if (!potUrl) return { ...base, ok: false, reason: 'no-pot-url' };
 
     const statuses: string[] = [];
-    for (const url of captionUrls(potUrl, track)) {
-      const result = await originalFetch.call(window, url, { credentials: 'include' });
-      const text = result.ok ? await result.text() : '';
-      if (text) return { ...base, ok: true, languageCode: track.languageCode, kind: track.kind === 'asr' ? 'asr' : 'manual', json: JSON.parse(text) };
-      statuses.push(String(result.status));
+    const english = await fetchFirst(captionUrls(potUrl, track), statuses);
+
+    // Phụ đề tiếng Việt YouTube hiển thị: rãnh "vi" do người làm, không có thì bản dịch tự động của rãnh tiếng Anh vừa chọn.
+    const vietnameseTrack = tracks.find(candidate => !candidate.kind && /^vi(?:-|$)/i.test(candidate.languageCode ?? ''));
+    const translationLanguages: TranslationLanguage[] = response?.captions?.playerCaptionsTracklistRenderer?.translationLanguages ?? [];
+    let vietnamese: unknown;
+    let vietnameseKind: 'manual' | 'auto' | undefined;
+    if (vietnameseTrack) {
+      vietnamese = await fetchFirst(captionUrls(potUrl, vietnameseTrack), statuses);
+      vietnameseKind = vietnamese ? 'manual' : undefined;
+    } else if (translationLanguages.some(language => language.languageCode === 'vi')) {
+      const urls = captionUrls(potUrl, track).map(url => {
+        const translated = new URL(url);
+        translated.searchParams.set('tlang', 'vi');
+        return translated.href;
+      });
+      vietnamese = await fetchFirst(urls, statuses);
+      vietnameseKind = vietnamese ? 'auto' : undefined;
+    }
+
+    if (english || vietnamese) {
+      return {
+        ...base,
+        ok: true,
+        languageCode: track.languageCode,
+        kind: track.kind === 'asr' ? 'asr' : 'manual',
+        json: english,
+        ...(vietnamese ? { vietnameseJson: vietnamese, vietnameseKind } : {})
+      };
     }
     const captured = new URL(potUrl).searchParams;
     // Lý do kèm loại rãnh trình phát đã gọi (không chứa nội dung) để chẩn đoán.
     return { ...base, ok: false, reason: `empty-${statuses.join('/')}:${captured.get('kind') ?? 'manual'}:${captured.get('variant') ?? ''}` };
+  };
+
+  /** Tải đường dẫn đầu tiên trả nội dung (json3 đã parse); ghi mã trạng thái các lần trả rỗng. */
+  const fetchFirst = async (urls: string[], statuses: string[]): Promise<unknown> => {
+    for (const url of urls) {
+      const result = await originalFetch.call(window, url, { credentials: 'include' });
+      const text = result.ok ? await result.text() : '';
+      if (text) return JSON.parse(text);
+      statuses.push(String(result.status));
+    }
+    return undefined;
   };
 
   /**
