@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 const HEALTH_TIMEOUT_MS = 2_500;
-/** pid đã ghi còn sống và chưa quá chừng này thì coi là backend đang khởi động (nạp model có thể mất 1-2 phút). */
+/** pid đã ghi còn sống và chưa quá chừng này thì coi là backend đang khởi động (thường ~6 s; lần đầu sau khi khởi động máy đọc model từ đĩa lâu hơn). */
 const STARTING_WINDOW_MS = 10 * 60_000;
 
 const here = path.dirname(fileURLToPath(import.meta.url));

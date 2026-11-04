@@ -74,7 +74,9 @@ export function createProductionProviderFactory(
 function createLocalFactory(env: NodeJS.ProcessEnv, cwd: string): ProductionProviderFactory {
   const manifestPath = resolvePath(env.LOCAL_MODEL_MANIFEST || 'models/manifest.json', cwd);
   const modelRoot = resolvePath(env.LOCAL_MODEL_ROOT || path.dirname(manifestPath), cwd);
-  const modelManager = new LocalModelManager(manifestPath, modelRoot);
+  // SHA-256 đã kiểm lưu cạnh model (LOCAL_MODEL_HASH_CACHE để đổi chỗ): bật backend không phải băm lại toàn bộ model mỗi lần.
+  const hashCachePath = resolvePath(env.LOCAL_MODEL_HASH_CACHE || path.join(modelRoot, '.verified-hashes.json'), cwd);
+  const modelManager = new LocalModelManager(manifestPath, modelRoot, { hashCachePath });
   const runtimeMissing = localRuntimeMissingConfiguration(env);
   let runtime: LocalRuntime | null = null;
 

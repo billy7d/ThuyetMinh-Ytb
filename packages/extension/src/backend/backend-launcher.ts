@@ -82,9 +82,9 @@ export interface WaitOptions {
   isCancelled?: () => boolean;
 }
 
-/** Chờ backend sẵn sàng: true nếu sẵn sàng trước hạn, false nếu hết hạn hoặc bị hủy. Nạp model mất ~1-2 phút. */
+/** Chờ backend sẵn sàng: true nếu sẵn sàng trước hạn, false nếu hết hạn hoặc bị hủy. Bật backend mất vài giây (đo: ~6 s), nên thăm dò dày để báo ngay khi xong. */
 export async function waitUntilReady(options: WaitOptions): Promise<boolean> {
-  const { probe, intervalMs = 2_000, timeoutMs = 240_000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now } = options;
+  const { probe, intervalMs = 400, timeoutMs = 240_000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now } = options;
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     if (options.isCancelled?.()) return false;

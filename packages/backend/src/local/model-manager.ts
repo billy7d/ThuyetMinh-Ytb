@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export type LocalModelComponent = 'stt' | 'translation' | 'tts';
@@ -80,13 +80,22 @@ export class LocalModelManager {
   readonly modelRoot: string;
   private readonly manifest: LocalModelManifest | null;
   private readonly manifestErrors: string[];
-  private readonly artifactHashCache = new Map<string, { sizeBytes: number; mtimeMs: number; ctimeMs: number; sha256: string }>();
+  private readonly artifactHashCache = new Map<string, ArtifactHashEntry>();
+  private readonly hashCachePath?: string;
 
-  constructor(manifestPath: string, modelRoot = path.dirname(manifestPath)) {
+  /**
+   * hashCachePath: tệp lưu SHA-256 đã tính (theo kích thước + mtime + ctime, như bộ nhớ đệm trong RAM) để lần bật sau không phải băm
+   * lại ~2.8 GB model (6 s khi tệp đã nằm trong cache của Windows, lâu hơn nhiều khi đọc từ đĩa). Tệp sửa/thay thì mtime/ctime đổi nên vẫn băm lại.
+   */
+  constructor(manifestPath: string, modelRoot = path.dirname(manifestPath), options: { hashCachePath?: string } = {}) {
     this.manifestPath = path.resolve(manifestPath);
     this.modelRoot = path.resolve(modelRoot);
     this.manifestErrors = [];
     this.manifest = this.readManifest();
+    if (options.hashCachePath) {
+      this.hashCachePath = path.resolve(options.hashCachePath);
+      this.loadHashCache();
+    }
   }
 
   getManifest(): LocalModelManifest | null {
@@ -229,8 +238,43 @@ export class LocalModelManager {
     }
     const sha256 = sha256File(filePath);
     this.artifactHashCache.set(filePath, { sizeBytes, mtimeMs, ctimeMs, sha256 });
+    this.saveHashCache();
     return sha256;
   }
+
+  private loadHashCache(): void {
+    if (!this.hashCachePath || !existsSync(this.hashCachePath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(this.hashCachePath, 'utf8')) as unknown;
+      if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.files)) return;
+      for (const [filePath, entry] of Object.entries(parsed.files)) {
+        if (isRecord(entry) && Number.isFinite(entry.sizeBytes) && Number.isFinite(entry.mtimeMs) && Number.isFinite(entry.ctimeMs)
+          && typeof entry.sha256 === 'string' && SHA256_RE.test(entry.sha256)) {
+          this.artifactHashCache.set(filePath, { sizeBytes: entry.sizeBytes, mtimeMs: entry.mtimeMs, ctimeMs: entry.ctimeMs, sha256: entry.sha256.toLowerCase() });
+        }
+      }
+    } catch {
+      // Tệp hỏng: bỏ qua, băm lại như lần đầu.
+    }
+  }
+
+  private saveHashCache(): void {
+    if (!this.hashCachePath) return;
+    try {
+      const temporary = `${this.hashCachePath}.${process.pid}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ version: 1, files: Object.fromEntries(this.artifactHashCache) }));
+      renameSync(temporary, this.hashCachePath);
+    } catch {
+      // Không ghi được (thư mục chỉ đọc...): vẫn chạy, chỉ là lần sau phải băm lại.
+    }
+  }
+}
+
+interface ArtifactHashEntry {
+  sizeBytes: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  sha256: string;
 }
 
 function validateEntry(component: LocalModelComponent, value: unknown): LocalModelEntry {

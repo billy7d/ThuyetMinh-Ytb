@@ -641,3 +641,22 @@ Chưa kiểm: Firefox thật của người dùng; Chrome chưa có chế độ 
 Người dùng chọn giọng Mai Anh (nữ, Bắc, kiểu tin tức) thay cho Trúc Ly (`--voice` mặc định trong `vietdub_worker.py`, `.env`, `.env.example`). Số đo cũ ở mục
 "đổi sang giọng nữ Trúc Ly": Mai Anh đọc dài hơn (58.4 so với 48.6 ms/ký tự), nên với lời nói dày đọc trước dễ trễ dồn hơn Trúc Ly; trần tăng tốc 1.3x vẫn giữ.
 Cần khởi động lại backend để nhận giọng mới.
+
+## Bật backend nhanh: ~25 s -> ~6 s (2026-11-04)
+
+Người dùng: bấm "Bật backend" phải chờ lâu. Đo từng chặng (máy i5-9400F + GTX 1660 SUPER, tệp model đã nằm trong bộ nhớ đệm của Windows):
+
+| Chặng | Trước | Sau |
+|---|---|---|
+| Băm SHA-256 toàn bộ model (2.75 GB, 21 tệp) trước khi mở cổng | 6.0 s | ~0 s: lưu kết quả vào `models/.verified-hashes.json` theo kích thước + mtime + ctime (như bộ nhớ đệm trong RAM vốn có); tệp đổi thì băm lại |
+| Worker dịch: `import transformers` (kéo theo PyTorch) chỉ để tách từ | 12.7 s (worker 14–30 s) | 0: tách từ mBART bằng `sentencepiece` (`runtime/workers/mbart_tokenizer.py`), worker 1.6 s |
+| Worker giọng đọc: nạp bộ khử nhiễu (chỉ dùng khi nhân bản giọng, không có trong thư mục model) | 0.6 s | bỏ qua (kết quả như cũ: None) |
+| Popup thăm dò `/health` | mỗi 2 s | mỗi 0.4 s |
+
+Toàn bộ (gọi tác vụ nền -> `/health` báo sẵn sàng), 3 lần: **5.6–5.9 s** (trước: 26.9 s). Thứ tự: cổng mở 1.35 s, dịch 2.7 s, nhận dạng 4.2 s, giọng đọc 5.6–5.9 s.
+Bấm nút thật trong Chrome (`runtime/native_host_e2e.mjs`): popup báo sẵn sàng sau **6.6 s** (trước: 17.8 / 24.8 s).
+Chặng còn lại dài nhất là worker giọng đọc tạo 5 phiên ONNX (~3 s, chủ yếu chép trọng số lên GPU): tạo song song không nhanh hơn (3.37 s so với 3.36 s), đổi mức tối ưu đồ thị cũng không.
+
+Không đổi chất lượng: bộ tách từ mới ra đúng token như `transformers.MBartTokenizer` trên 32 150 câu (phụ đề đã lưu + câu khó: ký hiệu giữ chỗ, emoji, token đặc biệt
+viết sẵn, câu > 256 token), giải mã cũng trùng; dịch 150 câu podcast bằng worker cũ và mới: **150/150 câu giống hệt**. Tổng hợp giọng thử một câu: OK.
+Chưa đo: lần bật đầu tiên sau khi khởi động máy (model phải đọc từ đĩa, phụ thuộc tốc độ ổ E:).

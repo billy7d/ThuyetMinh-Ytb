@@ -145,7 +145,7 @@ export const Popup: React.FC = () => {
     };
   }, []);
 
-  // Nhờ native host bật backend rồi chờ tới khi sẵn sàng (nạp model ~1-2 phút). Đóng popup thì thôi chờ, backend vẫn chạy tiếp.
+  // Nhờ native host bật backend rồi chờ tới khi sẵn sàng (nạp model vài giây). Đóng popup thì thôi chờ, backend vẫn chạy tiếp.
   const handleLaunchBackend = async () => {
     if (backendState === 'launching') return;
     setLaunchFailure(null);
@@ -176,7 +176,7 @@ export const Popup: React.FC = () => {
     switch (backendState) {
       case 'ready': return 'Backend local sẵn sàng';
       case 'warming': return 'Backend local đang nạp model hoặc chưa sẵn sàng — đợi một lúc rồi mở lại popup';
-      case 'launching': return 'Đang bật backend và nạp model (khoảng 1–2 phút)...';
+      case 'launching': return 'Đang bật backend và nạp model (vài giây)...';
       case 'down': return 'Chưa kết nối backend local';
       default: return 'Đang kiểm tra backend local...';
     }

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mbart_tokenizer import MBartPieceTokenizer
 from punctuation import Punctuator, segment_words
 from text_rules import (
     MAX_TERM_TRANSLATIONS,
@@ -774,27 +775,20 @@ class TranslationRuntime(RuntimeBase):
         self._punctuator: Punctuator | None = None
         self._term_patterns = compile_term_patterns(term_translations or {})
         self._keep_names = keep_names
-        try:
-            from transformers import AutoTokenizer
-        except ImportError as exc:
-            raise RuntimeError("translation dependencies are not installed") from exc
-        try:
-            model_type = json.loads((model_path / "config.json").read_text(encoding="utf-8")).get("model_type")
-            self._target_prefix: list[list[str]] | None = None
-            # Quy tắc viết lại câu nguồn được đo riêng cho từng model (xem text_rules.REWRITE_PROFILES).
-            self._rewrite_profile = "vinai" if model_type == "mbart" else "opus"
-            if model_type == "mbart":
-                from transformers import MBartTokenizer
-
-                # vinai-translate không kèm tokenizer_config.json: dựng tokenizer trực tiếp từ sentencepiece.bpe.model.
-                self._tokenizer = MBartTokenizer(
-                    vocab_file=str(model_path / "sentencepiece.bpe.model"), src_lang="en_XX", tgt_lang="vi_VN"
-                )
-                self._target_prefix = [["vi_VN"]]
-            else:
-                self._tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
-        except Exception as exc:
-            raise RuntimeError("translation tokenizer could not be loaded locally") from exc
+        model_type = json.loads((model_path / "config.json").read_text(encoding="utf-8")).get("model_type")
+        self._target_prefix: list[list[str]] | None = None
+        # Quy tắc viết lại câu nguồn được đo riêng cho từng model (xem text_rules.REWRITE_PROFILES).
+        self._rewrite_profile = "vinai" if model_type == "mbart" else "opus"
+        # mBART + CTranslate2 (cấu hình mặc định): tách từ bằng sentencepiece, không import transformers/PyTorch (~13 s lúc bật worker).
+        self._pieces: MBartPieceTokenizer | None = None
+        if model_type == "mbart" and ct2_model_path is not None:
+            try:
+                self._pieces = MBartPieceTokenizer(model_path / "sentencepiece.bpe.model", "en_XX")
+            except Exception as exc:
+                raise RuntimeError("translation tokenizer could not be loaded locally") from exc
+            self._target_prefix = [["vi_VN"]]
+        else:
+            self._load_transformers_tokenizer(model_path, model_type)
 
         self._translator: Any = None
         self._model: Any = None
@@ -831,6 +825,25 @@ class TranslationRuntime(RuntimeBase):
             raise RuntimeError("translation model could not be loaded locally") from exc
         log_info(f"translation backend={self.backend}")
 
+    def _load_transformers_tokenizer(self, model_path: Path, model_type: str | None) -> None:
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError("translation dependencies are not installed") from exc
+        try:
+            if model_type == "mbart":
+                from transformers import MBartTokenizer
+
+                # vinai-translate không kèm tokenizer_config.json: dựng tokenizer trực tiếp từ sentencepiece.bpe.model.
+                self._tokenizer = MBartTokenizer(
+                    vocab_file=str(model_path / "sentencepiece.bpe.model"), src_lang="en_XX", tgt_lang="vi_VN"
+                )
+                self._target_prefix = [["vi_VN"]]
+            else:
+                self._tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
+        except Exception as exc:
+            raise RuntimeError("translation tokenizer could not be loaded locally") from exc
+
     def _translate_tokens(self, tokens: list[str], translator: Any = None) -> list[str]:
         result = (translator or self._translator).translate_batch(
             [tokens],
@@ -844,6 +857,10 @@ class TranslationRuntime(RuntimeBase):
         return output[1:] if self._target_prefix and output and output[0] == self._target_prefix[0][0] else output
 
     def _generate(self, prepared: str) -> tuple[str, int]:
+        if self._translator is not None and self._pieces is not None:
+            tokens = self._pieces.encode_tokens(prepared, max_length=256)
+            output = self._translate_tokens(tokens)
+            return self._pieces.decode_tokens(output), len(tokens) + len(output)
         if self._translator is not None:
             ids = self._tokenizer.encode(prepared, truncation=True, max_length=256)
             output = self._translate_tokens(self._tokenizer.convert_ids_to_tokens(ids))
@@ -968,8 +985,14 @@ class TtsRuntime(RuntimeBase):
         onnx_dir = model_path / "onnx_update"
         if not onnx_dir.is_dir() or not codec_path.is_dir():
             raise RuntimeError("VieNeu ONNX or codec directory is missing")
+        # Bộ khử nhiễu chỉ dùng khi nhân bản giọng (worker không làm) và không có trong thư mục model: bản gốc vẫn import
+        # huggingface_hub để thử tải về (~0.6 s mỗi lần bật worker) rồi trả None. Bỏ hẳn bước này, kết quả như nhau.
+        class LocalEngine(OnnxV3LiteEngine):
+            def _load_denoiser(self) -> None:
+                return None
+
         try:
-            self._engine = OnnxV3LiteEngine(
+            self._engine = LocalEngine(
                 checkpoint_path=str(model_path),
                 onnx_dir=str(onnx_dir),
                 codec_dir=str(codec_path),

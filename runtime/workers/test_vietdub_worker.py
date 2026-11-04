@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import math
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -708,6 +709,53 @@ class TtsGpuOptionTests(unittest.TestCase):
         args = worker.parse_args(["--role", "tts", "--model-path", "x", "--codec-path", "y"])
         self.assertEqual(args.tts_gpu_libs, "")
         self.assertEqual(worker.parse_args(["--role", "tts", "--model-path", "x", "--codec-path", "y", "--tts-gpu-libs", "E:/gpu"]).tts_gpu_libs, "E:/gpu")
+
+
+
+VINAI_SENTENCEPIECE = Path(os.environ.get("VIETDUB_INSTALL_ROOT", "E:/VietDub-AI")) / "models/translation/vinai-translate-en2vi-v2/sentencepiece.bpe.model"
+
+
+@unittest.skipUnless(VINAI_SENTENCEPIECE.is_file(), "cần sentencepiece.bpe.model của vinai-translate-en2vi")
+class MBartPieceTokenizerTests(unittest.TestCase):
+    """Bộ tách từ sentencepiece (không cần transformers) phải ra đúng token như transformers.MBartTokenizer."""
+
+    SENTENCES = (
+        "Hello there, Tesla™ in 2024!",
+        "X1 said X2 is great.",
+        "Harvard University (X3) — costs $5,000/yr!",
+        "  leading  and trailing  ",
+        "emoji 😀 ☃ café naïve 日本語",
+        "a </s> b en_XX c<mask>d",
+        " ".join(["word"] * 400),
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from mbart_tokenizer import MBartPieceTokenizer
+
+        cls.tokenizer = MBartPieceTokenizer(VINAI_SENTENCEPIECE)
+
+    def test_source_ends_with_eos_and_language_code_and_is_truncated(self) -> None:
+        tokens = self.tokenizer.encode_tokens("Hello there.")
+        self.assertEqual(tokens[-2:], ["</s>", "en_XX"])
+        self.assertEqual(len(self.tokenizer.encode_tokens(" ".join(["word"] * 400), max_length=256)), 256)
+
+    def test_decode_drops_special_tokens_and_restores_spaces(self) -> None:
+        self.assertEqual(self.tokenizer.decode_tokens(["vi_VN", "▁Xin", "▁chào", ".", "</s>"]), "Xin chào.")
+
+    def test_matches_transformers_when_installed(self) -> None:
+        try:
+            from transformers import MBartTokenizer
+        except ImportError:
+            self.skipTest("transformers không được cài")
+        reference = MBartTokenizer(vocab_file=str(VINAI_SENTENCEPIECE), src_lang="en_XX", tgt_lang="vi_VN")
+        for sentence in self.SENTENCES:
+            expected = reference.convert_ids_to_tokens(reference.encode(sentence, truncation=True, max_length=256))
+            self.assertEqual(self.tokenizer.encode_tokens(sentence, 256), expected, sentence[:40])
+            self.assertEqual(
+                self.tokenizer.decode_tokens(expected),
+                reference.decode(reference.convert_tokens_to_ids(expected), skip_special_tokens=True),
+            )
 
 
 if __name__ == "__main__":

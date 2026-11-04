@@ -190,6 +190,21 @@ describe('local runtime contracts', () => {
       writeFileSync(path.join(root, 'tts', 'model.bin'), 'tampered');
       expect(manager.getStatus().ready).toBe(false);
       expect(manager.getStatus().components.tts.errors.join(' ')).toMatch(/size mismatch|SHA-256 mismatch/);
+
+      // Lưu SHA-256 đã kiểm ra tệp: lần bật sau dùng lại kết quả (không băm lại) khi tệp không đổi; tệp đổi thì vẫn bị phát hiện.
+      writeFileSync(path.join(root, 'tts', 'model.bin'), 'tts-model');
+      const hashCachePath = path.join(root, '.verified-hashes.json');
+      expect(new LocalModelManager(manifestPath, root, { hashCachePath }).getStatus().ready).toBe(true);
+      const cached = JSON.parse(readFileSync(hashCachePath, 'utf8'));
+      expect(Object.keys(cached.files)).toHaveLength(3);
+      // Ghi một hash giả vào tệp cache: manager mới tin cache (tệp chưa đổi) nên báo lệch, chứng tỏ không băm lại.
+      const sttPath = path.join(root, 'stt', 'model.bin');
+      cached.files[sttPath].sha256 = 'f'.repeat(64);
+      writeFileSync(hashCachePath, JSON.stringify(cached));
+      expect(new LocalModelManager(manifestPath, root, { hashCachePath }).getStatus().components.stt.errors.join(' ')).toMatch(/SHA-256 mismatch/);
+      // Tệp hỏng: bỏ qua cache, băm lại bình thường.
+      writeFileSync(hashCachePath, '{not json');
+      expect(new LocalModelManager(manifestPath, root, { hashCachePath }).getStatus().ready).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
